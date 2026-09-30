@@ -33,6 +33,7 @@ create table if not exists public.app_users (
   approved_at     timestamptz,
   last_login_at   timestamptz
 );
+alter table public.app_users add column if not exists avatar text;          -- small profile picture as a data: URL (resized in the browser)
 create unique index if not exists app_users_username_key on public.app_users (lower(username));
 
 create table if not exists public.app_sessions (
@@ -86,15 +87,24 @@ end $$;
 -- ---------- seed: tiles and first tools ----------
 
 insert into public.app_categories (id, name, description, sort, is_default) values
-  ('general', 'General', 'Tools open to every approved user',        10, true),
+  ('general', 'General', 'Everyday productivity tools',              10, true),
   ('sales',   'Sales',   'Costing, selection and quotation tools',   20, false),
-  ('sbu',     'SBU',     'Tools for the SBU team',                   30, false)
+  ('sbu',     'SBU',     'Specialised SBU tools',                    30, false)
 on conflict (id) do nothing;
 
 insert into public.app_tools (id, category_id, name, description, path, status, sort) values
   ('compliance-maker', 'general', 'Compliance Maker',
-   'Turn a specification into a clause-by-clause compliance statement.',
-   'tools/compliance-maker/', 'soon', 10)
+   'Turn a specification PDF into a ready-to-fill compliance matrix in Excel.',
+   'tools/compliance-maker/', 'live', 10),
+  ('coil-data-extractor', 'general', 'Coil Data Extractor',
+   'Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.',
+   'tools/coil-data-extractor/', 'live', 20),
+  ('container-calculator', 'general', 'Container Calculator',
+   'Work out how many containers or trailers a shipment needs, with a load plan and PDF report.',
+   'tools/container-calculator/', 'live', 30),
+  ('centre-of-gravity', 'general', 'Centre of Gravity',
+   'Build a unit from blocks, find its centre of gravity and the load on every mounting foot.',
+   'tools/centre-of-gravity/', 'live', 40)
 on conflict (id) do nothing;
 
 -- ---------- internal helpers (not callable from the website) ----------
@@ -145,29 +155,28 @@ begin
   return u;
 end $$;
 
--- Profile + the tiles and tools this user may see.
+-- Profile + ONLY the tiles and tools this user may open. Tiles without access are not sent at all.
 create or replace function public.app__profile(u public.app_users)
 returns jsonb
 language sql security definer set search_path = public, extensions as $$
   select jsonb_build_object(
-    'user', jsonb_build_object('id', u.id, 'username', u.username,
-                               'full_name', u.full_name, 'role', u.role),
+    'user', jsonb_build_object('id', u.id, 'username', u.username, 'full_name', u.full_name,
+                               'role', u.role, 'avatar', u.avatar,
+                               'created_at', u.created_at, 'last_login_at', u.last_login_at),
     'categories', coalesce((
       select jsonb_agg(jsonb_build_object(
-               'id', c.id, 'name', c.name, 'description', c.description,
-               'allowed', (u.role = 'admin' or c.is_default or uc.user_id is not null),
-               'tools', case when (u.role = 'admin' or c.is_default or uc.user_id is not null)
-                 then coalesce((
+               'id', c.id, 'name', c.name, 'description', c.description, 'allowed', true,
+               'tools', coalesce((
                    select jsonb_agg(jsonb_build_object(
                             'id', t.id, 'name', t.name, 'description', t.description,
                             'path', t.path, 'status', t.status) order by t.sort, t.name)
                      from public.app_tools t
                     where t.category_id = c.id and t.status <> 'hidden'), '[]'::jsonb)
-                 else '[]'::jsonb end
              ) order by c.sort, c.name)
         from public.app_categories c
-        left join public.app_user_categories uc
-               on uc.category_id = c.id and uc.user_id = u.id
+       where u.role = 'admin' or c.is_default
+          or exists (select 1 from public.app_user_categories uc
+                      where uc.category_id = c.id and uc.user_id = u.id)
     ), '[]'::jsonb)
   );
 $$;
@@ -278,6 +287,31 @@ begin
    where user_id = u.id
      and token_hash <> encode(digest(p_token, 'sha256'), 'hex');
   return jsonb_build_object('ok', true);
+end $$;
+
+-- Change own display name and profile picture. p_avatar: a small data: URL, or '' to remove it.
+create or replace function public.app_update_profile(p_token text, p_full_name text, p_avatar text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users;
+begin
+  u := public.app__session_user(p_token);
+  if length(trim(coalesce(p_full_name, ''))) < 2 or length(trim(p_full_name)) > 60 then
+    perform public.app__fail('Please enter your name (2 to 60 characters).');
+  end if;
+  if coalesce(p_avatar, '') <> '' then
+    if length(p_avatar) > 60000 then
+      perform public.app__fail('That picture is too large.');
+    end if;
+    if p_avatar !~ '^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$' then
+      perform public.app__fail('That picture format is not supported.');
+    end if;
+  end if;
+  update public.app_users
+     set full_name = trim(p_full_name), avatar = nullif(p_avatar, '')
+   where id = u.id
+   returning * into u;
+  return jsonb_build_object('ok', true) || public.app__profile(u);
 end $$;
 
 -- ---------- admin API ----------

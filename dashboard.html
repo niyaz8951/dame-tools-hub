@@ -14,13 +14,22 @@
 <body>
 <header id="topbar"></header>
 <main class="page">
-  <div class="page-head">
-    <h1 id="hello">Dashboard</h1>
-    <p>Pick a team tile to see its tools.</p>
-  </div>
-  <section class="grid" id="tiles" aria-label="Teams"></section>
-  <section id="toolsSection" style="margin-top:32px" hidden>
-    <div class="page-head"><h2 id="toolsTitle"></h2><p id="toolsSub"></p></div>
+  <!-- view 1: team tiles -->
+  <section id="homeView">
+    <div class="page-head">
+      <h1 id="hello">Dashboard</h1>
+      <p>Pick a tile to open its tools.</p>
+    </div>
+    <div class="grid" id="tiles"></div>
+  </section>
+
+  <!-- view 2: one team's tools (tiles are hidden while this is open) -->
+  <section id="toolsView" hidden>
+    <div class="page-head">
+      <p class="small"><a href="#" id="backLink">&larr; Dashboard</a></p>
+      <h1 id="toolsTitle"></h1>
+      <p id="toolsSub"></p>
+    </div>
     <div class="grid" id="tools"></div>
   </section>
 </main>
@@ -32,34 +41,27 @@
 
   function selected() { return decodeURIComponent(location.hash.slice(1)); }
 
+  // Only tiles the user can open are shown. The database does not send the others at all.
   function renderTiles() {
     var host = document.getElementById("tiles"); host.textContent = "";
-    profile.categories.forEach(function (c) {
+    profile.categories.filter(function (c) { return c.allowed; }).forEach(function (c) {
       var live = c.tools.filter(function (t) { return t.status === "live"; }).length;
-      var meta = !c.allowed ? "Ask your admin for access"
-               : c.tools.length === 0 ? "No tools yet"
-               : live + " live, " + (c.tools.length - live) + " coming soon";
-      var tile = el("button", {
-        type: "button", "class": "tile" + (c.allowed ? "" : " locked") + (selected() === c.id ? " active" : ""),
-        "aria-disabled": c.allowed ? null : "true", "aria-pressed": selected() === c.id ? "true" : "false",
-        onclick: function () { if (c.allowed) location.hash = c.id; else Hub.toast("You do not have access to " + c.name + ". Ask your admin."); }
-      }, [
-        el("span", { "class": "tile-icon", "aria-hidden": "true", html: c.allowed ? (CAT_ICON[c.id] || Hub.ICON.grid) : Hub.ICON.lock }),
-        c.allowed ? null : el("span", { "class": "badge", text: "Locked" }),
+      var soon = c.tools.length - live;
+      var meta = c.tools.length === 0 ? "No tools yet"
+               : live + (live === 1 ? " tool" : " tools") + (soon ? ", " + soon + " coming soon" : "");
+      host.appendChild(el("button", { type: "button", "class": "tile", onclick: function () { location.hash = c.id; } }, [
+        el("span", { "class": "tile-icon", "aria-hidden": "true", html: CAT_ICON[c.id] || Hub.ICON.grid }),
         el("h3", { text: c.name }),
         el("p", { text: c.description }),
         el("span", { "class": "meta", text: meta })
-      ]);
-      host.appendChild(tile);
+      ]));
     });
   }
 
-  function renderTools() {
-    var section = document.getElementById("toolsSection");
-    var c = profile.categories.filter(function (x) { return x.id === selected() && x.allowed; })[0];
-    section.hidden = !c; if (!c) return;
-    document.getElementById("toolsTitle").textContent = c.name + " tools";
+  function renderTools(c) {
+    document.getElementById("toolsTitle").textContent = c.name;
     document.getElementById("toolsSub").textContent = c.description;
+    document.title = c.name + " - DAME Tools Hub";
     var host = document.getElementById("tools"); host.textContent = "";
     if (!c.tools.length) {
       host.appendChild(el("div", { "class": "empty", style: "grid-column:1/-1", text: "No tools have been added to " + c.name + " yet." }));
@@ -71,14 +73,27 @@
         "class": "tile" + (isLive ? "" : " disabled"), href: isLive ? Hub.url(t.path) : null
       }, [
         el("span", { "class": "tile-icon", "aria-hidden": "true", html: Hub.ICON.doc }),
-        el("span", { "class": "badge " + (isLive ? "ok" : "warn"), text: isLive ? "Live" : "Coming soon" }),
+        isLive ? null : el("span", { "class": "badge warn", text: "Coming soon" }),
         el("h3", { text: t.name }),
         el("p", { text: t.description })
       ]));
     });
   }
 
-  function render() { renderTiles(); renderTools(); }
+  // One view at a time: the tiles, or the tools of the tile that was clicked.
+  function render() {
+    var c = profile.categories.filter(function (x) { return x.id === selected() && x.allowed; })[0];
+    document.getElementById("homeView").hidden = !!c;
+    document.getElementById("toolsView").hidden = !c;
+    if (c) renderTools(c); else { document.title = "Dashboard - DAME Tools Hub"; renderTiles(); }
+    window.scrollTo(0, 0);
+  }
+
+  document.getElementById("backLink").addEventListener("click", function (e) {
+    e.preventDefault();
+    history.pushState(null, "", location.pathname + location.search);   // clear the #team part
+    render();
+  });
 
   Hub.requireLogin().then(function (p) {
     profile = p;

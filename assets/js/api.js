@@ -40,6 +40,7 @@
     me: function (t) { return rpc("app_me", { p_token: t }); },
     logout: function (t) { return rpc("app_logout", { p_token: t }); },
     changePassword: function (t, o, n) { return rpc("app_change_password", { p_token: t, p_old: o, p_new: n }); },
+    updateProfile: function (t, d) { return rpc("app_update_profile", { p_token: t, p_full_name: d.fullName, p_avatar: d.avatar || "" }); },
     adminOverview: function (t) { return rpc("app_admin_overview", { p_token: t }); },
     adminSetUser: function (t, d) { return rpc("app_admin_set_user", { p_token: t, p_user_id: d.id, p_status: d.status, p_role: d.role, p_categories: d.categories }); },
     adminResetPassword: function (t, id, pw) { return rpc("app_admin_reset_password", { p_token: t, p_user_id: id, p_new_password: pw }); },
@@ -49,7 +50,7 @@
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db", mem = null;
+  var KEY = "dame_hub_demo_db_v3", mem = null;
   function seed() {
     return {
       users: [
@@ -58,12 +59,15 @@
         { id: "u3", username: "new.joiner", full_name: "New Joiner", team_note: "SBU", password: "joiner12345", role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [] }
       ],
       categories: [
-        { id: "general", name: "General", description: "Tools open to every approved user", sort: 10, is_default: true },
+        { id: "general", name: "General", description: "Everyday productivity tools", sort: 10, is_default: true },
         { id: "sales", name: "Sales", description: "Costing, selection and quotation tools", sort: 20, is_default: false },
-        { id: "sbu", name: "SBU", description: "Tools for the SBU team", sort: 30, is_default: false }
+        { id: "sbu", name: "SBU", description: "Specialised SBU tools", sort: 30, is_default: false }
       ],
       tools: [
-        { id: "compliance-maker", category_id: "general", name: "Compliance Maker", description: "Turn a specification into a clause-by-clause compliance statement.", path: "tools/compliance-maker/", status: "soon", sort: 10 }
+        { id: "compliance-maker", category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10 },
+        { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
+        { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
+        { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 }
       ],
       sessions: {}
     };
@@ -85,12 +89,15 @@
   function admin(db, token) { var u = sessionUser(db, token); if (u.role !== "admin") fail("Admin access required."); return u; }
   function profile(db, u) {
     return {
-      user: { id: u.id, username: u.username, full_name: u.full_name, role: u.role },
-      categories: db.categories.slice().sort(bySort).map(function (c) {
-        var allowed = u.role === "admin" || c.is_default || u.categories.indexOf(c.id) >= 0;
+      user: { id: u.id, username: u.username, full_name: u.full_name, role: u.role, avatar: u.avatar || null,
+              created_at: u.created_at, last_login_at: u.last_login_at },
+      // only the tiles this user may open are returned
+      categories: db.categories.slice().sort(bySort).filter(function (c) {
+        return u.role === "admin" || c.is_default || u.categories.indexOf(c.id) >= 0;
+      }).map(function (c) {
         return {
-          id: c.id, name: c.name, description: c.description, allowed: allowed,
-          tools: allowed ? db.tools.filter(function (t) { return t.category_id === c.id && t.status !== "hidden"; }).sort(bySort) : []
+          id: c.id, name: c.name, description: c.description, allowed: true,
+          tools: db.tools.filter(function (t) { return t.category_id === c.id && t.status !== "hidden"; }).sort(bySort)
         };
       })
     };
@@ -130,6 +137,14 @@
     logout: demo(function (db, t) { delete db.sessions[t]; return { ok: true }; }),
     changePassword: demo(function (db, t, o, n) {
       var u = sessionUser(db, t); if (u.password !== o) fail("Current password is wrong."); checkPw(n); u.password = n; return { ok: true };
+    }),
+    updateProfile: demo(function (db, t, d) {
+      var u = sessionUser(db, t), name = (d.fullName || "").trim();
+      if (name.length < 2 || name.length > 60) fail("Please enter your name (2 to 60 characters).");
+      if (d.avatar && !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(d.avatar)) fail("That picture format is not supported.");
+      if (d.avatar && d.avatar.length > 60000) fail("That picture is too large.");
+      u.full_name = name; u.avatar = d.avatar || null;
+      var p = profile(db, u); p.ok = true; return p;
     }),
     adminOverview: demo(function (db, t) {
       admin(db, t);

@@ -13,13 +13,41 @@ Follow this for every page and tool so the site stays consistent.
 
 ## 2. Every page must
 
-1. Load, in this order: `assets/css/theme.css`, `assets/js/config.js`, `assets/js/api.js`, `assets/js/hub.js`.
+1. Load, in this order: `assets/css/theme.css`, `assets/js/config.js`, `assets/js/api.js`, `assets/js/hub.js`. (`theme.css` imports `shell.css`, which holds the colours, top bar and toast.)
 2. Have `<html lang="en" data-loading>` and `<header id="topbar"></header>` (protected pages).
 3. Call the guard before doing anything:
    - `Hub.requireLogin()` any approved user
    - `Hub.requireLogin({ tool: "<tool-id>" })` tool pages
    - `Hub.requireLogin({ admin: true })` admin pages
 4. Talk to the database only through `Api.*` in `api.js`. New database need = new `app_*` function in `schema.sql` + a matching `Api` method (both Supabase and demo back ends).
+
+## 2a. Tools brought over from Quicktools
+
+Compliance Maker, Coil Data Extractor, Container Calculator and Centre of Gravity came from the Quicktools site and keep their own markup. They load a compatibility layer instead of `theme.css`:
+
+- CSS order: `assets/css/shell.css`, `assets/css/legacy-tools.css`, then the tool's own `styles.css`.
+- JS: `config.js`, `api.js`, `hub.js` in the head; `assets/js/legacy-tools.js` (gives `TN.icon`, `TN.esc`, `TN.toast`) where `global.js` used to be.
+- `<header data-site-header>` becomes `<header id="topbar"></header>` followed by `<script>Hub.requireLogin({ tool: "<tool-id>" });</script>`; the old footer is removed; add `data-loading` on `<html>`.
+- `legacy-tools.css` points the old `--color-*`, `--space-*`, `--font-*` tokens at the hub tokens, so these tools follow Daikin colours and day/night automatically. Never put colour values in it.
+- No Google Fonts and no CDN scripts. `pdf.js` is served from `assets/vendor/pdfjs/`. Shared highlight rules are in `data/highlight-rules.json`.
+- Drawings on a canvas must redraw on the `hub:theme` event.
+- To bring another Quicktools tool over, repeat these steps, then add it in Admin > Tools.
+- Brand new tools should be built on `theme.css` and `Hub.*`, not on this layer.
+
+## 2b. Dashboard behaviour
+
+- A user sees only the tiles and tools they have access to. Everything else is hidden, not shown as locked: the database does not send it (`app__profile`), and pages must not hint at tools the user cannot open.
+- Tile taglines are neutral and describe the tools, never the access rule (General: "Everyday productivity tools"). No wording like "open to approved users" or "ask your admin".
+- The dashboard shows one view at a time: the team tiles, or the tools of the tile that was clicked (tiles hidden, "All teams" link to go back). The address carries the team (`dashboard.html#general`) so Back and direct links work.
+- Every tool page has a "General tools" style back link to its team view.
+- A failed sign-in check never signs the user out unless the database says the session has expired; network problems show a "Try again" screen.
+
+## 2c. Account features
+
+- The top bar shows the day/night button and an account menu (profile picture or initials, first name): Dashboard, My profile, Change password, Admin (admins only), Log out. It is drawn by `hub.js` on every page, including tool pages.
+- `profile.html`: change name, profile picture and password. Pictures are cropped to a 160px square JPEG in the browser and stored in `app_users.avatar` as a small data URL (the database rejects anything else or anything over 60 KB).
+- Use `Hub.avatar(user, size)` wherever a person is shown.
+- The site should feel pleasant to use: instant feedback on every action (toast or inline message), disabled Save until something changed, no dead ends.
 
 ## 3. Theme
 
@@ -61,7 +89,7 @@ A tool is ready to be set Live only when:
 
 | Tile | Who | Tools |
 |---|---|---|
-| General | every approved user | Compliance Maker (first tool), other tools useful to all teams |
+| General | every approved user | Compliance Maker, Coil Data Extractor, Container Calculator, Centre of Gravity (all live) |
 | Sales | sales team | special sales tools, to be decided per requirement |
 | SBU | SBU team | special SBU tools, to be decided per requirement |
 | more tiles | | added later from Admin > Team tiles |
@@ -69,7 +97,7 @@ A tool is ready to be set Live only when:
 ## 6. Release checklist
 
 - [ ] Guard call uses the right tool id, and the id matches Admin > Tools
-- [ ] Day + night checked, phone width checked
+- [ ] Day + night checked (including canvas drawings), phone width checked
 - [ ] No hard-coded colours, no external scripts or fonts
 - [ ] No confidential data in the static files
 - [ ] Tested signed out (redirects to sign in) and as a user without the tile (redirects to dashboard)

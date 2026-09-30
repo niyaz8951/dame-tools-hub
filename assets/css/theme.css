@@ -1,70 +1,11 @@
 /* ============================================================
-   DAME Tools Hub - shared theme
-   Every page and every tool loads this file. Do not hard-code
-   colours in a tool: use the variables below so day/night works.
+   DAME Tools Hub - shared theme (components)
+   Every native page and new tool loads this file. Colours, the
+   top bar and the toast live in shell.css, imported below.
+   Do not hard-code colours in a tool: use the variables.
    ============================================================ */
+@import url("shell.css");
 
-:root {
-  /* Daikin brand */
-  --brand:        #0097E0;   /* Daikin blue */
-  --brand-strong: #0078B8;   /* hover / pressed */
-  --brand-sky:    #54C3F1;   /* Daikin light blue */
-  --brand-navy:   #0B2A4A;
-
-  /* Day theme */
-  --bg:        #F3F7FA;
-  --surface:   #FFFFFF;
-  --surface-2: #EAF2F8;
-  --border:    #D5E1EA;
-  --text:      #12283A;
-  --text-soft: #5A6F80;
-  --on-brand:  #FFFFFF;
-  --link:      #006FA8;
-  --ok:        #1B8A4B;
-  --ok-bg:     #E3F4EA;
-  --warn:      #9A6200;
-  --warn-bg:   #FFF3D6;
-  --danger:    #C0362C;
-  --danger-bg: #FCE8E6;
-  --shadow:    0 1px 2px rgba(11,42,74,.06), 0 6px 20px rgba(11,42,74,.07);
-  --focus:     0 0 0 3px rgba(0,151,224,.35);
-
-  --radius:    12px;
-  --radius-sm: 8px;
-  --font: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: Consolas, "SFMono-Regular", Menlo, monospace;
-  color-scheme: light;
-}
-
-:root[data-theme="dark"] {
-  --bg:        #07182A;
-  --surface:   #0F263C;
-  --surface-2: #163450;
-  --border:    #24465F;
-  --text:      #E6F0F7;
-  --text-soft: #9DB4C6;
-  --link:      #6CCBF4;
-  --ok:        #5FD08E;
-  --ok-bg:     #123A27;
-  --warn:      #F2C265;
-  --warn-bg:   #3D2F0E;
-  --danger:    #FF8A80;
-  --danger-bg: #46201D;
-  --shadow:    0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
-  color-scheme: dark;
-}
-
-* { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body {
-  margin: 0;
-  font-family: var(--font);
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
-  min-height: 100vh;
-}
 h1, h2, h3 { margin: 0; line-height: 1.25; text-wrap: balance; }
 h1 { font-size: 26px; font-weight: 650; }
 h2 { font-size: 19px; font-weight: 650; }
@@ -73,31 +14,8 @@ p  { margin: 0; }
 a  { color: var(--link); }
 .muted { color: var(--text-soft); }
 .small { font-size: 13px; }
-[hidden] { display: none !important; }
 
 :focus-visible { outline: none; box-shadow: var(--focus); border-radius: 6px; }
-
-/* ---------- top bar ---------- */
-.topbar {
-  position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 20px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-.topbar::before {            /* thin Daikin stripe */
-  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
-  background: linear-gradient(90deg, var(--brand) 0 60%, var(--brand-sky) 60% 100%);
-}
-.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); font-weight: 650; font-size: 16px; }
-.brand-mark {
-  width: 30px; height: 30px; border-radius: 8px; flex: none;
-  background: linear-gradient(135deg, var(--brand) 0 50%, var(--brand-sky) 50% 100%);
-}
-.topbar .spacer { flex: 1; }
-.topbar .who { text-align: right; line-height: 1.2; }
-.topbar .who b { display: block; font-weight: 600; font-size: 14px; }
-.topbar .who span { font-size: 12px; color: var(--text-soft); }
 
 /* ---------- layout ---------- */
 .page { max-width: 1120px; margin: 0 auto; padding: 28px 20px 60px; }
@@ -221,23 +139,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .auth-card .brand { margin-bottom: 18px; font-size: 18px; }
 .auth-theme { position: fixed; top: 14px; right: 14px; }
 
-/* ---------- toast ---------- */
-.toast {
-  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-  padding: 10px 16px; border-radius: var(--radius-sm); z-index: 50;
-  background: var(--brand-navy); color: #fff; font-size: 14px; box-shadow: var(--shadow);
-}
-.toast.error { background: var(--danger); color: #fff; }
-
-.demo-bar { background: var(--warn-bg); color: var(--warn); text-align: center; font-size: 13px; padding: 6px 12px; }
-
 @media (max-width: 600px) {
-  .topbar { padding: 10px 14px; }
-  .topbar .who { display: none; }
   .page { padding: 20px 14px 48px; }
   h1 { font-size: 22px; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
-/* protected pages stay blank until the login check passes */
-html[data-loading] body { visibility: hidden; }

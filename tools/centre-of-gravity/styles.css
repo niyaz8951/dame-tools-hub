@@ -1,0 +1,182 @@
+/* Centre of gravity calculator — tool-specific styles only.
+   Layout, panels, buttons, fields, tables, chips, notices, stats and the
+   segmented control all come from global.css. Nothing here hardcodes a colour,
+   font or spacing value; every rule below exists because global.css has no
+   equivalent. */
+
+.cog-panel { margin-top: var(--space-4); }
+
+/* `hidden` is a user-agent rule and loses to any author rule that sets
+   `display`, so the empty states below need this guard. */
+[hidden] { display: none !important; }
+
+.cog-toolbar select { max-width: 260px; }
+
+/* Pushes the file actions to the right of the preset picker on wide screens
+   and does nothing once the toolbar wraps. */
+.cog-toolbar__gap { flex: 1 1 var(--space-3); }
+
+.cog-hint { margin-bottom: var(--space-3); max-width: 68ch; }
+
+.cog-fields {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+/* .field + .field adds a top margin; inside a grid the gap already spaces them. */
+.cog-fields .field + .field { margin-top: 0; }
+
+.cog-fields--options { margin-top: var(--space-4); align-items: start; }
+
+.cog-envelope,
+.cog-generator {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: var(--space-4) 0 0;
+}
+
+.cog-envelope legend,
+.cog-generator legend {
+  padding-inline: var(--space-2);
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+.cog-generator { margin-bottom: var(--space-4); }
+.cog-generate { margin-top: var(--space-3); }
+
+.cog-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.cog-subhead {
+  font-family: var(--font-heading);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+/* ------------------------------------------------------------ tables */
+
+/* Ten columns of numbers do not need to be full width each; keeping the inputs
+   narrow is what lets the whole row stay readable inside .table-wrap. */
+.cog-parts input[type='number'],
+.cog-supports input[type='number'] { min-width: 88px; }
+
+.cog-parts input[type='text'] { min-width: 140px; }
+
+.cog-parts td,
+.cog-supports td { padding-block: var(--space-1); }
+
+/* An excluded row is still editable, so it dims rather than greys out. */
+.cog-parts tr[data-off='true'] { opacity: 0.5; }
+
+.cog-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.cog-include { display: flex; align-items: center; }
+
+/* ------------------------------------------------------------ viewer */
+
+.cog-viewer {
+  margin-top: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.cog-viewer__bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+}
+
+.cog-viewer__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.cog-viewer__toggles .check {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  align-items: center;
+}
+
+.cog-viewer__toggles .check input { margin-top: 0; }
+
+.cog-canvas {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  min-height: 280px;
+  max-height: 68vh;
+}
+
+.cog-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Without this the browser scrolls the page instead of passing the drag to
+     the orbit handler on touch devices. */
+  touch-action: none;
+  cursor: grab;
+}
+
+.cog-canvas canvas:active { cursor: grabbing; }
+
+.cog-canvas canvas:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.cog-viewer__help {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ------------------------------------------------------------ results */
+
+.cog-notices { margin-top: var(--space-4); display: block; }
+.cog-notices ul { margin: 0; padding-left: var(--space-4); }
+.cog-notices li + li { margin-top: var(--space-1); }
+
+.cog-stability { max-width: 68ch; }
+
+.cog-notes {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+  max-width: 72ch;
+}
+
+.cog-notes li + li { margin-top: var(--space-2); }
+
+/* ------------------------------------------------------------ print */
+
+@media print {
+  .cog-toolbar,
+  .cog-actions,
+  .cog-generator,
+  .cog-viewer__bar,
+  .cog-viewer__help { display: none !important; }
+
+  .cog-panel { box-shadow: none; break-inside: avoid; }
+  .cog-canvas { max-height: none; }
+}

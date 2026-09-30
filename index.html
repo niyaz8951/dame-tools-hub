@@ -76,7 +76,7 @@
   $("toLogin").addEventListener("click", function (e) { e.preventDefault(); view("login"); });
 
   // already signed in? go straight to the dashboard
-  if (Hub.token()) { Api.me(Hub.token()).then(function () { Hub.go("dashboard.html"); }, function () { Hub.setToken(null); }); }
+  if (Hub.token()) { Api.me(Hub.token()).then(function () { Hub.go("dashboard.html"); }, function (err) { if (err && err.message === "SESSION_EXPIRED") Hub.setToken(null); }); }
   var carried = Hub.takeMessage(); if (carried) show($("loginMsg"), carried);
 
   loginForm.addEventListener("submit", function (e) {

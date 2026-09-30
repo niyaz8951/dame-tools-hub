@@ -91,32 +91,90 @@
       document.documentElement.removeAttribute("data-loading");
       return profile;
     }, function (err) {
-      setToken(null);
-      if (err && err.message !== "SESSION_EXPIRED") sset(sessionStorage, "dame_hub_msg", err.message);
-      go("index.html");
+      // Leaving the page cancels the check. That is not a sign-out.
+      if (leaving) return new Promise(function () {});
+      if (err && err.message === "SESSION_EXPIRED") {
+        setToken(null);
+        go("index.html");
+        return new Promise(function () {});
+      }
+      // Network or database problem: keep the session, keep the page hidden, offer a retry.
+      showBlocked((err && err.message) || "Cannot reach the database.");
       return new Promise(function () {});
     });
+  }
+
+  var leaving = false;
+  window.addEventListener("pagehide", function () { leaving = true; });
+  window.addEventListener("beforeunload", function () { leaving = true; });
+  window.addEventListener("pageshow", function () { leaving = false; });
+
+  function showBlocked(message) {
+    if (document.getElementById("hubBlocked")) return;
+    var box = el("div", { id: "hubBlocked", role: "alert",
+      style: "visibility:visible;position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:24px;" +
+             "background:var(--bg);color:var(--text);font:15px/1.5 var(--font);text-align:center" }, [
+      el("div", {}, [
+        el("p", { style: "font-weight:650;font-size:18px;margin:0 0 6px", text: "Could not check your sign-in" }),
+        el("p", { style: "margin:0 0 16px;color:var(--text-soft)", text: message }),
+        el("button", { type: "button", text: "Try again",
+          style: "font:600 14px var(--font);min-height:38px;padding:0 16px;border:0;border-radius:8px;background:var(--brand);color:#fff;cursor:pointer",
+          onclick: function () { window.location.reload(); } })
+      ])
+    ]);
+    document.body.appendChild(box);
   }
 
   // ---------- top bar ----------
   function themeButton(extra) {
     return el("button", { "class": "btn ghost icon" + (extra || ""), type: "button", "data-theme-toggle": true, onclick: toggleTheme });
   }
+  // Round profile picture, or the person's initials when there is none.
+  function avatar(user, size) {
+    size = size || 32;
+    var box = el("span", { "class": "avatar", style: "width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * 0.4) + "px", "aria-hidden": "true" });
+    if (user.avatar && /^data:image\/(jpeg|png|webp);base64,/.test(user.avatar)) {
+      box.appendChild(el("img", { src: user.avatar, alt: "" }));
+    } else {
+      var parts = String(user.full_name || user.username || "?").trim().split(/\s+/);
+      box.textContent = (parts[0].charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : "")).toUpperCase();
+    }
+    return box;
+  }
+
   function renderTopbar(profile) {
     var host = document.getElementById("topbar");
     if (!host) return;
+    var user = profile.user;
     host.className = "topbar"; host.textContent = "";
     host.appendChild(el("a", { "class": "brand", href: url("dashboard.html") }, [
       el("span", { "class": "brand-mark", "aria-hidden": "true" }), cfg.SITE_NAME || "Tools Hub"
     ]));
     host.appendChild(el("span", { "class": "spacer" }));
-    host.appendChild(el("span", { "class": "who" }, [
-      el("b", { text: profile.user.full_name }),
-      el("span", { text: profile.user.role === "admin" ? "Admin" : profile.user.username })
-    ]));
-    if (profile.user.role === "admin") host.appendChild(el("a", { "class": "btn ghost sm", href: url("admin.html"), text: "Admin" }));
     host.appendChild(themeButton());
-    host.appendChild(el("button", { "class": "btn ghost sm", type: "button", text: "Log out", onclick: logout }));
+
+    // account menu
+    var menu = el("div", { "class": "menu", role: "menu", hidden: true }, [
+      el("div", { "class": "menu-head" }, [
+        el("b", { text: user.full_name }),
+        el("span", { text: user.username + (user.role === "admin" ? " \u00b7 Admin" : "") })
+      ]),
+      el("a", { role: "menuitem", href: url("dashboard.html"), text: "Dashboard" }),
+      el("a", { role: "menuitem", href: url("profile.html"), text: "My profile" }),
+      el("a", { role: "menuitem", href: url("profile.html#password"), text: "Change password" }),
+      user.role === "admin" ? el("a", { role: "menuitem", href: url("admin.html"), text: "Admin" }) : null,
+      el("button", { role: "menuitem", type: "button", text: "Log out", onclick: logout })
+    ]);
+    var trigger = el("button", { "class": "account", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "Account menu for " + user.full_name }, [
+      avatar(user, 32), el("span", { "class": "account-name", text: String(user.full_name).split(" ")[0] }),
+      el("span", { "class": "caret", "aria-hidden": "true" })
+    ]);
+    function setOpen(open) { menu.hidden = !open; trigger.setAttribute("aria-expanded", open ? "true" : "false"); }
+    trigger.addEventListener("click", function (e) { e.stopPropagation(); setOpen(menu.hidden); });
+    document.addEventListener("click", function (e) { if (!menu.contains(e.target)) setOpen(false); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !menu.hidden) { setOpen(false); trigger.focus(); } });
+    host.appendChild(el("div", { "class": "account-wrap" }, [trigger, menu]));
+
     if (window.Api.isDemo && !document.querySelector(".demo-bar")) {
       host.parentNode.insertBefore(el("div", { "class": "demo-bar", text: "Demo mode: no database connected. Data stays in this browser only." }), host);
     }
@@ -126,7 +184,7 @@
   window.Hub = {
     ICON: ICON, el: el, toast: toast, url: url, go: go,
     token: token, setToken: setToken, logout: logout,
-    requireLogin: requireLogin, themeButton: themeButton,
+    requireLogin: requireLogin, themeButton: themeButton, avatar: avatar, renderTopbar: renderTopbar,
     applyTheme: applyTheme, currentTheme: currentTheme,
     takeMessage: function () { var m = sget(sessionStorage, "dame_hub_msg"); sset(sessionStorage, "dame_hub_msg", null); return m; }
   };

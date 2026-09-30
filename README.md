@@ -34,6 +34,12 @@ Demo data lives in your browser only and is not secure. It is for looking around
 - Admin page > Tools: add a tool, choose its tile, set it Live / Coming soon / Hidden.
 - Admin page > Team tiles: add more tiles later (no code change needed).
 
+## Updating a site that is already live
+
+1. Replace the files in the GitHub repository with this folder. `assets/js/config.js` here already contains your database settings.
+2. In the Supabase SQL Editor run the whole of `db/schema.sql` again (it keeps your users and access), then run the dated update file, currently `db/2026-09-30-update.sql`.
+3. Hard-refresh the browser (Ctrl+F5) so the new styles load.
+
 ## Add a new tool
 
 1. Copy `tools/_template/` to `tools/<tool-id>/`.
@@ -54,13 +60,20 @@ Read `STANDARDS.md` before building a tool.
 
 ```
 index.html            sign in / request access
-dashboard.html        team tiles and their tools
+dashboard.html        the tiles a user has access to, and their tools
+profile.html          name, profile picture, password
 admin.html            users, tools, tiles
-assets/css/theme.css  Daikin colours, day/night, all shared components
+assets/css/shell.css  Daikin colours, day/night, top bar, toast
+assets/css/theme.css  shared components for native pages (imports shell.css)
+assets/css/legacy-tools.css  compatibility styles for tools brought from Quicktools
 assets/js/config.js   the only file with settings
 assets/js/api.js      all database calls
 assets/js/hub.js      session, access guard, top bar, theme toggle
+assets/js/legacy-tools.js  TN.* helpers for tools brought from Quicktools
+assets/vendor/pdfjs/  pdf.js, served locally (no CDN)
+data/                 shared data files (highlight rules)
 tools/_template/      starting point for every tool
 tools/<tool-id>/      one folder per tool
 db/schema.sql         database tables and functions
+db/<date>-*.sql       one-off updates for a live database
 ```
