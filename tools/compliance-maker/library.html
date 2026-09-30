@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en" data-loading>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Compliance library - DAME Tools Hub</title>
+<link rel="icon" href="../../assets/favicon.svg">
+<link rel="stylesheet" href="../../assets/css/theme.css">
+<script src="../../assets/js/config.js"></script>
+<script src="../../assets/js/api.js"></script>
+<script src="../../assets/js/hub.js"></script>
+<script src="../../assets/js/xlsx-lite.js"></script>
+<style>
+  .scope { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
+  .stats { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .stat b { display: block; font-size: 24px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 13px; color: var(--text-soft); }
+  .bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .filters .input { width: auto; min-width: 160px; }
+  .filters .grow { flex: 1 1 220px; }
+  .lib td { vertical-align: top; }
+  .lib .spec { min-width: 280px; line-height: 1.45; overflow-wrap: anywhere; }
+  .lib .meta { font-size: 12px; color: var(--text-soft); margin-top: 4px; }
+  .lib textarea.input { min-height: 40px; height: 40px; resize: vertical; min-width: 200px; }
+  .lib input.input { min-width: 140px; }
+  .lib .state { font-size: 12px; white-space: nowrap; min-width: 64px; }
+  .lib .state.ok { color: var(--ok); } .lib .state.err { color: var(--danger); }
+  .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 22px; text-align: center; cursor: pointer; }
+  .drop:hover, .drop.over { border-color: var(--brand); background: var(--surface-2); }
+  .result { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  @media (max-width: 600px) { .stats { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header id="topbar"></header>
+<main class="page" style="max-width:1280px">
+  <div class="page-head">
+    <p class="small"><a href="./">&larr; Compliance Maker</a></p>
+    <h1>Compliance library</h1>
+    <p>Every clause converted by anyone lands here once. Fill in Compliance and Remarks, and the next conversion that contains the same clause gets them automatically.</p>
+  </div>
+
+  <div class="card stack">
+    <div class="scope">
+      <label class="field"><span>Product</span><select class="input" id="product"></select></label>
+      <label class="field"><span>Factory</span><select class="input" id="factory"></select></label>
+    </div>
+    <div class="stats" id="stats" hidden>
+      <div class="stat"><b id="sAll">0</b><span>unique lines</span></div>
+      <div class="stat"><b id="sOpen">0</b><span>to answer</span></div>
+      <div class="stat"><b id="sDone">0</b><span>answered</span><div class="bar"><i id="sBar"></i></div></div>
+    </div>
+  </div>
+
+  <div id="work" hidden style="margin-top:20px">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="lines" aria-selected="true">Lines</button>
+      <button class="tab" role="tab" data-tab="upload" aria-selected="false">Upload filled compliance</button>
+      <button class="tab" role="tab" data-tab="runs" aria-selected="false">Conversion history</button>
+    </div>
+
+    <!-- LINES -->
+    <section id="tab-lines" class="stack">
+      <div class="filters">
+        <select class="input" id="fStatus" aria-label="Show">
+          <option value="open">To answer</option><option value="answered">Answered</option><option value="all">All lines</option>
+        </select>
+        <input class="input grow" id="fSearch" type="search" placeholder="Search clause text" aria-label="Search clause text">
+        <button class="btn ghost" type="button" id="btnExport">Download library (Excel)</button>
+      </div>
+      <div class="table-wrap">
+        <table class="table lib">
+          <thead><tr><th>Specification</th><th style="width:190px">Compliance</th><th style="width:30%">Remarks</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span class="small muted" id="pageInfo"></span>
+        <span class="row"><button class="btn ghost sm" type="button" id="prev">Previous</button><button class="btn ghost sm" type="button" id="next">Next</button></span>
+      </div>
+      <p class="small muted">Answers save by themselves when you leave a box. Clearing both boxes puts the line back under "To answer".</p>
+      <datalist id="answers">
+        <option value="Comply"></option><option value="Not Comply"></option><option value="Partially Comply"></option>
+        <option value="Noted"></option><option value="Not Applicable"></option><option value="By Others"></option>
+      </datalist>
+    </section>
+
+    <!-- UPLOAD -->
+    <section id="tab-upload" class="stack" hidden>
+      <div class="card stack">
+        <h2>Upload a filled compliance</h2>
+        <p class="muted">Use an Excel file with <b>Specifications</b>, <b>Compliance</b> and <b>Remarks</b> columns, for example a sheet downloaded from the Compliance Maker and filled in. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once.</p>
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose an Excel file or drop one here">
+          <b>Choose an .xlsx file or drop it here</b>
+          <div class="small muted">Nothing is saved until you press Add to library.</div>
+        </div>
+        <input type="file" id="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+        <div id="upMsg" class="notice" hidden></div>
+        <div id="upPreview" class="stack" hidden>
+          <div class="result">
+            <div class="stat"><b id="pRows">0</b><span>rows read</span></div>
+            <div class="stat"><b id="pAns">0</b><span>with an answer</span></div>
+            <div class="stat"><b id="pSkip">0</b><span>without an answer (ignored)</span></div>
+          </div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>Specification</th><th>Compliance</th><th>Remarks</th></tr></thead><tbody id="pRowsBody"></tbody></table></div>
+          <p class="small muted" id="pMore"></p>
+          <div class="row"><button class="btn" type="button" id="btnImport">Add to library</button><button class="btn ghost" type="button" id="btnCancel">Cancel</button></div>
+        </div>
+        <div id="upResult" class="stack" hidden>
+          <div class="notice ok" id="upResultMsg"></div>
+          <div class="result">
+            <div class="stat"><b id="rAdded">0</b><span>new lines</span></div>
+            <div class="stat"><b id="rUpdated">0</b><span>answers updated</span></div>
+            <div class="stat"><b id="rSame">0</b><span>already the same</span></div>
+            <div class="stat"><b id="rSkipped">0</b><span>rows skipped</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RUNS -->
+    <section id="tab-runs" class="stack" hidden>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>When</th><th>Who</th><th>Product</th><th>Factory</th><th>Source</th><th>Rows</th><th>Unique lines</th><th>Filled from library</th></tr></thead>
+          <tbody id="runRows"></tbody>
+        </table>
+      </div>
+      <p class="small muted" id="runInfo"></p>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var el = Hub.el, PAGE = 50;
+  var products = [], offset = 0, total = 0, pending = null, searchTimer;
+
+  function fail(err) { Hub.toast(err && err.message ? err.message : String(err), true); }
+  function factoryId() { return $("factory").value; }
+  function scopeName() {
+    var p = products.filter(function (x) { return x.id === $("product").value; })[0];
+    var f = p && p.factories.filter(function (x) { return x.id === factoryId(); })[0];
+    return p && f ? p.name + " / " + f.name : "";
+  }
+  function fmt(iso) { if (!iso) return ""; var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+
+  // ---------- scope ----------
+  function fillFactories() {
+    var p = products.filter(function (x) { return x.id === $("product").value; })[0], s = $("factory");
+    s.textContent = ""; s.appendChild(el("option", { value: "", text: p ? "Choose a factory" : "Choose a product first" }));
+    (p ? p.factories : []).forEach(function (f) { s.appendChild(el("option", { value: f.id, text: f.name })); });
+    s.disabled = !p;
+  }
+  function scopeChanged() {
+    var on = !!factoryId();
+    $("work").hidden = !on; $("stats").hidden = !on;
+    $("upScope").textContent = scopeName();
+    resetUpload();
+    if (on) { offset = 0; loadLines(); }
+  }
+  $("product").addEventListener("change", function () { fillFactories(); scopeChanged(); });
+  $("factory").addEventListener("change", scopeChanged);
+
+  // ---------- lines ----------
+  function setCounts(c) {
+    $("sAll").textContent = c.all; $("sOpen").textContent = c.open; $("sDone").textContent = c.answered;
+    $("sBar").style.width = (c.all ? Math.round(c.answered / c.all * 100) : 0) + "%";
+  }
+  function lineRow(l) {
+    var comp = el("input", { "class": "input", list: "answers", value: l.compliance || "", maxlength: "200", "aria-label": "Compliance" });
+    var rem = el("textarea", { "class": "input", maxlength: "4000", "aria-label": "Remarks" }); rem.value = l.remarks || "";
+    var state = el("span", { "class": "state", "aria-live": "polite" });
+    var saved = { c: l.compliance || "", r: l.remarks || "" };
+    function save() {
+      var c = comp.value.trim(), r = rem.value.trim();
+      if (c === saved.c && r === saved.r) return;
+      state.textContent = "Saving..."; state.className = "state";
+      Api.cmAdminSaveAnswer(Hub.token(), l.id, c, r).then(function () {
+        var was = !!(saved.c || saved.r), now = !!(c || r);
+        saved = { c: c, r: r }; state.textContent = "Saved"; state.className = "state ok";
+        if (was !== now) {       // keep the three counters right without reloading the page of lines
+          var open = +$("sOpen").textContent + (now ? -1 : 1), done = +$("sDone").textContent + (now ? 1 : -1);
+          setCounts({ all: +$("sAll").textContent, open: open, answered: done });
+        }
+      }, function (err) { state.textContent = "Not saved"; state.className = "state err"; fail(err); });
+    }
+    comp.addEventListener("change", save); rem.addEventListener("change", save);
+    var del = el("button", { "class": "btn danger sm", type: "button", text: "Delete", title: "Remove this line from the library",
+      onclick: function () {
+        if (!window.confirm("Delete this line from the library? Use this for junk lines only.")) return;
+        Api.cmAdminDeleteLine(Hub.token(), l.id).then(function () { Hub.toast("Line deleted"); loadLines(); }, fail);
+      } });
+    var meta = "Seen in " + l.times_seen + (l.times_seen === 1 ? " conversion" : " conversions") +
+      (l.answered_at && (l.compliance || l.remarks) ? " · answered " + fmt(l.answered_at) + (l.answered_by ? " by " + l.answered_by : "") + (l.answer_source === "upload" ? " (upload)" : "") : "");
+    return el("tr", {}, [
+      el("td", { "class": "spec" }, [el("div", { text: l.spec_text }), el("div", { "class": "meta", text: meta })]),
+      el("td", {}, [comp]), el("td", {}, [rem]),
+      el("td", { style: "text-align:right;white-space:nowrap" }, [state, " ", del])
+    ]);
+  }
+  function loadLines() {
+    if (!factoryId()) return;
+    var req = factoryId() + "|" + offset;
+    loadLines.last = req;
+    Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value, limit: PAGE, offset: offset }).then(function (res) {
+      if (loadLines.last !== req) return;
+      total = res.total; setCounts(res.counts);
+      var body = $("rows"); body.textContent = "";
+      if (!res.lines.length) {
+        var msg = res.counts.all === 0 ? "No lines yet for this factory. They appear here after the first conversion or upload."
+                : $("fSearch").value ? "No lines match that search."
+                : $("fStatus").value === "open" ? "Nothing left to answer for this factory." : "No lines here.";
+        body.appendChild(el("tr", {}, [el("td", { colspan: "4", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
+      }
+      res.lines.forEach(function (l) { body.appendChild(lineRow(l)); });
+      $("pageInfo").textContent = total ? "Showing " + (offset + 1) + " to " + Math.min(offset + PAGE, total) + " of " + total : "";
+      $("prev").disabled = offset === 0; $("next").disabled = offset + PAGE >= total;
+    }, fail);
+  }
+  $("fStatus").addEventListener("change", function () { offset = 0; loadLines(); });
+  $("fSearch").addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(function () { offset = 0; loadLines(); }, 300); });
+  $("prev").addEventListener("click", function () { offset = Math.max(0, offset - PAGE); loadLines(); window.scrollTo(0, 0); });
+  $("next").addEventListener("click", function () { offset += PAGE; loadLines(); window.scrollTo(0, 0); });
+
+  function download(blob, name) {
+    var url = URL.createObjectURL(blob), a = el("a", { href: url, download: name });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  $("btnExport").addEventListener("click", function () {
+    Api.cmAdminExport(Hub.token(), factoryId()).then(function (res) {
+      if (!res.lines.length) { Hub.toast("There are no lines to download yet."); return; }
+      var rows = [["Specifications", "Compliance", "Remarks", "Times seen"]].concat(res.lines.map(function (l) { return [l.spec_text, l.compliance, l.remarks, l.times_seen]; }));
+      download(HubXlsx.build(rows, "Library", [90, 22, 50, 12]), "compliance-library-" + factoryId() + ".xlsx");
+    }, fail);
+  });
+
+  // ---------- upload ----------
+  function show(box, text, kind) { box.textContent = text; box.className = "notice " + (kind || "error"); box.hidden = !text; }
+  function resetUpload() { pending = null; $("upPreview").hidden = true; $("upResult").hidden = true; show($("upMsg"), ""); $("file").value = ""; }
+  // Find the header row (Specifications / Compliance / Remarks) and read the rows under it.
+  function readSheet(rows) {
+    var head = -1, cs = -1, cc = -1, cr = -1;
+    for (var i = 0; i < Math.min(rows.length, 40) && head < 0; i++) {
+      var cells = rows[i].map(function (c) { return String(c == null ? "" : c).trim().toLowerCase(); });
+      var s = -1, c = -1, r = -1;
+      cells.forEach(function (v, k) {
+        if (s < 0 && /^specifications?$/.test(v)) s = k;
+        else if (c < 0 && /^compliance$/.test(v)) c = k;
+        else if (r < 0 && /^remarks?$/.test(v)) r = k;
+      });
+      if (s >= 0 && c >= 0) { head = i; cs = s; cc = c; cr = r; }
+    }
+    if (head < 0) throw new Error("This sheet has no Specifications and Compliance column headings. Use a sheet downloaded from the Compliance Maker, or add those headings in the first row.");
+    var out = [];
+    rows.slice(head + 1).forEach(function (row) {
+      var spec = String(row[cs] == null ? "" : row[cs]).trim();
+      if (!spec) return;
+      out.push({ spec: spec, compliance: String(row[cc] == null ? "" : row[cc]).trim(), remarks: cr >= 0 ? String(row[cr] == null ? "" : row[cr]).trim() : "" });
+    });
+    return out;
+  }
+  function takeFile(file) {
+    resetUpload(); if (!file) return;
+    if (!/\.xlsx$/i.test(file.name)) { show($("upMsg"), "Please choose an .xlsx file. Older .xls files need to be saved as .xlsx first."); return; }
+    HubXlsx.read(file).then(function (rows) {
+      var all = readSheet(rows), ans = all.filter(function (r) { return r.compliance || r.remarks; });
+      if (!ans.length) { show($("upMsg"), "No filled rows were found. Fill in Compliance or Remarks for at least one row."); return; }
+      pending = { fileName: file.name, rows: ans, read: all.length };
+      $("pRows").textContent = all.length; $("pAns").textContent = ans.length; $("pSkip").textContent = all.length - ans.length;
+      var body = $("pRowsBody"); body.textContent = "";
+      ans.slice(0, 8).forEach(function (r) { body.appendChild(el("tr", {}, [el("td", { text: r.spec }), el("td", { text: r.compliance }), el("td", { text: r.remarks })])); });
+      $("pMore").textContent = ans.length > 8 ? "First 8 of " + ans.length + " filled rows shown." : "";
+      $("upPreview").hidden = false;
+    }, function (err) { show($("upMsg"), err.message); });
+  }
+  $("drop").addEventListener("click", function () { $("file").click(); });
+  $("drop").addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+  $("drop").addEventListener("dragover", function (e) { e.preventDefault(); $("drop").classList.add("over"); });
+  $("drop").addEventListener("dragleave", function () { $("drop").classList.remove("over"); });
+  $("drop").addEventListener("drop", function (e) { e.preventDefault(); $("drop").classList.remove("over"); takeFile(e.dataTransfer.files[0]); });
+  $("file").addEventListener("change", function (e) { takeFile(e.target.files[0]); });
+  $("btnCancel").addEventListener("click", resetUpload);
+  $("btnImport").addEventListener("click", function () {
+    if (!pending) return;
+    var btn = $("btnImport"); btn.disabled = true;
+    Api.cmAdminImport(Hub.token(), { factoryId: factoryId(), fileName: pending.fileName, rows: pending.rows }).then(function (res) {
+      btn.disabled = false; var name = pending.fileName, ignored = pending.read - pending.rows.length; resetUpload();
+      $("upResultMsg").textContent = name + " added to the library for " + scopeName() + ".";
+      $("rAdded").textContent = res.added; $("rUpdated").textContent = res.updated; $("rSame").textContent = res.unchanged; $("rSkipped").textContent = res.skipped + ignored;
+      $("upResult").hidden = false; offset = 0; loadLines();
+    }, function (err) { btn.disabled = false; show($("upMsg"), err.message); });
+  });
+
+  // ---------- runs ----------
+  function loadRuns() {
+    Api.cmAdminRuns(Hub.token(), { limit: 100 }).then(function (res) {
+      var body = $("runRows"); body.textContent = "";
+      if (!res.runs.length) body.appendChild(el("tr", {}, [el("td", { colspan: "8", "class": "muted", text: "No conversions yet." })]));
+      res.runs.forEach(function (r) {
+        var up = r.kind === "library-upload";
+        body.appendChild(el("tr", {}, [
+          el("td", { style: "white-space:nowrap", text: fmt(r.created_at) }), el("td", { text: r.user }),
+          el("td", { text: r.product }), el("td", { text: r.factory }),
+          el("td", {}, [el("span", { "class": "badge" + (up ? " brand" : ""), text: up ? "Library upload" : (r.source === "pdf" ? "PDF" : "Pasted text") }), r.file_name ? " " + r.file_name : ""]),
+          el("td", { text: String(r.line_count) }), el("td", { text: String(r.unique_count) }),
+          el("td", { text: up ? "-" : String(r.matched_count) })
+        ]));
+      });
+      $("runInfo").textContent = res.total > res.runs.length ? "Latest " + res.runs.length + " of " + res.total + " shown." : "";
+    }, fail);
+  }
+
+  // ---------- tabs ----------
+  [].forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      [].forEach.call(document.querySelectorAll(".tab"), function (t) {
+        t.setAttribute("aria-selected", t === tab ? "true" : "false");
+        $("tab-" + t.getAttribute("data-tab")).hidden = t !== tab;
+      });
+      if (tab.getAttribute("data-tab") === "runs") loadRuns();
+    });
+  });
+
+  Hub.requireLogin({ admin: true }).then(function () { return Api.cmOptions(Hub.token()); }).then(function (res) {
+    products = res.products || [];
+    var s = $("product"); s.appendChild(el("option", { value: "", text: "Choose a product" }));
+    products.forEach(function (p) { s.appendChild(el("option", { value: p.id, text: p.name })); });
+    fillFactories();
+  }, fail);
+})();
+</script>
+</body>
+</html>

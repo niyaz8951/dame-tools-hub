@@ -471,6 +471,417 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+
+-- ============================================================
+-- COMPLIANCE MAKER - master library
+--
+--   cm_products / cm_factories   what can be selected before converting
+--   cm_runs                      one row per conversion (any user) or library upload
+--   cm_run_lines                 every line of every run, in order, as converted
+--   cm_lines                     the MASTER LIBRARY: one row per unique clause per factory,
+--                                with the Compliance / Remarks an admin filled in
+--   cm_answer_log                every answer ever given to a line (who, when, from where)
+--
+-- A clause is "the same line" when its normalised text matches (lower case,
+-- punctuation and spacing ignored) for the same factory. The same clause can
+-- have a different correct answer at another factory, so answers never cross
+-- factories. Normalising is done here in the database (cm__norm) so every
+-- caller, now and later, compares text the same way.
+-- ============================================================
+
+create table if not exists public.cm_products (
+  id     text primary key,                 -- slug, e.g. 'ahu'
+  name   text not null,
+  sort   int  not null default 100,
+  active boolean not null default true
+);
+
+create table if not exists public.cm_factories (
+  id         text primary key,             -- slug, e.g. 'ahu-dubai'
+  product_id text not null references public.cm_products(id),
+  name       text not null,
+  sort       int  not null default 100,
+  active     boolean not null default true,
+  unique (product_id, name)
+);
+
+create table if not exists public.cm_runs (
+  id            uuid primary key default gen_random_uuid(),
+  kind          text not null default 'conversion' check (kind in ('conversion','library-upload')),
+  user_id       uuid references public.app_users(id) on delete set null,
+  product_id    text not null references public.cm_products(id),
+  factory_id    text not null references public.cm_factories(id),
+  source        text not null default '',  -- pdf | text | xlsx
+  file_name     text not null default '',
+  line_count    int  not null default 0,   -- rows in the run
+  unique_count  int  not null default 0,   -- distinct library lines touched
+  matched_count int  not null default 0,   -- rows filled from the library
+  created_at    timestamptz not null default now()
+);
+create index if not exists cm_runs_created_idx on public.cm_runs (created_at desc);
+
+create table if not exists public.cm_lines (
+  id            uuid primary key default gen_random_uuid(),
+  product_id    text not null references public.cm_products(id),
+  factory_id    text not null references public.cm_factories(id),
+  norm_hash     text not null,             -- md5 of norm_text: the match key
+  norm_text     text not null,
+  spec_text     text not null,             -- the clause as first seen
+  compliance    text not null default '',
+  remarks       text not null default '',
+  status        text not null default 'open' check (status in ('open','answered')),
+  times_seen    int  not null default 0,   -- number of conversions this line appeared in
+  first_run_id  uuid references public.cm_runs(id) on delete set null,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now(),
+  answered_by   uuid references public.app_users(id) on delete set null,
+  answered_at   timestamptz,
+  answer_source text not null default '',  -- admin | upload   (later: ai)
+  unique (factory_id, norm_hash)
+);
+create index if not exists cm_lines_list_idx on public.cm_lines (factory_id, status, times_seen desc);
+
+create table if not exists public.cm_run_lines (
+  run_id    uuid not null references public.cm_runs(id) on delete cascade,
+  seq       int  not null,                 -- position in the document, from 0
+  type      text not null default '',      -- part | section | letter | number | text
+  sr        text not null default '',
+  spec_text text not null default '',
+  line_id   uuid references public.cm_lines(id) on delete set null,   -- null for headings
+  primary key (run_id, seq)
+);
+create index if not exists cm_run_lines_line_idx on public.cm_run_lines (line_id);
+
+create table if not exists public.cm_answer_log (
+  id         bigint generated always as identity primary key,
+  line_id    uuid not null references public.cm_lines(id) on delete cascade,
+  compliance text not null default '',
+  remarks    text not null default '',
+  source     text not null default '',     -- admin | upload
+  run_id     uuid references public.cm_runs(id) on delete set null,
+  user_id    uuid references public.app_users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists cm_answer_log_line_idx on public.cm_answer_log (line_id, created_at desc);
+
+alter table public.cm_products   enable row level security;
+alter table public.cm_factories  enable row level security;
+alter table public.cm_runs       enable row level security;
+alter table public.cm_lines      enable row level security;
+alter table public.cm_run_lines  enable row level security;
+alter table public.cm_answer_log enable row level security;
+revoke all on public.cm_products, public.cm_factories, public.cm_runs, public.cm_lines,
+              public.cm_run_lines, public.cm_answer_log from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.cm_products, public.cm_factories, public.cm_runs, public.cm_lines,
+                  public.cm_run_lines, public.cm_answer_log from anon, authenticated;
+  end if;
+end $$;
+
+insert into public.cm_products (id, name, sort) values
+  ('ahu', 'AHU', 10), ('fcu', 'FCU', 20), ('chiller', 'Chiller', 30)
+on conflict (id) do nothing;
+
+insert into public.cm_factories (id, product_id, name, sort) values
+  ('ahu-dubai',      'ahu',     'Dubai',    10),
+  ('ahu-riyadh',     'ahu',     'Riyadh',   20),
+  ('fcu-shenzhen',   'fcu',     'Shenzhen', 10),
+  ('fcu-riyadh',     'fcu',     'Riyadh',   20),
+  ('chiller-italy',  'chiller', 'Italy',    10),
+  ('chiller-jeddah', 'chiller', 'Jeddah',   20)
+on conflict (id) do nothing;
+
+-- ---------- internal helpers ----------
+
+-- The one place text is normalised for matching.
+create or replace function public.cm__norm(t text) returns text
+language sql immutable as $$
+  select trim(regexp_replace(lower(coalesce(t, '')), '[^a-z0-9]+', ' ', 'g'));
+$$;
+
+create or replace function public.cm__factory(p_factory_id text)
+returns public.cm_factories
+language plpgsql security definer set search_path = public, extensions as $$
+declare f public.cm_factories;
+begin
+  select fa.* into f from public.cm_factories fa
+    join public.cm_products p on p.id = fa.product_id
+   where fa.id = p_factory_id and fa.active and p.active;
+  if f.id is null then perform public.app__fail('Choose a product and factory first.'); end if;
+  return f;
+end $$;
+
+-- ---------- user API ----------
+
+-- Products and their factories, for the two dropdowns.
+create or replace function public.cm_options(p_token text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__session_user(p_token);
+  return jsonb_build_object('products', coalesce((
+    select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name,
+             'factories', coalesce((
+               select jsonb_agg(jsonb_build_object('id', f.id, 'name', f.name) order by f.sort, f.name)
+                 from public.cm_factories f where f.product_id = p.id and f.active), '[]'::jsonb))
+           order by p.sort, p.name)
+      from public.cm_products p where p.active), '[]'::jsonb));
+end $$;
+
+-- Save one conversion and get back the answers the library already holds.
+--   p_lines: [{ "type": "letter", "sr": "A.", "spec": "Casing shall be ..." }, ...] in document order
+-- Every line is stored. Body lines (letter / number / text) are added to the master
+-- library once each; headings are kept with the run only.
+create or replace function public.cm_save_run(
+  p_token text, p_factory_id text, p_source text, p_file_name text, p_lines jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users;
+  f public.cm_factories;
+  v_run uuid;
+  v_lines int; v_unique int; v_matched int;
+  v_answers jsonb;
+begin
+  u := public.app__session_user(p_token);
+  f := public.cm__factory(p_factory_id);
+  if p_lines is null or jsonb_typeof(p_lines) <> 'array' or jsonb_array_length(p_lines) = 0 then
+    perform public.app__fail('There are no lines to save.');
+  end if;
+  if jsonb_array_length(p_lines) > 8000 then
+    perform public.app__fail('This specification is too long to save in one go (more than 8000 lines).');
+  end if;
+
+  insert into public.cm_runs (kind, user_id, product_id, factory_id, source, file_name)
+  values ('conversion', u.id, f.product_id, f.id,
+          case when p_source in ('pdf','text') then p_source else '' end,
+          left(coalesce(p_file_name, ''), 200))
+  returning id into v_run;
+
+  with src as (
+    select (e.ord - 1)::int as seq,
+           left(coalesce(e.val->>'type', ''), 12) as type,
+           left(coalesce(e.val->>'sr', ''), 40)   as sr,
+           left(coalesce(e.val->>'spec', ''), 6000) as spec
+      from jsonb_array_elements(p_lines) with ordinality as e(val, ord)
+  ), body as (
+    select seq, spec, public.cm__norm(spec) as norm
+      from src where type in ('letter','number','text')
+  ), uniq as (
+    select distinct on (norm) norm, spec from body where length(norm) >= 8 order by norm, seq
+  ), up as (
+    insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, first_run_id, times_seen)
+    select f.product_id, f.id, md5(q.norm), q.norm, q.spec, v_run, 1 from uniq q
+    on conflict (factory_id, norm_hash) do update
+       set times_seen = public.cm_lines.times_seen + 1, last_seen_at = now()
+    returning id, norm_hash
+  )
+  insert into public.cm_run_lines (run_id, seq, type, sr, spec_text, line_id)
+  select v_run, s.seq, s.type, s.sr, s.spec, up.id
+    from src s
+    left join body b on b.seq = s.seq
+    left join up on up.norm_hash = md5(b.norm);
+
+  select count(*), count(distinct rl.line_id),
+         count(*) filter (where l.status = 'answered'),
+         coalesce(jsonb_agg(jsonb_build_object('i', rl.seq, 'compliance', l.compliance, 'remarks', l.remarks)
+                            order by rl.seq) filter (where l.status = 'answered'), '[]'::jsonb)
+    into v_lines, v_unique, v_matched, v_answers
+    from public.cm_run_lines rl
+    left join public.cm_lines l on l.id = rl.line_id
+   where rl.run_id = v_run;
+
+  update public.cm_runs set line_count = v_lines, unique_count = v_unique, matched_count = v_matched
+   where id = v_run;
+
+  return jsonb_build_object('ok', true, 'run_id', v_run, 'lines', v_lines,
+                            'unique_lines', v_unique, 'matched', v_matched, 'answers', v_answers);
+end $$;
+
+-- ---------- admin API ----------
+
+-- One page of the library for a factory, unanswered and most-seen first.
+create or replace function public.cm_admin_lines(
+  p_token text, p_factory_id text, p_status text default 'open',
+  p_search text default '', p_limit int default 50, p_offset int default 0)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  f public.cm_factories;
+  v_like text := '%' || replace(replace(replace(trim(coalesce(p_search, '')), '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  v_limit int := least(greatest(coalesce(p_limit, 50), 1), 200);
+begin
+  perform public.app__require_admin(p_token);
+  f := public.cm__factory(p_factory_id);
+  return jsonb_build_object(
+    'counts', (select jsonb_build_object('all', count(*),
+                        'open', count(*) filter (where status = 'open'),
+                        'answered', count(*) filter (where status = 'answered'))
+                 from public.cm_lines where factory_id = f.id),
+    'total', (select count(*) from public.cm_lines l
+               where l.factory_id = f.id
+                 and (p_status = 'all' or l.status = p_status)
+                 and l.spec_text ilike v_like),
+    'lines', coalesce((
+      select jsonb_agg(x.j order by x.rn) from (
+        select row_number() over (order by (l.status = 'open') desc, l.times_seen desc, l.last_seen_at desc, l.id) as rn,
+               jsonb_build_object('id', l.id, 'spec_text', l.spec_text, 'compliance', l.compliance,
+                 'remarks', l.remarks, 'status', l.status, 'times_seen', l.times_seen,
+                 'last_seen_at', l.last_seen_at, 'answered_at', l.answered_at,
+                 'answer_source', l.answer_source,
+                 'answered_by', (select au.full_name from public.app_users au where au.id = l.answered_by)) as j
+          from public.cm_lines l
+         where l.factory_id = f.id
+           and (p_status = 'all' or l.status = p_status)
+           and l.spec_text ilike v_like
+         order by (l.status = 'open') desc, l.times_seen desc, l.last_seen_at desc, l.id
+         limit v_limit offset greatest(coalesce(p_offset, 0), 0)
+      ) x), '[]'::jsonb));
+end $$;
+
+-- Fill in (or clear) the answer for one library line.
+create or replace function public.cm_admin_save_answer(
+  p_token text, p_line_id uuid, p_compliance text, p_remarks text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  a public.app_users;
+  v_c text := left(trim(coalesce(p_compliance, '')), 200);
+  v_r text := left(trim(coalesce(p_remarks, '')), 4000);
+  l public.cm_lines;
+begin
+  a := public.app__require_admin(p_token);
+  update public.cm_lines
+     set compliance = v_c, remarks = v_r,
+         status = case when v_c <> '' or v_r <> '' then 'answered' else 'open' end,
+         answered_by = a.id, answered_at = now(), answer_source = 'admin'
+   where id = p_line_id
+   returning * into l;
+  if l.id is null then perform public.app__fail('That line no longer exists.'); end if;
+  insert into public.cm_answer_log (line_id, compliance, remarks, source, user_id)
+  values (l.id, v_c, v_r, 'admin', a.id);
+  return jsonb_build_object('ok', true, 'status', l.status);
+end $$;
+
+create or replace function public.cm_admin_delete_line(p_token text, p_line_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__require_admin(p_token);
+  delete from public.cm_lines where id = p_line_id;
+  if not found then perform public.app__fail('That line no longer exists.'); end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Load a filled compliance sheet into the library.
+--   p_rows: [{ "spec": "...", "compliance": "Comply", "remarks": "..." }, ...]
+-- Only rows that carry an answer are taken. Each distinct clause becomes (or updates)
+-- one library line; when the same clause appears twice in the file the last one wins.
+create or replace function public.cm_admin_import(
+  p_token text, p_factory_id text, p_file_name text, p_rows jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  a public.app_users;
+  f public.cm_factories;
+  v_run uuid;
+  v_total int; v_unique int; v_added int; v_updated int;
+begin
+  a := public.app__require_admin(p_token);
+  f := public.cm__factory(p_factory_id);
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) = 0 then
+    perform public.app__fail('No rows were found in that file.');
+  end if;
+  v_total := jsonb_array_length(p_rows);
+  if v_total > 20000 then perform public.app__fail('That file has more than 20000 rows. Split it and upload in parts.'); end if;
+
+  insert into public.cm_runs (kind, user_id, product_id, factory_id, source, file_name, line_count)
+  values ('library-upload', a.id, f.product_id, f.id, 'xlsx', left(coalesce(p_file_name, ''), 200), v_total)
+  returning id into v_run;
+
+  with src as (
+    select e.ord,
+           left(coalesce(e.val->>'spec', ''), 6000) as spec,
+           left(trim(coalesce(e.val->>'compliance', '')), 200) as c,
+           left(trim(coalesce(e.val->>'remarks', '')), 4000)   as r
+      from jsonb_array_elements(p_rows) with ordinality as e(val, ord)
+  ), uniq as (
+    select distinct on (public.cm__norm(spec)) public.cm__norm(spec) as norm, trim(spec) as spec, c, r
+      from src
+     where (c <> '' or r <> '') and length(public.cm__norm(spec)) >= 8
+     order by public.cm__norm(spec), ord desc
+  ), old as (
+    select l.norm_hash from public.cm_lines l
+     where l.factory_id = f.id and l.norm_hash in (select md5(norm) from uniq)
+  ), up as (
+    insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, compliance, remarks,
+                                 status, first_run_id, answered_by, answered_at, answer_source, times_seen)
+    select f.product_id, f.id, md5(q.norm), q.norm, q.spec, q.c, q.r, 'answered', v_run, a.id, now(), 'upload', 0
+      from uniq q
+    on conflict (factory_id, norm_hash) do update
+       set compliance = excluded.compliance, remarks = excluded.remarks, status = 'answered',
+           answered_by = excluded.answered_by, answered_at = now(), answer_source = 'upload'
+     where public.cm_lines.compliance is distinct from excluded.compliance
+        or public.cm_lines.remarks    is distinct from excluded.remarks
+    returning id, norm_hash, compliance, remarks
+  ), logged as (
+    insert into public.cm_answer_log (line_id, compliance, remarks, source, run_id, user_id)
+    select id, compliance, remarks, 'upload', v_run, a.id from up
+    returning 1
+  )
+  select (select count(*) from uniq),
+         (select count(*) from up where norm_hash not in (select norm_hash from old)),
+         (select count(*) from up where norm_hash in (select norm_hash from old)),
+         (select count(*) from logged)
+    into v_unique, v_added, v_updated, v_total;   -- last value only forces the log insert to run
+
+  v_total := jsonb_array_length(p_rows);
+  update public.cm_runs set unique_count = v_unique, matched_count = v_added + v_updated where id = v_run;
+  return jsonb_build_object('ok', true, 'rows', v_total, 'unique_lines', v_unique,
+                            'added', v_added, 'updated', v_updated,
+                            'unchanged', v_unique - v_added - v_updated,
+                            'skipped', v_total - v_unique);
+end $$;
+
+-- Recent conversions and uploads, newest first.
+create or replace function public.cm_admin_runs(p_token text, p_limit int default 50, p_offset int default 0)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__require_admin(p_token);
+  return jsonb_build_object(
+    'total', (select count(*) from public.cm_runs),
+    'runs', coalesce((
+      select jsonb_agg(x.j order by x.created_at desc) from (
+        select r.created_at, jsonb_build_object('id', r.id, 'kind', r.kind, 'created_at', r.created_at,
+                 'user', coalesce(au.full_name, '(deleted user)'), 'username', coalesce(au.username, ''),
+                 'product', p.name, 'factory', fa.name, 'source', r.source, 'file_name', r.file_name,
+                 'line_count', r.line_count, 'unique_count', r.unique_count, 'matched_count', r.matched_count) as j
+          from public.cm_runs r
+          join public.cm_products p on p.id = r.product_id
+          join public.cm_factories fa on fa.id = r.factory_id
+          left join public.app_users au on au.id = r.user_id
+         order by r.created_at desc
+         limit least(greatest(coalesce(p_limit, 50), 1), 200) offset greatest(coalesce(p_offset, 0), 0)
+      ) x), '[]'::jsonb));
+end $$;
+
+-- Everything answered for a factory, for the "Download library" button.
+create or replace function public.cm_admin_export(p_token text, p_factory_id text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare f public.cm_factories;
+begin
+  perform public.app__require_admin(p_token);
+  f := public.cm__factory(p_factory_id);
+  return jsonb_build_object('lines', coalesce((
+    select jsonb_agg(jsonb_build_object('spec_text', l.spec_text, 'compliance', l.compliance,
+                                        'remarks', l.remarks, 'times_seen', l.times_seen)
+                     order by (l.status = 'open') desc, l.times_seen desc, l.spec_text)
+      from public.cm_lines l where l.factory_id = f.id), '[]'::jsonb));
+end $$;
+
 -- ---------- first admin (SQL Editor only, never from the website) ----------
 -- After running this file, create your own admin ONCE with:
 --     select public.app_bootstrap_admin('your.username', 'Your Full Name', 'a-strong-password');
@@ -496,12 +907,12 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and p.proname like 'app\_%'
+     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%')
   loop
     execute format('revoke all on function %s from public', f.sig);
     if has_anon then
       execute format('revoke all on function %s from anon, authenticated', f.sig);
-      if f.proname not like 'app\_\_%' and f.proname <> 'app_bootstrap_admin' then
+      if f.proname not like '%\_\_%' and f.proname <> 'app_bootstrap_admin' then
         execute format('grant execute on function %s to anon, authenticated', f.sig);
       end if;
     end if;

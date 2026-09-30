@@ -37,7 +37,7 @@ Demo data lives in your browser only and is not secure. It is for looking around
 ## Updating a site that is already live
 
 1. Replace the files in the GitHub repository with this folder. `assets/js/config.js` here already contains your database settings.
-2. In the Supabase SQL Editor run the whole of `db/schema.sql` again (it keeps your users and access), then run the dated update file, currently `db/2026-09-30-update.sql`.
+2. In the Supabase SQL Editor run the whole of `db/schema.sql` again. It keeps your users, access and library, and adds anything new. If the update also came with a new dated file in `db/`, run that afterwards (`db/2026-09-30-update.sql` only needs running once).
 3. Hard-refresh the browser (Ctrl+F5) so the new styles load.
 
 ## Add a new tool
@@ -70,10 +70,12 @@ assets/js/config.js   the only file with settings
 assets/js/api.js      all database calls
 assets/js/hub.js      session, access guard, top bar, theme toggle
 assets/js/legacy-tools.js  TN.* helpers for tools brought from Quicktools
+assets/js/xlsx-lite.js  small Excel reader/writer for native pages
 assets/vendor/pdfjs/  pdf.js, served locally (no CDN)
 data/                 shared data files (highlight rules)
 tools/_template/      starting point for every tool
 tools/<tool-id>/      one folder per tool
+tools/compliance-maker/library.html  admin: master compliance library
 db/schema.sql         database tables and functions
 db/<date>-*.sql       one-off updates for a live database
 ```

@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="../../assets/css/shell.css">
   <link rel="stylesheet" href="../../assets/css/legacy-tools.css">
   <title>Compliance Maker - DAME Tools Hub</title>
-  <meta name="description" content="Turn a specification PDF into a ready-to-fill compliance matrix in Excel. Runs entirely in your browser.">
+  <meta name="description" content="Turn a specification PDF into a ready-to-fill compliance matrix in Excel, filled from the compliance library where lines were answered before.">
 
   <style>
     /* Tool-scoped only. Anything reusable belongs in global.css. */
@@ -80,7 +80,9 @@
     .hl-redbold { color: #e0432f; font-weight: 700; }
     .hl-underline { text-decoration: underline; }
     .hl-colon { color: #a24a0e; font-weight: 700; }
+    #panel-scope, #panel-input { margin-bottom: var(--space-4); }
     .col-empty { background: var(--color-surface); }
+    .col-filled { background: color-mix(in srgb, var(--color-success) 14%, var(--color-surface)); font-size: 0.8125rem; }
 
     /* Dark mode: only the hardcoded preview colours need lifting. The tokens
        themselves already follow :root[data-theme] from global.css. */
@@ -109,7 +111,7 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header id="topbar"></header>
-  <script>Hub.requireLogin({ tool: "compliance-maker" });</script>
+  <script>window.hubReady = Hub.requireLogin({ tool: "compliance-maker" });</script>
 
   <main id="main" class="wrap">
     <p class="hub-back"><a href="../../dashboard.html#general">&larr; General</a></p>
@@ -117,13 +119,33 @@
       <p class="eyebrow">Tools</p>
       <h1>Compliance Maker</h1>
       <p class="page-head__lede">Specification to compliance matrix</p>
-      <p>Upload a specification PDF or paste the text. Section labels are detected
-         automatically, the clauses go into Specifications, and Compliance and Remarks
-         are left ready to fill in. Everything runs in your browser — nothing is uploaded.</p>
+      <p>Choose the product and factory, then upload a specification PDF or paste the text.
+         Section labels are detected automatically and the clauses go into Specifications.
+         Lines that were answered before are filled in from the compliance library.</p>
     </div>
 
+    <!-- 1 — Product and factory. Nothing else is shown until both are chosen. -->
+    <section class="panel" id="panel-scope" aria-labelledby="step-scope">
+      <div class="panel__head">
+        <h2 id="step-scope">Product and factory</h2>
+        <a class="btn btn--ghost btn--sm" id="lib-manage" href="library.html" hidden>Manage library</a>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="cm-product">Product</label>
+          <select id="cm-product" disabled><option value="">Loading…</option></select>
+        </div>
+        <div class="field">
+          <label for="cm-factory">Factory</label>
+          <select id="cm-factory" disabled><option value="">Choose a product first</option></select>
+        </div>
+      </div>
+      <p class="hint" id="cm-scope-hint">Choose both to continue. Answers are kept separately for each factory.</p>
+      <p class="hint">Each conversion is saved to the company compliance library: the clause text, the product and factory, your name and the time. The PDF file itself is read in your browser and is not uploaded.</p>
+    </section>
+
     <!-- 1 — Specification -->
-    <section class="panel" id="panel-input" aria-labelledby="step-upload">
+    <section class="panel" id="panel-input" aria-labelledby="step-upload" hidden>
       <div class="panel__head">
         <h2 id="step-upload">Specification</h2>
       </div>
@@ -141,7 +163,7 @@
             </svg>
           </div>
           <p class="dropzone__title">Choose a PDF or drop it here</p>
-          <p class="dropzone__hint">Text-based PDFs only · no scanned images · processed entirely in your browser</p>
+          <p class="dropzone__hint">Text-based PDFs only · no scanned images · the file is read in your browser</p>
         </div>
         <input type="file" id="file-input" accept="application/pdf,.pdf" class="sr-only">
       </div>
@@ -191,7 +213,7 @@
     </section>
 
     <!-- 2 — Formatting -->
-    <section class="panel" id="panel-format" aria-labelledby="step-options">
+    <section class="panel" id="panel-format" aria-labelledby="step-options" hidden>
       <div class="panel__head"><h2 id="step-options">Formatting</h2></div>
 
       <div class="toggle-row">
@@ -241,6 +263,7 @@ starters</textarea>
         </div>
       </div>
 
+      <p id="lib-note" class="status" role="status" aria-live="polite" style="margin-bottom:var(--space-2)"></p>
       <div class="table-wrap">
         <table class="preview" id="preview">
           <thead>
@@ -277,6 +300,7 @@ starters</textarea>
   <script src="../../assets/js/legacy-tools.js"></script>
   <script src="../../assets/js/reflow.js"></script>
   <script src="xlsx-writer.js"></script>
+  <script src="cm-library.js"></script>
   <script src="compliance-maker.js"></script>
 </body>
 </html>

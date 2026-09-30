@@ -49,6 +49,21 @@ Compliance Maker, Coil Data Extractor, Container Calculator and Centre of Gravit
 - Use `Hub.avatar(user, size)` wherever a person is shown.
 - The site should feel pleasant to use: instant feedback on every action (toast or inline message), disabled Save until something changed, no dead ends.
 
+## 2d. Compliance Maker and the master compliance library
+
+Goal: collect every specification line the company meets, answer each one once, and reuse the answer. Exact matching now; the data is kept in a shape that AI can be added to later.
+
+- The user must choose **Product** and **Factory** before upload/paste appears. Products and factories live in `cm_products` / `cm_factories` (AHU: Dubai, Riyadh. FCU: Shenzhen, Riyadh. Chiller: Italy, Jeddah).
+- **Every conversion by any user is saved**: `cm_runs` (who, when, product, factory, source, counts) and `cm_run_lines` (every row in order, as converted). The PDF file is not uploaded, only the clause text.
+- **Master library** `cm_lines`: one row per unique clause per factory, with Compliance, Remarks, status (open / answered), times seen, who answered and how (admin / upload). Answers never cross factories.
+- A clause is the same line when its normalised text matches: lower case, punctuation and spacing ignored. Normalising happens only in the database function `cm__norm`. Do not re-implement it elsewhere (the demo back end mirrors it).
+- Only body rows (letter / number / text, 8+ characters after normalising) enter the library. Headings stay with the run.
+- On conversion, answered lines come back filled in the preview and the Excel (Comments: "From library (exact match)").
+- Admins work in `tools/compliance-maker/library.html`: fill answers line by line (auto-save), upload a filled Excel (Specifications / Compliance / Remarks columns; only filled rows are taken, each clause once, a newer answer replaces the old one), download the library, see conversion history.
+- Every answer ever given is kept in `cm_answer_log`. Never delete from it; it is the audit trail and the future training data.
+- Users must be told on the page that conversions are saved. Never describe the tool as "nothing is uploaded".
+- Later steps (not built yet, keep the door open): near-match suggestions, AI-drafted answers stored with `answer_source = 'ai'` and shown as unverified until an admin confirms. AI output must never overwrite an admin answer.
+
 ## 3. Theme
 
 Daikin colours with day and night mode. Never hard-code a colour in a tool; use the variables.

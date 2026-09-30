@@ -388,7 +388,7 @@
   function renderPreview(rows) {
     var re = buildHighlighter();
     previewBody.innerHTML = '';
-    var blanks = 0;
+    var blanks = 0, filledRows = 0;
 
     rows.forEach(function (r) {
       var tr = document.createElement('tr');
@@ -421,10 +421,13 @@
 
       // Compliance and Remarks are always the engineer's to fill in.
       var isBody = (r.type === 'letter' || r.type === 'number' || r.type === 'text');
-      if (isBody) blanks++;
-      [0, 1].forEach(function () {
+      if (isBody && !(r.compliance || r.remarks)) blanks++;
+      if (isBody && (r.compliance || r.remarks)) filledRows++;
+      // Filled from the master library when this line was answered before.
+      [r.compliance, r.remarks].forEach(function (val) {
         var td = document.createElement('td');
-        td.className = 'col-empty';
+        td.className = val ? 'col-filled' : 'col-empty';
+        if (val) td.textContent = val;
         tr.appendChild(td);
       });
 
@@ -437,6 +440,7 @@
     });
 
     countNote.textContent = rows.length + ' rows' +
+      (filledRows ? ' · ' + filledRows + ' filled from the library' : '') +
       (blanks ? ' · ' + blanks + ' to fill in' : '') + '.';
     resultPanel.hidden = false;
     btnDownload.disabled = rows.length === 0;
@@ -473,6 +477,42 @@
     currentRows = rows;
     renderPreview(rows);
     setStatus(baseMsg + '.', 'ok');
+    saveToLibrary(rows);
+  }
+
+  /* DAME Tools Hub: every conversion is saved to the master compliance
+     library (cm-library.js), and lines the library already has an answer for
+     come back filled in. The preview is shown first so a slow or failed save
+     never blocks the user from their matrix. */
+  var libNote = document.getElementById('lib-note');
+  function setLibNote(msg, kind) {
+    if (!libNote) return;
+    libNote.textContent = msg || '';
+    libNote.className = 'status' + (kind ? ' status--' + kind : '');
+  }
+  function saveToLibrary(rows) {
+    var lib = window.CMLibrary;
+    if (!lib) return;
+    setLibNote('Saving to the compliance library…');
+    lib.saveRun(rows, activeSource, activeSource === 'pdf' && pendingFile ? pendingFile.name : '')
+      .then(function (res) {
+        if (currentRows !== rows) return;          // cleared or converted again meanwhile
+        (res.answers || []).forEach(function (a) {
+          var r = rows[a.i];
+          if (!r) return;
+          r.compliance = a.compliance || '';
+          r.remarks = a.remarks || '';
+          r.auto = { type: 'exact' };
+        });
+        renderPreview(rows);
+        setLibNote('Saved to the compliance library. ' +
+          (res.matched ? res.matched + ' of ' + rows.length + ' rows filled from earlier answers.'
+                       : 'No earlier answers matched these lines yet.'), 'ok');
+      }, function (err) {
+        if (currentRows !== rows) return;
+        setLibNote('Not saved to the compliance library: ' + (err && err.message ? err.message : err) +
+          ' You can still download. Press Convert to try saving again.', 'error');
+      });
   }
 
   // Selecting a file only STORES it. Nothing is parsed until Convert.
@@ -629,6 +669,7 @@
     resultPanel.hidden = true;
     btnDownload.disabled = true;
     setStatus('');
+    setLibNote('');
     refreshConvertState();
   }
 
@@ -669,6 +710,7 @@
     resultPanel.hidden = true;
     btnDownload.disabled = true;
     setStatus('');
+    setLibNote('');
     refreshConvertState();
   }
 
@@ -698,7 +740,9 @@
   btnDownload.addEventListener('click', function () {
     if (!currentRows) return;
     var re = buildHighlighter();
-    var blob = window.xlsxWriter.build(currentRows, re, splitRuns, { bandText: '' });
+    var sel = window.CMLibrary && window.CMLibrary.selection();
+    var band = sel ? 'Product : ' + sel.productName + '     Factory : ' + sel.factoryName : '';
+    var blob = window.xlsxWriter.build(currentRows, re, splitRuns, { bandText: band });
     downloadBlob(blob, currentName + '.xlsx');
   });
 

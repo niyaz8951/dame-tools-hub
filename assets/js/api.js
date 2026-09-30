@@ -46,11 +46,20 @@
     adminResetPassword: function (t, id, pw) { return rpc("app_admin_reset_password", { p_token: t, p_user_id: id, p_new_password: pw }); },
     adminDeleteUser: function (t, id) { return rpc("app_admin_delete_user", { p_token: t, p_user_id: id }); },
     adminSaveTool: function (t, d) { return rpc("app_admin_save_tool", { p_token: t, p_id: d.id, p_category_id: d.category_id, p_name: d.name, p_description: d.description, p_path: d.path, p_status: d.status, p_sort: d.sort }); },
+    // Compliance Maker library
+    cmOptions: function (t) { return rpc("cm_options", { p_token: t }); },
+    cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines }); },
+    cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 50, p_offset: d.offset || 0 }); },
+    cmAdminSaveAnswer: function (t, id, c, r) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r }); },
+    cmAdminDeleteLine: function (t, id) { return rpc("cm_admin_delete_line", { p_token: t, p_line_id: id }); },
+    cmAdminImport: function (t, d) { return rpc("cm_admin_import", { p_token: t, p_factory_id: d.factoryId, p_file_name: d.fileName || "", p_rows: d.rows }); },
+    cmAdminRuns: function (t, d) { return rpc("cm_admin_runs", { p_token: t, p_limit: (d && d.limit) || 50, p_offset: (d && d.offset) || 0 }); },
+    cmAdminExport: function (t, factoryId) { return rpc("cm_admin_export", { p_token: t, p_factory_id: factoryId }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v3", mem = null;
+  var KEY = "dame_hub_demo_db_v4", mem = null;
   function seed() {
     return {
       users: [
@@ -69,13 +78,23 @@
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
         { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 }
       ],
-      sessions: {}
+      sessions: {},
+      cm: {
+        products: [
+          { id: "ahu", name: "AHU", factories: [{ id: "ahu-dubai", name: "Dubai" }, { id: "ahu-riyadh", name: "Riyadh" }] },
+          { id: "fcu", name: "FCU", factories: [{ id: "fcu-shenzhen", name: "Shenzhen" }, { id: "fcu-riyadh", name: "Riyadh" }] },
+          { id: "chiller", name: "Chiller", factories: [{ id: "chiller-italy", name: "Italy" }, { id: "chiller-jeddah", name: "Jeddah" }] }
+        ],
+        lines: [], runs: []
+      }
     };
   }
   function load() {
-    if (mem) return mem;
-    try { mem = JSON.parse(localStorage.getItem(KEY)); } catch (e) { mem = null; }
-    if (!mem || !mem.users) mem = seed();
+    // Re-read every time so two tabs (for example a user and an admin) see each other's changes.
+    var stored = null;
+    try { stored = JSON.parse(localStorage.getItem(KEY)); } catch (e) { stored = null; }
+    if (stored && stored.users && stored.cm) mem = stored;
+    if (!mem) mem = seed();
     return mem;
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) { /* memory only */ } }
@@ -101,6 +120,13 @@
         };
       })
     };
+  }
+  function cmNorm(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+  function cmFactory(db, id) {
+    var out = null;
+    db.cm.products.forEach(function (p) { p.factories.forEach(function (f) { if (f.id === id) out = { id: f.id, name: f.name, product: p.name }; }); });
+    if (!out) fail("Choose a product and factory first.");
+    return out;
   }
   function checkPw(p) { if (!p || p.length < 8) fail("Password must be at least 8 characters."); }
   function demo(fn) {
@@ -179,6 +205,60 @@
       if ((d.name || "").trim().length < 2) fail("Tool name is required.");
       if (d.path && !/^tools\/[a-z0-9-]+\/$/.test(d.path)) fail("Path must look like tools/my-tool/");
       db.tools = db.tools.filter(function (x) { return x.id !== d.id; }); db.tools.push(d); return { ok: true };
+    }),
+    // ---- Compliance Maker library (same rules as db/schema.sql) ----
+    cmOptions: demo(function (db, t) { sessionUser(db, t); return { products: db.cm.products }; }),
+    cmSaveRun: demo(function (db, t, d) {
+      var u = sessionUser(db, t), f = cmFactory(db, d.factoryId), seen = {}, answers = [], matched = 0;
+      if (!d.lines || !d.lines.length) fail("There are no lines to save.");
+      d.lines.forEach(function (ln, i) {
+        if (["letter", "number", "text"].indexOf(ln.type) < 0) return;
+        var n = cmNorm(ln.spec); if (n.length < 8) return;
+        var line = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === n; })[0];
+        if (!line) { line = { id: "l" + Date.now() + "_" + i, factory_id: f.id, norm_text: n, spec_text: ln.spec, compliance: "", remarks: "", status: "open", times_seen: 0, last_seen_at: "", answered_at: null, answered_by: null, answer_source: "" }; db.cm.lines.push(line); }
+        if (!seen[n]) { seen[n] = 1; line.times_seen++; line.last_seen_at = new Date().toISOString(); }
+        if (line.status === "answered") { matched++; answers.push({ i: i, compliance: line.compliance, remarks: line.remarks }); }
+      });
+      var run = { id: "r" + Date.now(), kind: "conversion", created_at: new Date().toISOString(), user: u.full_name, username: u.username, product: f.product, factory: f.name, source: d.source, file_name: d.fileName || "", line_count: d.lines.length, unique_count: Object.keys(seen).length, matched_count: matched };
+      db.cm.runs.unshift(run);
+      return { ok: true, run_id: run.id, lines: d.lines.length, unique_lines: run.unique_count, matched: matched, answers: answers };
+    }),
+    cmAdminLines: demo(function (db, t, d) {
+      admin(db, t); var f = cmFactory(db, d.factoryId), q = (d.search || "").trim().toLowerCase(), st = d.status || "open";
+      var all = db.cm.lines.filter(function (x) { return x.factory_id === f.id; });
+      var list = all.filter(function (x) { return (st === "all" || x.status === st) && x.spec_text.toLowerCase().indexOf(q) >= 0; })
+        .sort(function (a, b) { return (b.status === "open") - (a.status === "open") || b.times_seen - a.times_seen; });
+      var off = d.offset || 0;
+      return { counts: { all: all.length, open: all.filter(function (x) { return x.status === "open"; }).length, answered: all.filter(function (x) { return x.status === "answered"; }).length },
+               total: list.length, lines: list.slice(off, off + (d.limit || 50)) };
+    }),
+    cmAdminSaveAnswer: demo(function (db, t, id, c, r) {
+      var a = admin(db, t), l = db.cm.lines.filter(function (x) { return x.id === id; })[0]; if (!l) fail("That line no longer exists.");
+      l.compliance = (c || "").trim(); l.remarks = (r || "").trim(); l.status = (l.compliance || l.remarks) ? "answered" : "open";
+      l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "admin";
+      return { ok: true, status: l.status };
+    }),
+    cmAdminDeleteLine: demo(function (db, t, id) { admin(db, t); db.cm.lines = db.cm.lines.filter(function (x) { return x.id !== id; }); return { ok: true }; }),
+    cmAdminImport: demo(function (db, t, d) {
+      var a = admin(db, t), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, n = 0;
+      if (!d.rows || !d.rows.length) fail("No rows were found in that file.");
+      d.rows.forEach(function (row) {
+        var c = (row.compliance || "").trim(), r = (row.remarks || "").trim(), k = cmNorm(row.spec);
+        if ((c || r) && k.length >= 8) uniq[k] = { spec: String(row.spec).trim(), c: c, r: r };
+      });
+      Object.keys(uniq).forEach(function (k) {
+        n++; var v = uniq[k], l = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === k; })[0];
+        if (!l) { added++; l = { id: "l" + Date.now() + "_" + n, factory_id: f.id, norm_text: k, spec_text: v.spec, times_seen: 0, last_seen_at: "" }; db.cm.lines.push(l); }
+        else if (l.compliance !== v.c || l.remarks !== v.r) updated++; else return;
+        l.compliance = v.c; l.remarks = v.r; l.status = "answered"; l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "upload";
+      });
+      db.cm.runs.unshift({ id: "r" + Date.now(), kind: "library-upload", created_at: new Date().toISOString(), user: a.full_name, username: a.username, product: f.product, factory: f.name, source: "xlsx", file_name: d.fileName || "", line_count: d.rows.length, unique_count: n, matched_count: added + updated });
+      return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, unchanged: n - added - updated, skipped: d.rows.length - n };
+    }),
+    cmAdminRuns: demo(function (db, t) { admin(db, t); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
+    cmAdminExport: demo(function (db, t, factoryId) {
+      admin(db, t); var f = cmFactory(db, factoryId);
+      return { lines: db.cm.lines.filter(function (x) { return x.factory_id === f.id; }) };
     }),
     adminSaveCategory: demo(function (db, t, d) {
       admin(db, t);
