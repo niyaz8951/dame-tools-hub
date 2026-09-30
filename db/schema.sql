@@ -247,7 +247,8 @@ begin
   end if;
 
   v_token := encode(gen_random_bytes(32), 'hex');
-  delete from public.app_sessions where expires_at < now();
+  -- One session per user: signing in ends this user's earlier session (another PC or browser).
+  delete from public.app_sessions where expires_at < now() or user_id = u.id;
   insert into public.app_sessions (token_hash, user_id, expires_at)
   values (encode(digest(v_token, 'sha256'), 'hex'), u.id, now() + interval '12 hours');
   update public.app_users

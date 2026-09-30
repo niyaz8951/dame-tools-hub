@@ -161,6 +161,7 @@
       if (u.status === "pending") fail("Your account is waiting for admin approval.");
       if (u.status !== "approved") fail("This account is not active. Please contact the admin.");
       var token = "demo-" + Math.random().toString(36).slice(2) + Date.now();
+      Object.keys(db.sessions).forEach(function (k) { if (db.sessions[k] === u.id) delete db.sessions[k]; });   // one session per user
       db.sessions[token] = u.id; u.last_login_at = new Date().toISOString();
       var p = profile(db, u); p.ok = true; p.token = token; return p;
     }),

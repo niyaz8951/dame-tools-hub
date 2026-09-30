@@ -62,8 +62,36 @@
   function go(path) { window.location.href = url(path); }
 
   // ---------- session ----------
-  function token() { return sget(sessionStorage, TOKEN_KEY); }
-  function setToken(t) { sset(sessionStorage, TOKEN_KEY, t); }
+  // One session per user. The sign-in is kept in localStorage so every tab of this browser
+  // shares it; signing in anywhere else ends it (the database keeps one session per user).
+  var SIGNED_OUT = "You were signed out. This account signed in somewhere else, or the session ended.";
+  function token() { return sget(localStorage, TOKEN_KEY); }
+  function setToken(t) { sset(localStorage, TOKEN_KEY, t); sset(sessionStorage, TOKEN_KEY, null); }
+  function onLoginPage() { var here = window.location.href.split(/[?#]/)[0]; return here === url("index.html") || here === url(""); }
+  function expired() {
+    setToken(null);
+    if (onLoginPage()) return;
+    sset(sessionStorage, "dame_hub_msg", SIGNED_OUT);
+    go("index.html");
+  }
+  // Another tab signed out or signed in: this tab follows.
+  window.addEventListener("storage", function (e) {
+    if (e.key !== TOKEN_KEY || e.newValue === e.oldValue || leaving) return;
+    if (!e.newValue) { if (!onLoginPage()) go("index.html"); }
+    else window.location.reload();
+  });
+  // Any database call that finds the session ended sends the user to the sign-in page
+  // instead of showing a raw error in the middle of a tool.
+  Object.keys(window.Api || {}).forEach(function (name) {
+    var fn = window.Api[name];
+    if (typeof fn !== "function" || name === "login" || name === "register") return;
+    window.Api[name] = function () {
+      return fn.apply(window.Api, arguments).then(null, function (err) {
+        if (err && err.message === "SESSION_EXPIRED" && !leaving) { expired(); return new Promise(function () {}); }
+        throw err;
+      });
+    };
+  });
   function logout() {
     var t = token(); setToken(null);
     var done = function () { go("index.html"); };
@@ -93,11 +121,7 @@
     }, function (err) {
       // Leaving the page cancels the check. That is not a sign-out.
       if (leaving) return new Promise(function () {});
-      if (err && err.message === "SESSION_EXPIRED") {
-        setToken(null);
-        go("index.html");
-        return new Promise(function () {});
-      }
+      if (err && err.message === "SESSION_EXPIRED") { expired(); return new Promise(function () {}); }
       // Network or database problem: keep the session, keep the page hidden, offer a retry.
       showBlocked((err && err.message) || "Cannot reach the database.");
       return new Promise(function () {});

@@ -8,6 +8,7 @@ Follow this for every page and tool so the site stays consistent.
 - Stack: vanilla HTML, CSS, JS. No framework, no build step, no CDN or web-font dependencies (office network may block them).
 - Database: Supabase PostgreSQL, reached only through `app_*` functions in `db/schema.sql`. Tables stay closed to the anon key (RLS on, no policies).
 - Login: username + password only. No email anywhere. New users are Pending until an admin approves.
+- One session per user: signing in ends that user's earlier session (`app_login`). The sign-in token is kept in `localStorage`, so all tabs of one browser share it and follow each other on sign-in and log out. Any `Api` call that gets `SESSION_EXPIRED` sends the user to the sign-in page with a message (handled once in `hub.js`; pages must not handle it themselves). A session lasts 12 hours.
 - Access: one dashboard tile per team (category). Admin grants tiles per user. General is open to all approved users. Admins see everything.
 - Modular: one folder per tool under `tools/<tool-id>/`. A tool never edits shared files to work.
 
