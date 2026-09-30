@@ -64,18 +64,28 @@ Goal: collect every specification line the company meets, answer each one once, 
 - Users must be told on the page that conversions are saved. Never describe the tool as "nothing is uploaded".
 - Later steps (not built yet, keep the door open): near-match suggestions, AI-drafted answers stored with `answer_source = 'ai'` and shown as unverified until an admin confirms. AI output must never overwrite an admin answer.
 
-## 2e. Datasheet Notes
+## 2e. Datasheet Notes and its row mapping
 
-Goal: turn a product datasheet PDF into the compliance table format: Section / Component / Specs / Remarks.
+Goal: turn a product datasheet PDF into the compliance table format: Section / Component / Specs / Remarks. Admins control the rows and the wording from the website, with no code change.
 
-- The user must choose **Product**, **Factory** and **Power supply** (380 V / 3 Ph / 60 Hz, 400 V / 3 Ph / 50 Hz, 460 V / 3 Ph / 60 Hz) before the upload appears. Products and factories come from `Api.cmOptions` (same list as the Compliance Maker). The three choices are printed in the first block of the table ("General"); they do not change any datasheet value.
-- The PDF is read in the browser with the local pdf.js. Nothing is uploaded or saved; no database table is used.
-- Only the AHU reader exists (Daikin ASTRAWEB technical report). FCU and Chiller show "not ready yet" until sample datasheets are supplied; add a reader and switch it on in `READERS` in `datasheet-notes.js`.
-- The table holds: General, Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report, NRVU and Electrical pages are not included.
-- **Specs only restate what the datasheet prints.** Nothing is added or assumed. Remarks is always empty.
+- The user must choose **Product**, **Factory** and **Power supply** (380 V / 3 Ph / 60 Hz, 400 V / 3 Ph / 50 Hz, 460 V / 3 Ph / 60 Hz) before the upload appears. Products and factories come from `Api.cmOptions` (same list as the Compliance Maker). The three choices are rows of the first block ("General"); they do not change any datasheet value.
+- The PDF is read in the browser with the local pdf.js. The datasheet is never uploaded or saved.
+- Only the AHU reader exists (Daikin ASTRAWEB technical report). FCU and Chiller show "not ready yet" until sample datasheets are supplied; add a reader and switch it on in `DSParse.readers`.
+- The reader gives: General, Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report, NRVU and Electrical pages are not read.
 - Labels paired with a solid dot become one row each: `Panel • Insulation` = `62 mm • Foam` gives Panel: 62 mm and Insulation: Foam. A one-word second label takes its context from the first (`Temp. Dry Bulb In • Out` gives Temp. Dry Bulb In / Temp. Dry Bulb Out). A value with dots under a single label stays as printed (`Mounting`: `Internal • Left`).
-- Two filters printed in one section are shown as Filter 1 / Filter 2. Sub-headings (Damper One Supply, Geometry, Cooling, Motor Data, Options) are shaded rows.
-- Files: `index.html`, `datasheet-notes.js` (page), `ds-parse.js` (reader and table rules), `ds-xlsx.js` (styled Excel). The Excel header colour follows the owner's compliance table format, not the site theme.
+- Two filters printed in one section are shown as Filter 1 / Filter 2. Sub-headings (Damper One Supply, Geometry, Cooling, Motor Data, Options) are shaded rows, written only when one of their rows is shown.
+- Remarks is always empty.
+
+**Row mapping** (`tools/datasheet-notes/mapping.html`, admins only, linked from the tool for admins):
+
+- Kept per factory in `dn_rules` (one row per datasheet row) and `dn_settings`. A mapping never crosses factories.
+- A datasheet row is identified by its key: section name without its number | sub-heading | component, lower case (`unit data||panel`, `fan supply|motor data|efficiency class`, `filter supply||filter class`). All sections with the same name share a rule; Filter 1 / Filter 2 share a rule; all option lines of a section share one rule (`...|options|option`). Keys are made only by `DSParse.rowKey`.
+- Per row the admin sets: **Show** (unticked = left out), **Name in Excel** (Component text, empty = datasheet name) and **Response**: empty = datasheet value; text = standard response; `$` or `*` in the text = where the datasheet value goes (`Panel thickness is $ Thermal break`). The rule is applied only by `DSParse.fill`.
+- "Rows that are not in this list yet" (show with the datasheet value / leave out) decides what happens to a row no admin has seen. Default: show.
+- The admin finds rows with "Load rows from a datasheet". Every listed row is saved, so the list is there without a datasheet next time. Rows saved earlier that are not on the loaded datasheet can be removed.
+- The tool loads the mapping with `Api.dnRules` when a factory is chosen. If it cannot be loaded, every row is shown as printed and the page says so.
+- Database functions: `dn_get_rules` (any approved user), `dn_admin_save_rules` (admin). The permissions block at the end of `schema.sql` opens `dn_*` functions to the website the same way as `app_*` and `cm_*`.
+- Files: `index.html` + `datasheet-notes.js` (tool), `mapping.html` + `mapping.js` (row mapping), `ds-parse.js` (reader, keys, mapping rules), `ds-read.js` (opens the PDF), `ds-xlsx.js` (styled Excel). The Excel header colour follows the owner's compliance table format, not the site theme.
 
 ## 3. Theme
 

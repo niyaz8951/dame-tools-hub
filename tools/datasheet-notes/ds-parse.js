@@ -4,10 +4,14 @@
 
    DSParse.lines(items, pageNo)  pdf.js text items -> lines of cells
    DSParse.parse(pages)          lines of every page -> structured data
-   DSParse.table(data, choice)   structured data -> rows for the table
+   DSParse.rows(data, choice)    structured data -> every row, each with a mapping key
+   DSParse.apply(rows, mapping)  rows + the admin's row mapping -> the table
+   DSParse.table(data, choice, mapping)   the two steps above in one call
 
-   Rule: nothing is added or assumed. Every Specs value is text
-   printed on the datasheet. Only three things are rearranged:
+   Rule: the reader adds and assumes nothing. Every value is text
+   printed on the datasheet; wording is changed only by the admin's
+   row mapping (Datasheet Notes > Row mapping). The reader rearranges
+   three things:
    - "A • B" labels with "x • y" values become one row each
    - two filters printed in one section are shown as Filter 1 / Filter 2
    - the Options List lines are placed under their own section
@@ -190,39 +194,74 @@
     });
   }
 
-  /* ---- structured data + the user's choices -> table rows ----
-     Each row: { section, component, specs, kind }  kind = 'row' | 'sub'.
-     section is filled on the first row of a section only. */
-  function table(data, choice) {
+  /* ---- structured data + the user's choices -> every row the datasheet gives ----
+     Each row: { group, title, sub, component, value, key }
+       group  section name without its number ("Filter Supply"); rows of every section
+              with the same name share their mapping
+       title  what is printed in the Section column ("2) Filter Supply")
+       key    what the admin's row mapping is stored under: group | sub | component.
+              "Filter 1" / "Filter 2" are left out of the key so one rule covers every filter. */
+  function norm(s) { return clean(s).toLowerCase(); }
+  function rowKey(group, sub, component) {
+    return norm(group) + '|' + (/^Filter \d+$/i.test(sub) ? '' : norm(sub)) + '|' + norm(component);
+  }
+
+  function rows(data, choice) {
     var out = [];
-    function block(title, rows) {
-      rows.forEach(function (r, i) { out.push({ section: i === 0 ? title : '', component: r.component, specs: r.specs, kind: r.kind || 'row' }); });
+    function push(group, title, sub, component, value) {
+      out.push({ group: group, title: title, sub: sub, component: component, value: value, key: rowKey(group, sub, component) });
     }
-    function body(t) {
-      var rows = [], subs = [];
-      function add(r) { expand(r.param, r.value).forEach(function (e) { rows.push({ component: e.param, specs: e.value }); }); }
+    function body(group, title, t) {
+      var subs = [];
+      function add(r) { expand(r.param, r.value).forEach(function (e) { push(group, title, r.sub, e.param, e.value); }); }
       t.rows.forEach(function (r) { if (!r.sub) add(r); else if (subs.indexOf(r.sub) < 0) subs.push(r.sub); });
-      subs.forEach(function (s) {
-        rows.push({ component: s, specs: '', kind: 'sub' });
-        t.rows.forEach(function (r) { if (r.sub === s) add(r); });
-      });
-      if (t.options.length) {
-        rows.push({ component: 'Options', specs: '', kind: 'sub' });
-        t.options.forEach(function (o) { rows.push({ component: 'Option', specs: o }); });
-      }
-      return rows;
+      subs.forEach(function (s) { t.rows.forEach(function (r) { if (r.sub === s) add(r); }); });
+      t.options.forEach(function (o) { push(group, title, 'Options', 'Option', o); });
     }
 
-    var h = data.hdr, general = [];
-    function g(label, v) { if (v) general.push({ component: label, specs: v }); }
+    var h = data.hdr;
+    function g(label, v) { if (v) push('General', 'General', '', label, v); }
     g('Product', choice && choice.product); g('Factory', choice && choice.factory); g('Power Supply', choice && choice.power);
     g('Project', h.project); g('Unit', h.unit); g('Reference', h.reference);
     g('Material Name', h.material); g('Selection Software', h.software); g('Report Date', h.date);
-    block('General', general);
-    block('Unit Data', body(data.unit));
-    data.sections.forEach(function (s) { block(s.no + ') ' + s.name, body(s)); });
+    body('Unit Data', 'Unit Data', data.unit);
+    data.sections.forEach(function (s) { body(s.name, s.no + ') ' + s.name, s); });
     return out;
   }
 
-  window.DSParse = { lines: lines, parse: parse, table: table, expand: expand };
+  /* An admin response: empty = the datasheet value, plain text = a standard response,
+     $ or * inside the text = the place where the datasheet value goes. */
+  function fill(response, value) {
+    var r = clean(response || '');
+    if (!r) return value;
+    return r.replace(/[$*]/g, function () { return value; });
+  }
+
+  /* ---- rows + the admin's mapping -> the table that is shown and exported ----
+     mapping: { showUnmapped: true|false, rules: { key: { show, label, response } } }
+     Out: { section, component, specs, kind }  kind = 'row' | 'sub'.
+     section is filled on the first row of a section only. A sub-heading is written
+     only when at least one of its rows is shown. */
+  function apply(all, mapping) {
+    var rules = (mapping && mapping.rules) || {}, unmapped = !mapping || mapping.showUnmapped !== false;
+    var out = [], title = null, sub = '';
+    all.forEach(function (r) {
+      var rule = rules[r.key];
+      if (rule ? rule.show === false : !unmapped) return;
+      var first = r.title !== title;
+      if (first) { title = r.title; sub = ''; }
+      if (r.sub !== sub) {
+        sub = r.sub;
+        if (sub) { out.push({ section: first ? title : '', component: sub, specs: '', kind: 'sub' }); first = false; }
+      }
+      out.push({ section: first ? title : '', component: (rule && clean(rule.label || '')) || r.component,
+                 specs: fill(rule && rule.response, r.value), kind: 'row' });
+    });
+    return out;
+  }
+
+  function table(data, choice, mapping) { return apply(rows(data, choice), mapping); }
+
+  window.DSParse = { readers: { ahu: true }, lines: lines, parse: parse, rows: rows, apply: apply, fill: fill,
+                     table: table, expand: expand, rowKey: rowKey };
 })();

@@ -1,25 +1,24 @@
 /* ============================================================
    Datasheet Notes - page logic.
    Product, factory and power supply must be chosen before the
-   upload appears. The PDF is read in the browser with pdf.js
-   (assets/vendor/pdfjs); nothing is sent to the database.
+   upload appears. The PDF is read in the browser (ds-read.js);
+   the datasheet is never sent to the database.
+   Which rows appear and what they say follows the admin's row
+   mapping for the chosen factory (Api.dnRules, edited in mapping.html).
    Products and factories come from the same list the Compliance
    Maker uses (Api.cmOptions).
    ============================================================ */
 (function () {
   'use strict';
 
-  var READERS = { ahu: true };          // products whose datasheet can be read today
-  var MAX_MB = 25;
   var $ = function (id) { return document.getElementById(id); };
   var el = window.Hub.el;
 
   var productSel = $('dn-product'), factorySel = $('dn-factory'), powerSel = $('dn-power');
   var hint = $('dn-scope-hint'), upload = $('dn-upload'), result = $('dn-result');
-  var drop = $('dn-drop'), fileInput = $('dn-file'), status = $('dn-status');
-  var products = [], parsed = null, rows = [], fileName = '', busy = false;
-
-  if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = '../../assets/vendor/pdfjs/pdf.worker.min.js';
+  var drop = $('dn-drop'), fileInput = $('dn-file'), status = $('dn-status'), mapNote = $('dn-map-note');
+  var products = [], parsed = null, rows = [], total = 0, fileName = '', busy = false;
+  var mappings = {}, mapping = null, mapFactory = '';   // mapping per factory, loaded once each
 
   /* ---------- selection ---------- */
   function option(value, text) { return el('option', { value: value, text: text }); }
@@ -27,9 +26,9 @@
   function choice() {
     var p = product();
     var f = p && p.factories.filter(function (x) { return x.id === factorySel.value; })[0];
-    return p && f && powerSel.value ? { productId: p.id, product: p.name, factory: f.name, power: powerSel.value } : null;
+    return p && f && powerSel.value ? { productId: p.id, factoryId: f.id, product: p.name, factory: f.name, power: powerSel.value } : null;
   }
-  function canRead(p) { return !!(p && READERS[String(p.id).toLowerCase()]); }
+  function canRead(p) { return !!(p && window.DSParse.readers[String(p.id).toLowerCase()]); }
 
   function fillFactories() {
     var p = product();
@@ -37,6 +36,21 @@
     factorySel.appendChild(option('', p ? 'Choose a factory' : 'Choose a product first'));
     (p ? p.factories : []).forEach(function (f) { factorySel.appendChild(option(f.id, f.name)); });
     factorySel.disabled = !p;
+  }
+
+  /* The admin's row mapping for the chosen factory. If it cannot be loaded the tool still
+     works and shows every datasheet row, with a notice saying so. */
+  function loadMapping(factoryId) {
+    mapFactory = factoryId; mapping = mappings[factoryId] || null;
+    mapNote.hidden = true;
+    if (!factoryId || mapping) return;
+    window.Api.dnRules(window.Hub.token(), factoryId).then(function (res) {
+      var rules = {};
+      (res.rules || []).forEach(function (r) { rules[r.key] = r; });
+      mappings[factoryId] = { showUnmapped: res.show_unmapped !== false, rules: rules, count: (res.rules || []).length };
+    }, function (err) {
+      mappings[factoryId] = { showUnmapped: true, rules: {}, count: 0, error: (err && err.message) || String(err) };
+    }).then(function () { if (mapFactory === factoryId) { mapping = mappings[factoryId]; applyGate(); } });
   }
 
   function applyGate() {
@@ -48,15 +62,18 @@
       upload.hidden = true; result.hidden = true;
       return;
     }
-    hint.textContent = c ? c.product + ', ' + c.factory + ' factory, ' + c.power + '. These go at the top of the table.'
+    hint.textContent = c ? c.product + ', ' + c.factory + ' factory, ' + c.power + '.'
                          : 'Choose product, factory and power supply to continue.';
-    upload.hidden = !c;
-    if (!c) result.hidden = true;
+    var ready = !!(c && mapping);
+    upload.hidden = !ready;
+    mapNote.hidden = !(ready && mapping.error);
+    if (ready && mapping.error) mapNote.textContent = 'The row mapping for this factory could not be loaded (' + mapping.error + '). Every datasheet row is shown as printed.';
+    if (!ready) result.hidden = true;
     else if (parsed) render();            // choices changed: the table follows, no need to upload again
   }
 
-  productSel.addEventListener('change', function () { fillFactories(); applyGate(); });
-  factorySel.addEventListener('change', applyGate);
+  productSel.addEventListener('change', function () { fillFactories(); loadMapping(''); applyGate(); });
+  factorySel.addEventListener('change', function () { loadMapping(factorySel.value); applyGate(); });
   powerSel.addEventListener('change', applyGate);
 
   /* ---------- file ---------- */
@@ -83,54 +100,33 @@
   window.addEventListener('drop', function (e) { e.preventDefault(); });
 
   function read(file) {
-    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { say('"' + file.name + '" is not a PDF. Choose the datasheet PDF.', 'error'); return; }
-    if (file.size > MAX_MB * 1024 * 1024) { say('This file is larger than ' + MAX_MB + ' MB. Choose the datasheet PDF for one unit.', 'error'); return; }
-    if (!window.pdfjsLib) { say('The PDF reader did not load. Refresh the page and try again.', 'error'); return; }
     busy = true; drop.disabled = true; parsed = null; result.hidden = true;
     say('Reading ' + file.name + '…');
-
-    file.arrayBuffer().then(function (buf) {
-      return window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-    }).then(function (pdf) {
-      var pages = [], chain = Promise.resolve();
-      for (var n = 1; n <= pdf.numPages; n++) (function (n) {
-        chain = chain.then(function () { return pdf.getPage(n); })
-          .then(function (page) { return page.getTextContent(); })
-          .then(function (tc) { pages.push(window.DSParse.lines(tc.items, n)); });
-      })(n);
-      return chain.then(function () { return pages; });
-    }).then(function (pages) {
-      var words = pages.reduce(function (s, p) { return s + p.length; }, 0);
-      if (!words) throw new Error('This PDF has no text to read. It looks like a scan. Export the datasheet from the selection software as PDF.');
-      var data = window.DSParse.parse(pages);
-      if (!data.unit.rows.length && !data.sections.length) {
-        throw new Error('No "Unit Data" or numbered sections were found. This tool reads the Daikin AHU technical report (ASTRAWEB).');
-      }
+    window.DSRead.file(file).then(function (data) {
       parsed = data; fileName = file.name;
       say('');
       render();
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }).catch(function (err) {
-      var msg = err && err.name === 'PasswordException' ? 'This PDF is password protected. Remove the password and try again.'
-              : err && err.name === 'InvalidPDFException' ? 'This file could not be opened as a PDF.'
-              : (err && err.message) || 'The datasheet could not be read.';
-      say(msg, 'error');
-    }).then(function () { busy = false; drop.disabled = false; });
+    }, function (err) { say(err.message, 'error'); })
+      .then(function () { busy = false; drop.disabled = false; });
   }
 
   /* ---------- result ---------- */
   function render() {
     var c = choice();
-    if (!parsed || !c) return;
-    rows = window.DSParse.table(parsed, c);
+    if (!parsed || !c || !mapping) return;
+    var all = window.DSParse.rows(parsed, c);
+    rows = window.DSParse.apply(all, mapping);
+    total = all.length;
+    var shown = rows.filter(function (r) { return r.kind !== 'sub'; }).length;
 
-    var h = parsed.hdr, options = parsed.unit.options.length;
-    parsed.sections.forEach(function (s) { options += s.options.length; });
+    var h = parsed.hdr;
     $('dn-title').textContent = [h.project, h.unit, h.reference ? 'Ref. ' + h.reference : ''].filter(Boolean).join('  ·  ') || fileName;
 
     var facts = $('dn-facts'); facts.textContent = '';
-    [parsed.sections.length + ' sections', rows.filter(function (r) { return r.kind !== 'sub'; }).length + ' rows', options + ' options']
-      .forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
+    var list = [shown + (shown === 1 ? ' row' : ' rows')];
+    if (shown < total) list.push((total - shown) + ' datasheet rows left out by the row mapping');
+    list.forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
 
     var notes = parsed.warnings.slice();
     if (!parsed.unit.rows.length) notes.push('No "Unit Data" block was found on the datasheet.');
@@ -150,6 +146,9 @@
       ]));
     });
     body.textContent = ''; body.appendChild(frag);
+    $('dn-table').hidden = !rows.length;
+    $('dn-empty').hidden = !!rows.length;
+    $('dn-download').disabled = !rows.length;
     result.hidden = false;
   }
 
@@ -172,7 +171,8 @@
   });
 
   /* ---------- start ---------- */
-  window.Hub.requireLogin({ tool: 'datasheet-notes' }).then(function () {
+  window.Hub.requireLogin({ tool: 'datasheet-notes' }).then(function (profile) {
+    if (profile.user.role === 'admin') $('dn-manage').hidden = false;
     return window.Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     products = res.products || [];

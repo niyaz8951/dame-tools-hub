@@ -901,6 +901,140 @@ begin
   return 'Admin created. You can now log in on the website.';
 end $$;
 
+-- ============================================================
+-- DATASHEET NOTES - row mapping
+--
+-- The Datasheet Notes tool reads a product datasheet in the browser and
+-- builds a Section / Component / Specs / Remarks table. Admins decide, per
+-- factory, which rows go into that table and what each row says:
+--   dn_rules      one row per datasheet row (key = section | sub-heading | component)
+--                   show      false = the row is left out
+--                   label     name to print in the Component column ('' = as on the datasheet)
+--                   response  '' = datasheet value; text = standard response;
+--                             $ or * in the text = where the datasheet value goes
+--   dn_settings   per factory: are rows with no rule shown or hidden
+-- The datasheet itself is never stored.
+-- ============================================================
+
+create table if not exists public.dn_rules (
+  factory_id text not null references public.cm_factories(id) on delete cascade,
+  row_key    text not null,
+  section    text not null default '',
+  sub        text not null default '',
+  component  text not null default '',
+  show       boolean not null default true,
+  label      text not null default '',
+  response   text not null default '',
+  sort       int  not null default 0,
+  updated_by uuid references public.app_users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (factory_id, row_key)
+);
+
+create table if not exists public.dn_settings (
+  factory_id    text primary key references public.cm_factories(id) on delete cascade,
+  show_unmapped boolean not null default true,
+  updated_by    uuid references public.app_users(id) on delete set null,
+  updated_at    timestamptz not null default now()
+);
+
+alter table public.dn_rules    enable row level security;
+alter table public.dn_settings enable row level security;
+revoke all on public.dn_rules, public.dn_settings from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.dn_rules, public.dn_settings from anon, authenticated;
+  end if;
+end $$;
+
+-- The mapping for one factory. Any approved user: the tool needs it to build the table.
+create or replace function public.dn_get_rules(p_token text, p_factory_id text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare f public.cm_factories;
+begin
+  perform public.app__session_user(p_token);
+  f := public.cm__factory(p_factory_id);
+  return jsonb_build_object(
+    'show_unmapped', coalesce((select s.show_unmapped from public.dn_settings s where s.factory_id = f.id), true),
+    'rules', coalesce((
+      select jsonb_agg(jsonb_build_object('key', r.row_key, 'section', r.section, 'sub', r.sub,
+               'component', r.component, 'show', r.show, 'label', r.label, 'response', r.response)
+             order by r.sort, r.row_key)
+        from public.dn_rules r where r.factory_id = f.id), '[]'::jsonb));
+end $$;
+
+-- Save the mapping for one factory.
+--   p_rules:  [{ "key", "section", "sub", "component", "show", "label", "response" }, ...] in display order.
+--             Rows already stored and not in the list are kept as they are.
+--   p_remove: ["key", ...] rules to delete.
+create or replace function public.dn_admin_save_rules(
+  p_token text, p_factory_id text, p_show_unmapped boolean, p_rules jsonb, p_remove jsonb default '[]'::jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users;
+  f public.cm_factories;
+  v_saved int := 0; v_removed int := 0;
+begin
+  u := public.app__require_admin(p_token);
+  f := public.cm__factory(p_factory_id);
+  p_rules  := coalesce(p_rules,  '[]'::jsonb);
+  p_remove := coalesce(p_remove, '[]'::jsonb);
+  if jsonb_typeof(p_rules) <> 'array' or jsonb_typeof(p_remove) <> 'array' then
+    perform public.app__fail('The mapping could not be read.');
+  end if;
+  if jsonb_array_length(p_rules) > 3000 then
+    perform public.app__fail('Too many rows to save in one go (more than 3000).');
+  end if;
+  if exists (select 1 from jsonb_array_elements(p_rules) e
+              where length(trim(coalesce(e->>'key', ''))) not between 1 and 300) then
+    perform public.app__fail('A row has no name and cannot be saved.');
+  end if;
+  if exists (select 1 from jsonb_array_elements(p_rules) e
+              where length(coalesce(e->>'label', '')) > 120 or length(coalesce(e->>'response', '')) > 1000) then
+    perform public.app__fail('A name is longer than 120 characters or a response is longer than 1000 characters.');
+  end if;
+
+  delete from public.dn_rules r
+   where r.factory_id = f.id
+     and r.row_key in (select jsonb_array_elements_text(p_remove));
+  get diagnostics v_removed = row_count;
+
+  insert into public.dn_rules (factory_id, row_key, section, sub, component, show, label, response, sort, updated_by, updated_at)
+  select f.id, x.key, x.section, x.sub, x.component, x.show, x.label, x.response, x.sort, u.id, now()
+    from (
+      select distinct on (trim(e->>'key'))
+             trim(e->>'key') as key,
+             left(trim(coalesce(e->>'section', '')), 200)   as section,
+             left(trim(coalesce(e->>'sub', '')), 200)       as sub,
+             left(trim(coalesce(e->>'component', '')), 200) as component,
+             coalesce((e->>'show')::boolean, true)          as show,
+             trim(coalesce(e->>'label', ''))                as label,
+             trim(coalesce(e->>'response', ''))             as response,
+             ord::int                                       as sort
+        from jsonb_array_elements(p_rules) with ordinality as t(e, ord)
+       order by trim(e->>'key'), ord
+    ) x
+  on conflict (factory_id, row_key) do update
+     set section = excluded.section, sub = excluded.sub, component = excluded.component, sort = excluded.sort,
+         updated_by = case when (dn_rules.show, dn_rules.label, dn_rules.response)
+                                is distinct from (excluded.show, excluded.label, excluded.response)
+                           then excluded.updated_by else dn_rules.updated_by end,
+         updated_at = case when (dn_rules.show, dn_rules.label, dn_rules.response)
+                                is distinct from (excluded.show, excluded.label, excluded.response)
+                           then excluded.updated_at else dn_rules.updated_at end,
+         show = excluded.show, label = excluded.label, response = excluded.response;
+  get diagnostics v_saved = row_count;
+
+  insert into public.dn_settings (factory_id, show_unmapped, updated_by, updated_at)
+  values (f.id, coalesce(p_show_unmapped, true), u.id, now())
+  on conflict (factory_id) do update
+     set show_unmapped = excluded.show_unmapped, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
+
+  return jsonb_build_object('ok', true, 'saved', v_saved, 'removed', v_removed);
+end $$;
+
 -- ---------- permissions: website may call ONLY the public/admin API ----------
 do $$
 declare
@@ -910,7 +1044,7 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%')
+     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%')
   loop
     execute format('revoke all on function %s from public', f.sig);
     if has_anon then
