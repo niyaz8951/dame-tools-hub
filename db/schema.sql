@@ -912,8 +912,12 @@ end $$;
 --                   label     name to print in the Component column ('' = as on the datasheet)
 --                   response  '' = datasheet value; text = standard response;
 --                             $ or * in the text = where the datasheet value goes
+--                   reviewed  false = added automatically from a user's datasheet and not
+--                             yet looked at by an admin (shown as "New" on the mapping screen)
 --   dn_settings   per factory: are rows with no rule shown or hidden
--- The datasheet itself is never stored.
+-- Every run of the tool by any user adds the row names it has not seen before
+-- (dn_add_rows), so the mapping list keeps growing on its own. Only names are
+-- stored. The datasheet and its values are never stored.
 -- ============================================================
 
 create table if not exists public.dn_rules (
@@ -938,6 +942,8 @@ create table if not exists public.dn_settings (
   updated_at    timestamptz not null default now()
 );
 
+alter table public.dn_rules add column if not exists reviewed boolean not null default true;
+
 alter table public.dn_rules    enable row level security;
 alter table public.dn_settings enable row level security;
 revoke all on public.dn_rules, public.dn_settings from public;
@@ -959,9 +965,51 @@ begin
     'show_unmapped', coalesce((select s.show_unmapped from public.dn_settings s where s.factory_id = f.id), true),
     'rules', coalesce((
       select jsonb_agg(jsonb_build_object('key', r.row_key, 'section', r.section, 'sub', r.sub,
-               'component', r.component, 'show', r.show, 'label', r.label, 'response', r.response)
+               'component', r.component, 'show', r.show, 'label', r.label, 'response', r.response,
+               'new', not r.reviewed)
              order by r.sort, r.row_key)
         from public.dn_rules r where r.factory_id = f.id), '[]'::jsonb));
+end $$;
+
+-- Called by the tool after every datasheet it reads, for any approved user.
+-- Adds the rows this factory's mapping has not seen before; rows already there are not touched.
+--   p_rows: [{ "key", "section", "sub", "component" }, ...] in datasheet order
+-- A new row starts as shown or left out according to the factory's "rows not in the list yet"
+-- setting, with the datasheet value, and is marked for the admins to review.
+create or replace function public.dn_add_rows(p_token text, p_factory_id text, p_rows jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  f public.cm_factories;
+  v_show boolean; v_base int; v_added int := 0;
+begin
+  perform public.app__session_user(p_token);
+  f := public.cm__factory(p_factory_id);
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' then
+    perform public.app__fail('The rows could not be read.');
+  end if;
+  if jsonb_array_length(p_rows) > 3000 then
+    perform public.app__fail('Too many rows to add in one go (more than 3000).');
+  end if;
+  v_show := coalesce((select s.show_unmapped from public.dn_settings s where s.factory_id = f.id), true);
+  v_base := coalesce((select max(r.sort) from public.dn_rules r where r.factory_id = f.id), 0);
+
+  insert into public.dn_rules (factory_id, row_key, section, sub, component, show, sort, reviewed)
+  select f.id, x.key, x.section, x.sub, x.component, v_show, v_base + x.ord, false
+    from (
+      select distinct on (trim(e->>'key'))
+             trim(e->>'key') as key,
+             left(trim(coalesce(e->>'section', '')), 200)   as section,
+             left(trim(coalesce(e->>'sub', '')), 200)       as sub,
+             left(trim(coalesce(e->>'component', '')), 200) as component,
+             ord::int as ord
+        from jsonb_array_elements(p_rows) with ordinality as t(e, ord)
+       where length(trim(coalesce(e->>'key', ''))) between 1 and 300
+       order by trim(e->>'key'), ord
+    ) x
+  on conflict (factory_id, row_key) do nothing;
+  get diagnostics v_added = row_count;
+  return jsonb_build_object('ok', true, 'added', v_added);
 end $$;
 
 -- Save the mapping for one factory.
@@ -1001,8 +1049,8 @@ begin
      and r.row_key in (select jsonb_array_elements_text(p_remove));
   get diagnostics v_removed = row_count;
 
-  insert into public.dn_rules (factory_id, row_key, section, sub, component, show, label, response, sort, updated_by, updated_at)
-  select f.id, x.key, x.section, x.sub, x.component, x.show, x.label, x.response, x.sort, u.id, now()
+  insert into public.dn_rules (factory_id, row_key, section, sub, component, show, label, response, sort, updated_by, updated_at, reviewed)
+  select f.id, x.key, x.section, x.sub, x.component, x.show, x.label, x.response, x.sort, u.id, now(), true
     from (
       select distinct on (trim(e->>'key'))
              trim(e->>'key') as key,
@@ -1024,7 +1072,7 @@ begin
          updated_at = case when (dn_rules.show, dn_rules.label, dn_rules.response)
                                 is distinct from (excluded.show, excluded.label, excluded.response)
                            then excluded.updated_at else dn_rules.updated_at end,
-         show = excluded.show, label = excluded.label, response = excluded.response;
+         show = excluded.show, label = excluded.label, response = excluded.response, reviewed = true;
   get diagnostics v_saved = row_count;
 
   insert into public.dn_settings (factory_id, show_unmapped, updated_by, updated_at)

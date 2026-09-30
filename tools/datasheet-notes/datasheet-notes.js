@@ -5,6 +5,7 @@
    the datasheet is never sent to the database.
    Which rows appear and what they say follows the admin's row
    mapping for the chosen factory (Api.dnRules, edited in mapping.html).
+   Row names the mapping has not seen are added to it (Api.dnAddRows).
    Products and factories come from the same list the Compliance
    Maker uses (Api.cmOptions).
    ============================================================ */
@@ -106,9 +107,28 @@
       parsed = data; fileName = file.name;
       say('');
       render();
+      register();
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, function (err) { say(err.message, 'error'); })
       .then(function () { busy = false; drop.disabled = false; });
+  }
+
+  /* Row names this factory's mapping has not seen before are added to the admins' mapping list,
+     so new sections and rows turn up there without anyone loading the datasheet again.
+     Only names go to the database, never values. The table on screen does not wait for it. */
+  function register() {
+    var c = choice();
+    if (!parsed || !c || !mapping || mapping.error) return;
+    var seen = {}, fresh = [], m = mapping;
+    window.DSParse.rows(parsed, c).forEach(function (r) {
+      if (m.rules[r.key] || seen[r.key]) return; seen[r.key] = 1;
+      fresh.push({ key: r.key, section: r.group, sub: /^Filter \d+$/i.test(r.sub) ? '' : r.sub, component: r.component });
+    });
+    if (!fresh.length) return;
+    window.Api.dnAddRows(window.Hub.token(), { factoryId: c.factoryId, rows: fresh }).then(function () {
+      // remembered as they were added, so the next datasheet in this visit does not send them again
+      fresh.forEach(function (r) { m.rules[r.key] = { key: r.key, show: m.showUnmapped, label: '', response: '' }; });
+    }, function () { /* the next run sends them again */ });
   }
 
   /* ---------- result ---------- */

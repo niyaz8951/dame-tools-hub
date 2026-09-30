@@ -29,7 +29,7 @@
   function makeRow(src, rule, onSheet) {
     var r = {
       key: src.key, group: src.group, sub: src.sub, component: src.component,
-      sample: onSheet ? src.value : null, onSheet: onSheet, saved: !!rule,
+      sample: onSheet ? src.value : null, onSheet: onSheet, saved: !!rule, isNew: !!(rule && rule['new']),
       show: rule ? rule.show !== false : unmappedSel.value === 'show',
       label: rule ? rule.label || '' : '', response: rule ? rule.response || '' : ''
     };
@@ -59,10 +59,10 @@
   }
 
   function current() {            // what is on screen, as saved rules (keeps edits when a datasheet is loaded)
-    return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, response: r.response, _row: r }; });
+    return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, response: r.response, 'new': r.isNew, _row: r }; });
   }
 
-  function changed(r) { return !r.saved || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.response.trim() !== r.orig.response; }
+  function changed(r) { return !r.saved || r.isNew || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.response.trim() !== r.orig.response; }
   function pending() {
     var n = list.filter(changed).length + removed.length;
     if ((unmappedSel.value === 'show') !== savedUnmapped) n++;
@@ -127,9 +127,10 @@
     resp.addEventListener('input', function () { r.response = resp.value; paint(); refreshSave(); });
     r.paint = function () { check.checked = r.show; paint(); };
     r.tr = tr;
-    r.text = (r.group + ' ' + name + ' ' + (r.sample || '')).toLowerCase();
+    r.text = (r.group + ' ' + name + ' ' + (r.sample || '') + (r.isNew ? ' new' : '')).toLowerCase();
 
     var info = [el('span', { 'class': 'dm-name', text: name })];
+    if (r.isNew) info.push(el('span', { 'class': 'badge brand', style: 'margin-left:8px', text: 'New' }));
     if (r.onSheet) info.push(el('span', { 'class': 'dm-sample', text: r.sample === '' ? 'Printed with no value' : r.sample }));
     else {
       info.push(el('span', { 'class': 'dm-sample', text: sheet ? 'Not on the loaded datasheet' : '' }));
@@ -165,11 +166,11 @@
   unmappedSel.addEventListener('change', refreshSave);
 
   function describe() {
-    var n = list.length;
+    var n = list.length, fresh = list.filter(function (r) { return r.isNew; }).length;
     status.textContent = sheet
       ? n + ' rows: ' + list.filter(function (r) { return r.onSheet; }).length + ' from ' + sheetName +
         (list.some(function (r) { return !r.saved; }) ? ', including ' + list.filter(function (r) { return !r.saved; }).length + ' new rows that are saved when you press Save mapping.' : '.')
-      : n ? n + ' saved rows. Load a datasheet to see its values in the Result column and to find rows that are not listed yet.'
+      : n ? n + ' saved rows' + (fresh ? ', ' + fresh + ' new from users\u2019 datasheets (marked New) until you save' : '') + '. Load a datasheet to see its values in the Result column and to find rows that are not listed yet.'
           : '';
   }
 
@@ -223,9 +224,9 @@
     var rules = list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label.trim(), response: r.response.trim() }; });
     window.Api.dnAdminSaveRules(window.Hub.token(), { factoryId: id, showUnmapped: show, rules: rules, remove: removed }).then(function () {
       if (factoryId !== id) return;
-      list.forEach(function (r) { r.saved = true; r.label = r.label.trim(); r.response = r.response.trim(); r.orig = { show: r.show, label: r.label, response: r.response }; });
+      list.forEach(function (r) { r.saved = true; r.isNew = false; r.label = r.label.trim(); r.response = r.response.trim(); r.orig = { show: r.show, label: r.label, response: r.response }; });
       removed = []; savedUnmapped = show;
-      describe();
+      render(); describe();
       window.Hub.toast('Mapping saved.');
     }, function (err) {
       fail('The mapping was not saved: ' + ((err && err.message) || err));

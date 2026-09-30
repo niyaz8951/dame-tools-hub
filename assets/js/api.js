@@ -57,6 +57,7 @@
     cmAdminExport: function (t, factoryId) { return rpc("cm_admin_export", { p_token: t, p_factory_id: factoryId }); },
     // Datasheet Notes row mapping
     dnRules: function (t, factoryId) { return rpc("dn_get_rules", { p_token: t, p_factory_id: factoryId }); },
+    dnAddRows: function (t, d) { return rpc("dn_add_rows", { p_token: t, p_factory_id: d.factoryId, p_rows: d.rows || [] }); },
     dnAdminSaveRules: function (t, d) { return rpc("dn_admin_save_rules", { p_token: t, p_factory_id: d.factoryId, p_show_unmapped: d.showUnmapped !== false, p_rules: d.rules || [], p_remove: d.remove || [] }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
@@ -269,6 +270,17 @@
       sessionUser(db, t); var f = cmFactory(db, factoryId), m = (db.dn || {})[f.id] || { show_unmapped: true, rules: [] };
       return { show_unmapped: m.show_unmapped, rules: m.rules };
     }),
+    dnAddRows: demo(function (db, t, d) {
+      sessionUser(db, t); var f = cmFactory(db, d.factoryId), added = 0;
+      db.dn = db.dn || {}; var m = db.dn[f.id] || { show_unmapped: true, rules: [] };
+      (d.rows || []).forEach(function (r) {
+        var k = String(r.key || "").trim();
+        if (!k || k.length > 300 || m.rules.some(function (x) { return x.key === k; })) return;
+        added++; m.rules.push({ key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
+                                show: m.show_unmapped, label: "", response: "", "new": true });
+      });
+      db.dn[f.id] = m; return { ok: true, added: added };
+    }),
     dnAdminSaveRules: demo(function (db, t, d) {
       admin(db, t); var f = cmFactory(db, d.factoryId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;
       if (rules.length > 3000) fail("Too many rows to save in one go (more than 3000).");
@@ -284,7 +296,7 @@
       rules.forEach(function (r) {
         var k = String(r.key).trim(); if (seen[k]) return; seen[k] = 1; saved++;
         var row = { key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
-                    show: r.show !== false, label: String(r.label || "").trim(), response: String(r.response || "").trim() };
+                    show: r.show !== false, label: String(r.label || "").trim(), response: String(r.response || "").trim(), "new": false };
         m.rules = m.rules.filter(function (x) { return x.key !== k; }); m.rules.push(row);
       });
       m.show_unmapped = d.showUnmapped !== false; db.dn[f.id] = m;
