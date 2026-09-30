@@ -104,7 +104,10 @@ insert into public.app_tools (id, category_id, name, description, path, status, 
    'tools/container-calculator/', 'live', 30),
   ('centre-of-gravity', 'general', 'Centre of Gravity',
    'Build a unit from blocks, find its centre of gravity and the load on every mounting foot.',
-   'tools/centre-of-gravity/', 'live', 40)
+   'tools/centre-of-gravity/', 'live', 40),
+  ('datasheet-notes', 'general', 'Datasheet Notes',
+   'Turn a product datasheet PDF into an Excel table of unit data, sections and options.',
+   'tools/datasheet-notes/', 'live', 15)
 on conflict (id) do nothing;
 
 -- ---------- internal helpers (not callable from the website) ----------

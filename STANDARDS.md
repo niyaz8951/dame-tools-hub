@@ -64,6 +64,19 @@ Goal: collect every specification line the company meets, answer each one once, 
 - Users must be told on the page that conversions are saved. Never describe the tool as "nothing is uploaded".
 - Later steps (not built yet, keep the door open): near-match suggestions, AI-drafted answers stored with `answer_source = 'ai'` and shown as unverified until an admin confirms. AI output must never overwrite an admin answer.
 
+## 2e. Datasheet Notes
+
+Goal: turn a product datasheet PDF into the compliance table format: Section / Component / Specs / Remarks.
+
+- The user must choose **Product**, **Factory** and **Power supply** (380 V / 3 Ph / 60 Hz, 400 V / 3 Ph / 50 Hz, 460 V / 3 Ph / 60 Hz) before the upload appears. Products and factories come from `Api.cmOptions` (same list as the Compliance Maker). The three choices are printed in the first block of the table ("General"); they do not change any datasheet value.
+- The PDF is read in the browser with the local pdf.js. Nothing is uploaded or saved; no database table is used.
+- Only the AHU reader exists (Daikin ASTRAWEB technical report). FCU and Chiller show "not ready yet" until sample datasheets are supplied; add a reader and switch it on in `READERS` in `datasheet-notes.js`.
+- The table holds: General, Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report, NRVU and Electrical pages are not included.
+- **Specs only restate what the datasheet prints.** Nothing is added or assumed. Remarks is always empty.
+- Labels paired with a solid dot become one row each: `Panel • Insulation` = `62 mm • Foam` gives Panel: 62 mm and Insulation: Foam. A one-word second label takes its context from the first (`Temp. Dry Bulb In • Out` gives Temp. Dry Bulb In / Temp. Dry Bulb Out). A value with dots under a single label stays as printed (`Mounting`: `Internal • Left`).
+- Two filters printed in one section are shown as Filter 1 / Filter 2. Sub-headings (Damper One Supply, Geometry, Cooling, Motor Data, Options) are shaded rows.
+- Files: `index.html`, `datasheet-notes.js` (page), `ds-parse.js` (reader and table rules), `ds-xlsx.js` (styled Excel). The Excel header colour follows the owner's compliance table format, not the site theme.
+
 ## 3. Theme
 
 Daikin colours with day and night mode. Never hard-code a colour in a tool; use the variables.
@@ -104,7 +117,7 @@ A tool is ready to be set Live only when:
 
 | Tile | Who | Tools |
 |---|---|---|
-| General | every approved user | Compliance Maker, Coil Data Extractor, Container Calculator, Centre of Gravity (all live) |
+| General | every approved user | Compliance Maker, Datasheet Notes, Coil Data Extractor, Container Calculator, Centre of Gravity (all live) |
 | Sales | sales team | special sales tools, to be decided per requirement |
 | SBU | SBU team | special SBU tools, to be decided per requirement |
 | more tiles | | added later from Admin > Team tiles |
