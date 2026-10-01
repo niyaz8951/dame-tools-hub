@@ -328,7 +328,7 @@
     });
   });
 
-  Hub.requireLogin({ admin: true }).then(function () { return Api.cmOptions(Hub.token()); }).then(function (res) {
+  Hub.requireLogin({ edit: "compliance-maker" }).then(function () { return Api.cmOptions(Hub.token()); }).then(function (res) {
     products = res.products || [];
     var s = $("product"); s.appendChild(el("option", { value: "", text: "Choose a product" }));
     products.forEach(function (p) { s.appendChild(el("option", { value: p.id, text: p.name })); });

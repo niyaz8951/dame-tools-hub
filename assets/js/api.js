@@ -42,10 +42,10 @@
     changePassword: function (t, o, n) { return rpc("app_change_password", { p_token: t, p_old: o, p_new: n }); },
     updateProfile: function (t, d) { return rpc("app_update_profile", { p_token: t, p_full_name: d.fullName, p_avatar: d.avatar || "" }); },
     adminOverview: function (t) { return rpc("app_admin_overview", { p_token: t }); },
-    adminSetUser: function (t, d) { return rpc("app_admin_set_user", { p_token: t, p_user_id: d.id, p_status: d.status, p_role: d.role, p_categories: d.categories }); },
+    adminSetUser: function (t, d) { return rpc("app_admin_set_user", { p_token: t, p_user_id: d.id, p_status: d.status, p_role: d.role, p_categories: d.categories, p_edit_tools: d.editTools || [] }); },
     adminResetPassword: function (t, id, pw) { return rpc("app_admin_reset_password", { p_token: t, p_user_id: id, p_new_password: pw }); },
     adminDeleteUser: function (t, id) { return rpc("app_admin_delete_user", { p_token: t, p_user_id: id }); },
-    adminSaveTool: function (t, d) { return rpc("app_admin_save_tool", { p_token: t, p_id: d.id, p_category_id: d.category_id, p_name: d.name, p_description: d.description, p_path: d.path, p_status: d.status, p_sort: d.sort }); },
+    adminSaveTool: function (t, d) { return rpc("app_admin_save_tool", { p_token: t, p_id: d.id, p_category_id: d.category_id, p_name: d.name, p_description: d.description, p_path: d.path, p_status: d.status, p_sort: d.sort, p_editable: !!d.editable }); },
     // Compliance Maker library
     cmOptions: function (t) { return rpc("cm_options", { p_token: t }); },
     cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines }); },
@@ -63,13 +63,14 @@
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v4", mem = null;
+  var KEY = "dame_hub_demo_db_v5", mem = null;
   function seed() {
     return {
       users: [
-        { id: "u1", username: "admin", full_name: "Demo Admin", team_note: "", password: "admin12345", role: "admin", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [] },
-        { id: "u2", username: "sales.user", full_name: "Sales User", team_note: "Sales", password: "sales12345", role: "user", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: ["sales"] },
-        { id: "u3", username: "new.joiner", full_name: "New Joiner", team_note: "SBU", password: "joiner12345", role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [] }
+        { id: "u1", username: "admin", full_name: "Demo Super User", team_note: "", password: "admin12345", role: "superuser", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] },
+        { id: "u4", username: "team.admin", full_name: "Team Admin", team_note: "Sales", password: "admin12345", role: "admin", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] },
+        { id: "u2", username: "sales.user", full_name: "Sales User", team_note: "Sales", password: "sales12345", role: "user", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: ["sales"], edit_tools: ["compliance-maker"] },
+        { id: "u3", username: "new.joiner", full_name: "New Joiner", team_note: "SBU", password: "joiner12345", role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] }
       ],
       categories: [
         { id: "general", name: "General", description: "Everyday productivity tools", sort: 10, is_default: true },
@@ -77,8 +78,8 @@
         { id: "sbu", name: "SBU", description: "Specialised SBU tools", sort: 30, is_default: false }
       ],
       tools: [
-        { id: "compliance-maker", category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10 },
-        { id: "datasheet-notes", category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15 },
+        { id: "compliance-maker", category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10, editable: true },
+        { id: "datasheet-notes", category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: true },
         { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
         { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 }
@@ -110,18 +111,30 @@
     if (!u || u.status !== "approved") fail("SESSION_EXPIRED");
     return u;
   }
-  function admin(db, token) { var u = sessionUser(db, token); if (u.role !== "admin") fail("Admin access required."); return u; }
+  function isAdminRole(u) { return u.role === "admin" || u.role === "superuser"; }
+  function admin(db, token) { var u = sessionUser(db, token); if (!isAdminRole(u)) fail("Admin access required."); return u; }
+  function superUser(db, token) { var u = sessionUser(db, token); if (u.role !== "superuser") fail("Only the super user can do this."); return u; }
+  function canOpen(db, u, c) { return isAdminRole(u) || c.is_default || u.categories.indexOf(c.id) >= 0; }
+  // same rule as app__can_edit in schema.sql
+  function canEdit(db, u, toolId) {
+    var t = db.tools.filter(function (x) { return x.id === toolId; })[0];
+    if (!t || !t.editable) return false;
+    if (isAdminRole(u)) return true;
+    var c = db.categories.filter(function (x) { return x.id === t.category_id; })[0];
+    return (u.edit_tools || []).indexOf(toolId) >= 0 && !!c && canOpen(db, u, c);
+  }
+  function editor(db, token, toolId) { var u = sessionUser(db, token); if (!canEdit(db, u, toolId)) fail("Edit access for this tool is required."); return u; }
   function profile(db, u) {
     return {
       user: { id: u.id, username: u.username, full_name: u.full_name, role: u.role, avatar: u.avatar || null,
-              created_at: u.created_at, last_login_at: u.last_login_at },
+              created_at: u.created_at, last_login_at: u.last_login_at,
+              edit_tools: db.tools.filter(function (t) { return canEdit(db, u, t.id); }).map(function (t) { return t.id; }).sort() },
       // only the tiles this user may open are returned
-      categories: db.categories.slice().sort(bySort).filter(function (c) {
-        return u.role === "admin" || c.is_default || u.categories.indexOf(c.id) >= 0;
-      }).map(function (c) {
+      categories: db.categories.slice().sort(bySort).filter(function (c) { return canOpen(db, u, c); }).map(function (c) {
         return {
           id: c.id, name: c.name, description: c.description, allowed: true,
           tools: db.tools.filter(function (t) { return t.category_id === c.id && t.status !== "hidden"; }).sort(bySort)
+                 .map(function (t) { var o = {}; for (var k in t) o[k] = t[k]; o.can_edit = canEdit(db, u, t.id); return o; })
         };
       })
     };
@@ -152,7 +165,7 @@
       if ((d.fullName || "").trim().length < 2) fail("Please enter your full name.");
       checkPw(d.password);
       if (db.users.some(function (u) { return u.username.toLowerCase() === name.toLowerCase(); })) fail("That username is already taken.");
-      db.users.push({ id: "u" + Date.now(), username: name, full_name: d.fullName.trim(), team_note: (d.teamNote || "").trim(), password: d.password, role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [] });
+      db.users.push({ id: "u" + Date.now(), username: name, full_name: d.fullName.trim(), team_note: (d.teamNote || "").trim(), password: d.password, role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] });
       return { ok: true };
     }),
     login: demo(function (db, username, password) {
@@ -188,25 +201,33 @@
       };
     }),
     adminSetUser: demo(function (db, t, d) {
-      admin(db, t);
+      var a = admin(db, t);
       var u = db.users.filter(function (x) { return x.id === d.id; })[0]; if (!u) fail("User not found.");
-      var others = db.users.filter(function (x) { return x.role === "admin" && x.status === "approved" && x.id !== u.id; }).length;
-      if (u.role === "admin" && u.status === "approved" && (d.role !== "admin" || d.status !== "approved") && !others) fail("You cannot remove the last active admin.");
-      u.status = d.status; u.role = d.role; u.categories = d.categories || [];
+      var role = d.role || u.role;
+      if (a.role !== "superuser") {
+        if (u.role !== "user") fail("Only the super user can change an admin account.");
+        if (role !== u.role) fail("Only the super user can change roles.");
+      }
+      if (role === "superuser" && u.role !== "superuser") fail("The super user is set in the database, not from this page.");
+      if (u.role === "superuser" && (role !== "superuser" || d.status !== "approved")) fail("The super user account cannot be demoted or disabled.");
+      u.status = d.status; u.role = role; u.categories = d.categories || [];
+      u.edit_tools = role === "user" ? (d.editTools || []).filter(function (id) { return db.tools.some(function (x) { return x.id === id && x.editable; }); }) : [];
       return { ok: true };
     }),
     adminResetPassword: demo(function (db, t, id, pw) {
-      admin(db, t); checkPw(pw);
-      var u = db.users.filter(function (x) { return x.id === id; })[0]; if (!u) fail("User not found."); u.password = pw; return { ok: true };
+      var a = admin(db, t); checkPw(pw);
+      var u = db.users.filter(function (x) { return x.id === id; })[0]; if (!u) fail("User not found.");
+      if (a.role !== "superuser" && u.role !== "user") fail("Only the super user can reset an admin password.");
+      u.password = pw; return { ok: true };
     }),
     adminDeleteUser: demo(function (db, t, id) {
-      var a = admin(db, t); var u = db.users.filter(function (x) { return x.id === id; })[0];
+      var a = superUser(db, t); var u = db.users.filter(function (x) { return x.id === id; })[0];
       if (!u) fail("User not found."); if (u.id === a.id) fail("You cannot delete your own account.");
       if (u.status === "approved") fail("Disable the user first, then delete.");
       db.users = db.users.filter(function (x) { return x.id !== id; }); return { ok: true };
     }),
     adminSaveTool: demo(function (db, t, d) {
-      admin(db, t);
+      superUser(db, t); d.editable = !!d.editable;
       if (!/^[a-z0-9-]{2,40}$/.test(d.id || "")) fail("Tool id must be lowercase letters, numbers and dashes.");
       if ((d.name || "").trim().length < 2) fail("Tool name is required.");
       if (d.path && !/^tools\/[a-z0-9-]+\/$/.test(d.path)) fail("Path must look like tools/my-tool/");
@@ -230,7 +251,7 @@
       return { ok: true, run_id: run.id, lines: d.lines.length, unique_lines: run.unique_count, matched: matched, answers: answers };
     }),
     cmAdminLines: demo(function (db, t, d) {
-      admin(db, t); var f = cmFactory(db, d.factoryId), q = (d.search || "").trim().toLowerCase(), st = d.status || "open";
+      editor(db, t, "compliance-maker"); var f = cmFactory(db, d.factoryId), q = (d.search || "").trim().toLowerCase(), st = d.status || "open";
       var all = db.cm.lines.filter(function (x) { return x.factory_id === f.id; });
       var list = all.filter(function (x) { return (st === "all" || x.status === st) && x.spec_text.toLowerCase().indexOf(q) >= 0; })
         .sort(function (a, b) { return (b.status === "open") - (a.status === "open") || b.times_seen - a.times_seen; });
@@ -239,14 +260,14 @@
                total: list.length, lines: list.slice(off, off + (d.limit || 50)) };
     }),
     cmAdminSaveAnswer: demo(function (db, t, id, c, r) {
-      var a = admin(db, t), l = db.cm.lines.filter(function (x) { return x.id === id; })[0]; if (!l) fail("That line no longer exists.");
+      var a = editor(db, t, "compliance-maker"), l = db.cm.lines.filter(function (x) { return x.id === id; })[0]; if (!l) fail("That line no longer exists.");
       l.compliance = (c || "").trim(); l.remarks = (r || "").trim(); l.status = (l.compliance || l.remarks) ? "answered" : "open";
       l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "admin";
       return { ok: true, status: l.status };
     }),
-    cmAdminDeleteLine: demo(function (db, t, id) { admin(db, t); db.cm.lines = db.cm.lines.filter(function (x) { return x.id !== id; }); return { ok: true }; }),
+    cmAdminDeleteLine: demo(function (db, t, id) { editor(db, t, "compliance-maker"); db.cm.lines = db.cm.lines.filter(function (x) { return x.id !== id; }); return { ok: true }; }),
     cmAdminImport: demo(function (db, t, d) {
-      var a = admin(db, t), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, n = 0;
+      var a = editor(db, t, "compliance-maker"), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, n = 0;
       if (!d.rows || !d.rows.length) fail("No rows were found in that file.");
       d.rows.forEach(function (row) {
         var c = (row.compliance || "").trim(), r = (row.remarks || "").trim(), k = cmNorm(row.spec);
@@ -261,9 +282,9 @@
       db.cm.runs.unshift({ id: "r" + Date.now(), kind: "library-upload", created_at: new Date().toISOString(), user: a.full_name, username: a.username, product: f.product, factory: f.name, source: "xlsx", file_name: d.fileName || "", line_count: d.rows.length, unique_count: n, matched_count: added + updated });
       return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, unchanged: n - added - updated, skipped: d.rows.length - n };
     }),
-    cmAdminRuns: demo(function (db, t) { admin(db, t); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
+    cmAdminRuns: demo(function (db, t) { editor(db, t, "compliance-maker"); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
     cmAdminExport: demo(function (db, t, factoryId) {
-      admin(db, t); var f = cmFactory(db, factoryId);
+      editor(db, t, "compliance-maker"); var f = cmFactory(db, factoryId);
       return { lines: db.cm.lines.filter(function (x) { return x.factory_id === f.id; }) };
     }),
     // ---- Datasheet Notes row mapping (same rules as db/schema.sql) ----
@@ -283,7 +304,7 @@
       db.dn[f.id] = m; return { ok: true, added: added };
     }),
     dnAdminSaveRules: demo(function (db, t, d) {
-      admin(db, t); var f = cmFactory(db, d.factoryId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;
+      editor(db, t, "datasheet-notes"); var f = cmFactory(db, d.factoryId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;
       if (rules.length > 3000) fail("Too many rows to save in one go (more than 3000).");
       rules.forEach(function (r) {
         var k = String(r.key || "").trim();
@@ -304,7 +325,7 @@
       return { ok: true, saved: saved, removed: removed };
     }),
     adminSaveCategory: demo(function (db, t, d) {
-      admin(db, t);
+      superUser(db, t);
       if (!/^[a-z0-9-]{2,30}$/.test(d.id || "")) fail("Category id must be lowercase letters, numbers and dashes.");
       if ((d.name || "").trim().length < 2) fail("Category name is required.");
       db.categories = db.categories.filter(function (x) { return x.id !== d.id; }); db.categories.push(d); return { ok: true };

@@ -108,11 +108,15 @@
     var u = profile.user;
     details.fullName.value = u.full_name;
     $("fUser").textContent = u.username;
-    $("fRole").textContent = u.role === "admin" ? "Admin" : "User";
+    $("fRole").textContent = Hub.roleLabel(u.role);
     $("fSince").textContent = fmtDate(u.created_at);
     $("fLast").textContent = fmtDate(u.last_login_at, true);
     var acc = $("fAccess"); acc.textContent = "";
     profile.categories.forEach(function (c) { acc.appendChild(el("span", { "class": "badge", text: c.name })); });
+    // tools whose library or mapping this person may edit
+    var editNames = [];
+    profile.categories.forEach(function (c) { c.tools.forEach(function (t) { if (t.can_edit) editNames.push(t.name); }); });
+    if (editNames.length && u.role === "user") acc.appendChild(el("div", { "class": "small muted", style: "margin-top:6px", text: "Can edit: " + editNames.join(", ") }));
     pendingAvatar = undefined; paint();
   }
 

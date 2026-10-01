@@ -24,7 +24,7 @@ create table if not exists public.app_users (
   full_name       text not null,
   team_note       text not null default '',          -- what the person typed as their team when requesting access
   pass_hash       text not null,
-  role            text not null default 'user'    check (role in ('user','admin')),
+  role            text not null default 'user',   -- user | admin | superuser (see "roles" below)
   status          text not null default 'pending' check (status in ('pending','approved','rejected','disabled')),
   failed_attempts int  not null default 0,
   locked_until    timestamptz,
@@ -35,6 +35,12 @@ create table if not exists public.app_users (
 );
 alter table public.app_users add column if not exists avatar text;          -- small profile picture as a data: URL (resized in the browser)
 create unique index if not exists app_users_username_key on public.app_users (lower(username));
+-- Roles:
+--   superuser  the site owner. Exactly one. Manages roles, deletes users, sets up tools and tiles.
+--   admin      approves users, sets their tile access and per-tool edit rights; may edit every tool's data.
+--   user       runs the tools. Can be given edit rights for single tools (app_tool_editors).
+alter table public.app_users drop constraint if exists app_users_role_check;
+alter table public.app_users add constraint app_users_role_check check (role in ('user','admin','superuser'));
 
 create table if not exists public.app_sessions (
   token_hash  text primary key,
@@ -68,19 +74,31 @@ create table if not exists public.app_tools (
   status      text not null default 'soon' check (status in ('live','soon','hidden')),
   sort        int  not null default 100
 );
+-- editable = the tool has an edit screen (a library, a row mapping) that admins and chosen users maintain.
+alter table public.app_tools add column if not exists editable boolean not null default false;
+
+-- Per-tool write access for ordinary users. Admins and the superuser may edit every editable tool.
+create table if not exists public.app_tool_editors (
+  user_id    uuid not null references public.app_users(id) on delete cascade,
+  tool_id    text not null references public.app_tools(id) on delete cascade,
+  granted_by uuid references public.app_users(id) on delete set null,
+  granted_at timestamptz not null default now(),
+  primary key (user_id, tool_id)
+);
 
 alter table public.app_users           enable row level security;
 alter table public.app_sessions        enable row level security;
 alter table public.app_categories      enable row level security;
 alter table public.app_user_categories enable row level security;
 alter table public.app_tools           enable row level security;
+alter table public.app_tool_editors    enable row level security;
 
 revoke all on public.app_users, public.app_sessions, public.app_categories,
-              public.app_user_categories, public.app_tools from public;
+              public.app_user_categories, public.app_tools, public.app_tool_editors from public;
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     revoke all on public.app_users, public.app_sessions, public.app_categories,
-                  public.app_user_categories, public.app_tools from anon, authenticated;
+                  public.app_user_categories, public.app_tools, public.app_tool_editors from anon, authenticated;
   end if;
 end $$;
 
@@ -109,6 +127,14 @@ insert into public.app_tools (id, category_id, name, description, path, status, 
    'Turn a product datasheet PDF into an Excel table of unit data, sections and options.',
    'tools/datasheet-notes/', 'live', 15)
 on conflict (id) do nothing;
+update public.app_tools set editable = true where id in ('compliance-maker', 'datasheet-notes');
+
+-- An existing site had one 'admin' created by app_bootstrap_admin: that account becomes the superuser.
+-- (To move it later, run in the SQL Editor:  select public.app_set_superuser('username');)
+update public.app_users set role = 'superuser'
+ where not exists (select 1 from public.app_users where role = 'superuser')
+   and id = (select id from public.app_users where role = 'admin' and status = 'approved'
+              order by created_at limit 1);
 
 -- ---------- internal helpers (not callable from the website) ----------
 
@@ -146,14 +172,57 @@ begin
   return u;
 end $$;
 
+-- Admin or superuser.
 create or replace function public.app__require_admin(p_token text)
 returns public.app_users
 language plpgsql security definer set search_path = public, extensions as $$
 declare u public.app_users;
 begin
   u := public.app__session_user(p_token);
-  if u.role <> 'admin' then
+  if u.role not in ('admin','superuser') then
     perform public.app__fail('Admin access required.');
+  end if;
+  return u;
+end $$;
+
+-- Superuser only.
+create or replace function public.app__require_super(p_token text)
+returns public.app_users
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users;
+begin
+  u := public.app__session_user(p_token);
+  if u.role <> 'superuser' then
+    perform public.app__fail('Only the super user can do this.');
+  end if;
+  return u;
+end $$;
+
+-- May this user edit the data behind one tool? Admins and the superuser: every editable tool.
+-- Users: only the tools they were granted, and only while the tool is editable and they can open it.
+create or replace function public.app__can_edit(u public.app_users, p_tool_id text)
+returns boolean
+language sql security definer set search_path = public, extensions as $$
+  select exists (
+    select 1 from public.app_tools t
+     where t.id = p_tool_id and t.editable
+       and (u.role in ('admin','superuser')
+            or (exists (select 1 from public.app_tool_editors e where e.user_id = u.id and e.tool_id = t.id)
+                and exists (select 1 from public.app_categories c
+                             where c.id = t.category_id
+                               and (c.is_default or exists (select 1 from public.app_user_categories uc
+                                                             where uc.user_id = u.id and uc.category_id = c.id))))));
+$$;
+
+-- Session user who may edit the given tool, or raises.
+create or replace function public.app__require_editor(p_token text, p_tool_id text)
+returns public.app_users
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users;
+begin
+  u := public.app__session_user(p_token);
+  if not public.app__can_edit(u, p_tool_id) then
+    perform public.app__fail('Edit access for this tool is required.');
   end if;
   return u;
 end $$;
@@ -165,19 +234,22 @@ language sql security definer set search_path = public, extensions as $$
   select jsonb_build_object(
     'user', jsonb_build_object('id', u.id, 'username', u.username, 'full_name', u.full_name,
                                'role', u.role, 'avatar', u.avatar,
-                               'created_at', u.created_at, 'last_login_at', u.last_login_at),
+                               'created_at', u.created_at, 'last_login_at', u.last_login_at,
+                               'edit_tools', coalesce((select jsonb_agg(t.id order by t.id) from public.app_tools t
+                                                        where public.app__can_edit(u, t.id)), '[]'::jsonb)),
     'categories', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id', c.id, 'name', c.name, 'description', c.description, 'allowed', true,
                'tools', coalesce((
                    select jsonb_agg(jsonb_build_object(
                             'id', t.id, 'name', t.name, 'description', t.description,
-                            'path', t.path, 'status', t.status) order by t.sort, t.name)
+                            'path', t.path, 'status', t.status,
+                            'can_edit', public.app__can_edit(u, t.id)) order by t.sort, t.name)
                      from public.app_tools t
                     where t.category_id = c.id and t.status <> 'hidden'), '[]'::jsonb)
              ) order by c.sort, c.name)
         from public.app_categories c
-       where u.role = 'admin' or c.is_default
+       where u.role in ('admin','superuser') or c.is_default
           or exists (select 1 from public.app_user_categories uc
                       where uc.category_id = c.id and uc.user_id = u.id)
     ), '[]'::jsonb)
@@ -333,7 +405,10 @@ begin
                'created_at', u.created_at, 'last_login_at', u.last_login_at,
                'categories', coalesce((select jsonb_agg(uc.category_id order by uc.category_id)
                                          from public.app_user_categories uc
-                                        where uc.user_id = u.id), '[]'::jsonb)
+                                        where uc.user_id = u.id), '[]'::jsonb),
+               'edit_tools', coalesce((select jsonb_agg(e.tool_id order by e.tool_id)
+                                         from public.app_tool_editors e
+                                        where e.user_id = u.id), '[]'::jsonb)
              ) order by (u.status = 'pending') desc, u.created_at desc)
         from public.app_users u), '[]'::jsonb),
     'categories', coalesce((
@@ -343,20 +418,25 @@ begin
     'tools', coalesce((
       select jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'category_id', t.category_id,
                                           'description', t.description, 'path', t.path,
-                                          'status', t.status, 'sort', t.sort)
+                                          'status', t.status, 'sort', t.sort, 'editable', t.editable)
                        order by t.category_id, t.sort, t.name)
         from public.app_tools t), '[]'::jsonb)
   );
 end $$;
 
--- Approve / reject / disable a user, set role, and set which tiles they may open.
+-- Approve / reject / disable a user, set which tiles they may open and which tools they may edit.
+--   Admins may manage ordinary users only. Roles, and admin accounts, are the superuser's alone.
+--   p_edit_tools: tool ids the user may edit (ignored for admins, who may edit everything).
+drop function if exists public.app_admin_set_user(text, uuid, text, text, text[]);
 create or replace function public.app_admin_set_user(
-  p_token text, p_user_id uuid, p_status text, p_role text, p_categories text[])
+  p_token text, p_user_id uuid, p_status text, p_role text, p_categories text[],
+  p_edit_tools text[] default '{}'::text[])
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
   a public.app_users;
   t public.app_users;
+  v_role text := coalesce(p_role, '');
 begin
   a := public.app__require_admin(p_token);
   select * into t from public.app_users where id = p_user_id;
@@ -364,19 +444,28 @@ begin
   if p_status not in ('pending','approved','rejected','disabled') then
     perform public.app__fail('Invalid status.');
   end if;
-  if p_role not in ('user','admin') then perform public.app__fail('Invalid role.'); end if;
+  if v_role = '' then v_role := t.role; end if;
+  if v_role not in ('user','admin','superuser') then perform public.app__fail('Invalid role.'); end if;
 
-  -- never leave the site without an active admin
-  if t.role = 'admin' and t.status = 'approved'
-     and (p_role <> 'admin' or p_status <> 'approved')
-     and (select count(*) from public.app_users
-           where role = 'admin' and status = 'approved' and id <> t.id) = 0 then
-    perform public.app__fail('You cannot remove the last active admin.');
+  if a.role <> 'superuser' then
+    if t.role <> 'user' then
+      perform public.app__fail('Only the super user can change an admin account.');
+    end if;
+    if v_role <> t.role then
+      perform public.app__fail('Only the super user can change roles.');
+    end if;
+  end if;
+  -- there is exactly one superuser; it is moved with app_set_superuser in the SQL Editor, never from the website
+  if v_role = 'superuser' and t.role <> 'superuser' then
+    perform public.app__fail('The super user is set in the database, not from this page.');
+  end if;
+  if t.role = 'superuser' and (v_role <> 'superuser' or p_status <> 'approved') then
+    perform public.app__fail('The super user account cannot be demoted or disabled.');
   end if;
 
   update public.app_users
      set status = p_status,
-         role   = p_role,
+         role   = v_role,
          approved_by = case when p_status = 'approved' and t.status <> 'approved' then a.id else approved_by end,
          approved_at = case when p_status = 'approved' and t.status <> 'approved' then now() else approved_at end,
          failed_attempts = 0,
@@ -388,6 +477,14 @@ begin
   select t.id, c.id from public.app_categories c
    where c.id = any(coalesce(p_categories, '{}'::text[])) and not c.is_default;
 
+  -- per-tool edit rights: only for ordinary users and only for tools that have an edit screen
+  delete from public.app_tool_editors where user_id = t.id;
+  if v_role = 'user' then
+    insert into public.app_tool_editors (user_id, tool_id, granted_by)
+    select t.id, tl.id, a.id from public.app_tools tl
+     where tl.id = any(coalesce(p_edit_tools, '{}'::text[])) and tl.editable;
+  end if;
+
   if p_status <> 'approved' then
     delete from public.app_sessions where user_id = t.id;
   end if;
@@ -398,9 +495,13 @@ create or replace function public.app_admin_reset_password(
   p_token text, p_user_id uuid, p_new_password text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
+declare a public.app_users;
 begin
-  perform public.app__require_admin(p_token);
+  a := public.app__require_admin(p_token);
   perform public.app__check_password(p_new_password);
+  if a.role <> 'superuser' and exists (select 1 from public.app_users x where x.id = p_user_id and x.role <> 'user') then
+    perform public.app__fail('Only the super user can reset an admin password.');
+  end if;
   update public.app_users
      set pass_hash = crypt(p_new_password, gen_salt('bf', 10)),
          failed_attempts = 0, locked_until = null
@@ -415,7 +516,7 @@ returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare a public.app_users; t public.app_users;
 begin
-  a := public.app__require_admin(p_token);
+  a := public.app__require_super(p_token);
   select * into t from public.app_users where id = p_user_id;
   if t.id is null then perform public.app__fail('User not found.'); end if;
   if t.id = a.id then perform public.app__fail('You cannot delete your own account.'); end if;
@@ -427,14 +528,17 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
--- Add or edit a tool (the tile contents). New category tiles are added the same way.
+-- Add or edit a tool (the tile contents). Superuser only. New category tiles are added the same way.
+--   p_editable: the tool has an edit screen, so admins and chosen users can be given write access to it.
+drop function if exists public.app_admin_save_tool(text, text, text, text, text, text, text, int);
 create or replace function public.app_admin_save_tool(
   p_token text, p_id text, p_category_id text, p_name text,
-  p_description text, p_path text, p_status text, p_sort int default 100)
+  p_description text, p_path text, p_status text, p_sort int default 100,
+  p_editable boolean default false)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 begin
-  perform public.app__require_admin(p_token);
+  perform public.app__require_super(p_token);
   if coalesce(p_id, '') !~ '^[a-z0-9-]{2,40}$' then
     perform public.app__fail('Tool id must be lowercase letters, numbers and dashes.');
   end if;
@@ -446,13 +550,13 @@ begin
   if coalesce(p_path, '') <> '' and p_path !~ '^tools/[a-z0-9-]+/$' then
     perform public.app__fail('Path must look like tools/my-tool/');
   end if;
-  insert into public.app_tools (id, category_id, name, description, path, status, sort)
+  insert into public.app_tools (id, category_id, name, description, path, status, sort, editable)
   values (p_id, p_category_id, trim(p_name), trim(coalesce(p_description, '')),
-          coalesce(p_path, ''), p_status, coalesce(p_sort, 100))
+          coalesce(p_path, ''), p_status, coalesce(p_sort, 100), coalesce(p_editable, false))
   on conflict (id) do update
      set category_id = excluded.category_id, name = excluded.name,
          description = excluded.description, path = excluded.path,
-         status = excluded.status, sort = excluded.sort;
+         status = excluded.status, sort = excluded.sort, editable = excluded.editable;
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -462,7 +566,7 @@ create or replace function public.app_admin_save_category(
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 begin
-  perform public.app__require_admin(p_token);
+  perform public.app__require_super(p_token);
   if coalesce(p_id, '') !~ '^[a-z0-9-]{2,30}$' then
     perform public.app__fail('Category id must be lowercase letters, numbers and dashes.');
   end if;
@@ -703,7 +807,7 @@ begin
                             'unique_lines', v_unique, 'matched', v_matched, 'answers', v_answers);
 end $$;
 
--- ---------- admin API ----------
+-- ---------- editor API (admins, and users given edit access to compliance-maker) ----------
 
 -- One page of the library for a factory, unanswered and most-seen first.
 create or replace function public.cm_admin_lines(
@@ -716,7 +820,7 @@ declare
   v_like text := '%' || replace(replace(replace(trim(coalesce(p_search, '')), '\', '\\'), '%', '\%'), '_', '\_') || '%';
   v_limit int := least(greatest(coalesce(p_limit, 50), 1), 200);
 begin
-  perform public.app__require_admin(p_token);
+  perform public.app__require_editor(p_token, 'compliance-maker');
   f := public.cm__factory(p_factory_id);
   return jsonb_build_object(
     'counts', (select jsonb_build_object('all', count(*),
@@ -755,7 +859,7 @@ declare
   v_r text := left(trim(coalesce(p_remarks, '')), 4000);
   l public.cm_lines;
 begin
-  a := public.app__require_admin(p_token);
+  a := public.app__require_editor(p_token, 'compliance-maker');
   update public.cm_lines
      set compliance = v_c, remarks = v_r,
          status = case when v_c <> '' or v_r <> '' then 'answered' else 'open' end,
@@ -772,7 +876,7 @@ create or replace function public.cm_admin_delete_line(p_token text, p_line_id u
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 begin
-  perform public.app__require_admin(p_token);
+  perform public.app__require_editor(p_token, 'compliance-maker');
   delete from public.cm_lines where id = p_line_id;
   if not found then perform public.app__fail('That line no longer exists.'); end if;
   return jsonb_build_object('ok', true);
@@ -792,7 +896,7 @@ declare
   v_run uuid;
   v_total int; v_unique int; v_added int; v_updated int;
 begin
-  a := public.app__require_admin(p_token);
+  a := public.app__require_editor(p_token, 'compliance-maker');
   f := public.cm__factory(p_factory_id);
   if p_rows is null or jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) = 0 then
     perform public.app__fail('No rows were found in that file.');
@@ -853,7 +957,7 @@ create or replace function public.cm_admin_runs(p_token text, p_limit int defaul
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 begin
-  perform public.app__require_admin(p_token);
+  perform public.app__require_editor(p_token, 'compliance-maker');
   return jsonb_build_object(
     'total', (select count(*) from public.cm_runs),
     'runs', coalesce((
@@ -877,7 +981,7 @@ returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare f public.cm_factories;
 begin
-  perform public.app__require_admin(p_token);
+  perform public.app__require_editor(p_token, 'compliance-maker');
   f := public.cm__factory(p_factory_id);
   return jsonb_build_object('lines', coalesce((
     select jsonb_agg(jsonb_build_object('spec_text', l.spec_text, 'compliance', l.compliance,
@@ -886,20 +990,36 @@ begin
       from public.cm_lines l where l.factory_id = f.id), '[]'::jsonb));
 end $$;
 
--- ---------- first admin (SQL Editor only, never from the website) ----------
--- After running this file, create your own admin ONCE with:
+-- ---------- the super user (SQL Editor only, never from the website) ----------
+-- After running this file on a NEW database, create yourself ONCE with:
 --     select public.app_bootstrap_admin('your.username', 'Your Full Name', 'a-strong-password');
+-- That account is the super user. Admins are then made on the website (Admin > Users > Role).
 create or replace function public.app_bootstrap_admin(p_username text, p_full_name text, p_password text)
 returns text
 language plpgsql security definer set search_path = public, extensions as $$
 begin
-  if exists (select 1 from public.app_users where role = 'admin') then
-    return 'An admin already exists. Use the Admin page on the website instead.';
+  if exists (select 1 from public.app_users where role = 'superuser') then
+    return 'A super user already exists. Use the Admin page on the website, or app_set_superuser to move it.';
   end if;
   perform public.app__check_password(p_password);
   insert into public.app_users (username, full_name, pass_hash, role, status, approved_at)
-  values (trim(p_username), trim(p_full_name), crypt(p_password, gen_salt('bf', 10)), 'admin', 'approved', now());
-  return 'Admin created. You can now log in on the website.';
+  values (trim(p_username), trim(p_full_name), crypt(p_password, gen_salt('bf', 10)), 'superuser', 'approved', now());
+  return 'Super user created. You can now log in on the website.';
+end $$;
+
+-- Move the super user role to another approved account (the old super user becomes an admin):
+--     select public.app_set_superuser('username');
+create or replace function public.app_set_superuser(p_username text)
+returns text
+language plpgsql security definer set search_path = public, extensions as $$
+declare t public.app_users;
+begin
+  select * into t from public.app_users where lower(username) = lower(trim(coalesce(p_username, '')));
+  if t.id is null then return 'No user with that username.'; end if;
+  if t.status <> 'approved' then return 'That user is not approved yet.'; end if;
+  update public.app_users set role = 'admin' where role = 'superuser' and id <> t.id;
+  update public.app_users set role = 'superuser' where id = t.id;
+  return 'Super user is now ' || t.username || '.';
 end $$;
 
 -- ============================================================
@@ -1013,7 +1133,7 @@ begin
   return jsonb_build_object('ok', true, 'added', v_added);
 end $$;
 
--- Save the mapping for one factory.
+-- Save the mapping for one factory (admins, and users given edit access to datasheet-notes).
 --   p_rules:  [{ "key", "section", "sub", "component", "show", "label", "response" }, ...] in display order.
 --             Rows already stored and not in the list are kept as they are.
 --   p_remove: ["key", ...] rules to delete.
@@ -1026,7 +1146,7 @@ declare
   f public.cm_factories;
   v_saved int := 0; v_removed int := 0;
 begin
-  u := public.app__require_admin(p_token);
+  u := public.app__require_editor(p_token, 'datasheet-notes');
   f := public.cm__factory(p_factory_id);
   p_rules  := coalesce(p_rules,  '[]'::jsonb);
   p_remove := coalesce(p_remove, '[]'::jsonb);
@@ -1098,7 +1218,7 @@ begin
     execute format('revoke all on function %s from public', f.sig);
     if has_anon then
       execute format('revoke all on function %s from anon, authenticated', f.sig);
-      if f.proname not like '%\_\_%' and f.proname <> 'app_bootstrap_admin' then
+      if f.proname not like '%\_\_%' and f.proname not in ('app_bootstrap_admin', 'app_set_superuser') then
         execute format('grant execute on function %s to anon, authenticated', f.sig);
       end if;
     end if;

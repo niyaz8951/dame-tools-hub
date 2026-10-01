@@ -1,5 +1,5 @@
 /* ============================================================
-   Datasheet Notes - row mapping (admins only).
+   Datasheet Notes - row mapping (admins, and users given edit access to this tool).
    Per factory, each datasheet row has: Show, Name in Excel, Response.
    Rows are found by loading a datasheet; every row listed is saved,
    so the list is there next time without loading a datasheet again.
@@ -256,7 +256,7 @@
   window.addEventListener('beforeunload', function (e) { if (factoryId && pending()) { e.preventDefault(); e.returnValue = ''; } });
 
   /* ---------- start ---------- */
-  window.Hub.requireLogin({ admin: true }).then(function () {
+  window.Hub.requireLogin({ edit: 'datasheet-notes' }).then(function () {
     return window.Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     // only products whose datasheet can be read have rows to map

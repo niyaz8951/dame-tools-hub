@@ -17,8 +17,9 @@ Demo data lives in your browser only and is not secure. It is for looking around
 
 1. **Create the database.** Make a free project at supabase.com. Open SQL Editor,
    paste the whole of `db/schema.sql`, press Run.
-2. **Create your admin.** In the same SQL Editor run (with your own values):
+2. **Create yourself as the super user.** In the same SQL Editor run (with your own values):
    `select public.app_bootstrap_admin('your.username', 'Your Full Name', 'a-strong-password');`
+   The super user is the one site owner. Admins are made later on the website (Admin > Users > Role).
 3. **Connect the site.** In Supabase open Project Settings > API. Copy the Project URL
    and the `anon public` key into `assets/js/config.js`. Never use the `service_role` key.
 4. **Publish.** Push this folder to a GitHub repository, then Settings > Pages >
@@ -31,8 +32,11 @@ Demo data lives in your browser only and is not secure. It is for looking around
 
 - Anyone can fill "Request access". The request stays Pending until an admin approves it.
 - On approval the admin ticks which team tiles the person can open. General is open to every approved user.
-- Admin page > Tools: add a tool, choose its tile, set it Live / Coming soon / Hidden.
-- Admin page > Team tiles: add more tiles later (no code change needed).
+- "Can edit" on the Users tab gives one user write access to one tool's edit screen (Compliance library, Datasheet row mapping) without making them an admin.
+- Three roles: **Super user** (one account, the owner: roles, deleting users, tools and tiles), **Admin** (approve users, tile access, edit rights; edits every tool), **User**. Admins cannot change roles or other admins.
+- Admin page > Tools (super user): add a tool, choose its tile, set it Live / Coming soon / Hidden, tick "Has an edit screen" if users can be given edit access to it.
+- Admin page > Team tiles (super user): add more tiles later (no code change needed).
+- Already live before 2026-10-01? Re-run `db/schema.sql` once; see `db/2026-10-01-roles.sql` for what it changes.
 
 ## Updating a site that is already live
 
@@ -75,7 +79,7 @@ assets/vendor/pdfjs/  pdf.js, served locally (no CDN)
 data/                 shared data files (highlight rules)
 tools/_template/      starting point for every tool
 tools/<tool-id>/      one folder per tool
-tools/compliance-maker/library.html  admin: master compliance library
+tools/compliance-maker/library.html  editors: master compliance library
 db/schema.sql         database tables and functions
 db/<date>-*.sql       one-off updates for a live database
 ```

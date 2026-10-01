@@ -192,7 +192,7 @@
 
   /* ---------- start ---------- */
   window.Hub.requireLogin({ tool: 'datasheet-notes' }).then(function (profile) {
-    if (profile.user.role === 'admin') $('dn-manage').hidden = false;
+    if (window.Hub.canEdit(profile, 'datasheet-notes')) $('dn-manage').hidden = false;
     return window.Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     products = res.products || [];

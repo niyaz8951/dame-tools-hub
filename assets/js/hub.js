@@ -98,17 +98,34 @@
     if (t) window.Api.logout(t).then(done, done); else done();
   }
 
+  // ---------- roles ----------
+  // superuser: the site owner (one account). admin: approves users and may edit every tool's data.
+  // user: runs the tools; may be given edit access to single tools (profile.user.edit_tools).
+  var ROLE_LABEL = { superuser: "Super user", admin: "Admin", user: "User" };
+  function roleLabel(role) { return ROLE_LABEL[role] || "User"; }
+  function isAdmin(user) { return !!user && (user.role === "admin" || user.role === "superuser"); }
+  function isSuper(user) { return !!user && user.role === "superuser"; }
+  // The database decides; this only mirrors it so pages can show or hide buttons.
+  function canEdit(profile, toolId) {
+    var u = profile && profile.user;
+    return !!u && (u.edit_tools || []).indexOf(toolId) >= 0;
+  }
+
   /* Guard for every protected page.
        Hub.requireLogin()                      - any approved user
-       Hub.requireLogin({ admin: true })       - admins only
+       Hub.requireLogin({ admin: true })       - admins and the super user
+       Hub.requireLogin({ super: true })       - the super user only
        Hub.requireLogin({ tool: "tool-id" })   - only users whose team has this tool
+       Hub.requireLogin({ edit: "tool-id" })   - only users who may edit this tool's data
      Resolves with the profile { user, categories } and draws the top bar. */
   function requireLogin(opts) {
     opts = opts || {};
     var t = token();
     if (!t) { go("index.html"); return new Promise(function () {}); }
     return window.Api.me(t).then(function (profile) {
-      if (opts.admin && profile.user.role !== "admin") { go("dashboard.html"); return new Promise(function () {}); }
+      if (opts.admin && !isAdmin(profile.user)) { go("dashboard.html"); return new Promise(function () {}); }
+      if (opts["super"] && !isSuper(profile.user)) { go("dashboard.html"); return new Promise(function () {}); }
+      if (opts.edit && !canEdit(profile, opts.edit)) { go("dashboard.html"); return new Promise(function () {}); }
       if (opts.tool) {
         var ok = profile.categories.some(function (c) {
           return c.allowed && c.tools.some(function (x) { return x.id === opts.tool; });
@@ -181,12 +198,12 @@
     var menu = el("div", { "class": "menu", role: "menu", hidden: true }, [
       el("div", { "class": "menu-head" }, [
         el("b", { text: user.full_name }),
-        el("span", { text: user.username + (user.role === "admin" ? " \u00b7 Admin" : "") })
+        el("span", { text: user.username + (isAdmin(user) ? " \u00b7 " + roleLabel(user.role) : "") })
       ]),
       el("a", { role: "menuitem", href: url("dashboard.html"), text: "Dashboard" }),
       el("a", { role: "menuitem", href: url("profile.html"), text: "My profile" }),
       el("a", { role: "menuitem", href: url("profile.html#password"), text: "Change password" }),
-      user.role === "admin" ? el("a", { role: "menuitem", href: url("admin.html"), text: "Admin" }) : null,
+      isAdmin(user) ? el("a", { role: "menuitem", href: url("admin.html"), text: "Admin" }) : null,
       el("button", { role: "menuitem", type: "button", text: "Log out", onclick: logout })
     ]);
     var trigger = el("button", { "class": "account", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "Account menu for " + user.full_name }, [
@@ -209,6 +226,7 @@
     ICON: ICON, el: el, toast: toast, url: url, go: go,
     token: token, setToken: setToken, logout: logout,
     requireLogin: requireLogin, themeButton: themeButton, avatar: avatar, renderTopbar: renderTopbar,
+    roleLabel: roleLabel, isAdmin: isAdmin, isSuper: isSuper, canEdit: canEdit,
     applyTheme: applyTheme, currentTheme: currentTheme,
     takeMessage: function () { var m = sget(sessionStorage, "dame_hub_msg"); sset(sessionStorage, "dame_hub_msg", null); return m; }
   };
