@@ -446,8 +446,36 @@
   //                  selected product; left blank (still shows the blue
   //                  band) if none is available (e.g. convert-only mode)
   //   Date (row 2) is ALWAYS today's date at export time — see todayStr().
+  /* Second sheet (optional): meta.sheet2 = { name, rows: [{ section, component, text, kind }] }.
+     Section | Component | Specification requirement | Remarks, built from the styles above:
+     2 header, 15 section name, 4 body, 0 sub-heading, 8 empty. */
+  function buildSheet2(sheet) {
+    var out = ['<row r="1" ht="22" customHeight="1">' +
+      ['Section', 'Component', 'Specification requirement', 'Remarks'].map(function (h, i) {
+        return inlineStrCell(colLetter(i + 1) + '1', 2, h);
+      }).join('') + '</row>'];
+    sheet.rows.forEach(function (r, i) {
+      var n = i + 2, sub = r.kind === 'sub';
+      function c(col, style, text) { return text ? inlineStrCell(colLetter(col) + n, style, text) : '<c r="' + colLetter(col) + n + '" s="' + style + '"/>'; }
+      out.push('<row r="' + n + '">' + c(1, sub ? 0 : 15, r.section) + c(2, sub ? 0 : 4, r.component) +
+               c(3, sub ? 0 : 4, r.text) + c(4, sub ? 0 : 8, '') + '</row>');
+    });
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+        '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+        '<sheetFormatPr defaultRowHeight="15"/>' +
+        '<cols><col min="1" max="1" width="26" customWidth="1"/><col min="2" max="2" width="32" customWidth="1"/>' +
+          '<col min="3" max="3" width="90" customWidth="1"/><col min="4" max="4" width="34" customWidth="1"/></cols>' +
+        '<sheetData>' + out.join('') + '</sheetData>' +
+        '<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
+        '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +
+      '</worksheet>';
+  }
+
   function build(rows, re, splitRuns, meta) {
     var sheetXml = buildSheet(rows, re, splitRuns, meta);
+    var sheet2 = meta && meta.sheet2 && meta.sheet2.rows && meta.sheet2.rows.length ? meta.sheet2 : null;
 
     var contentTypes =
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -456,6 +484,7 @@
         '<Default Extension="xml" ContentType="application/xml"/>' +
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        (sheet2 ? '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' : '') +
         '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
       '</Types>';
 
@@ -469,7 +498,8 @@
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-        '<sheets><sheet name="Compliance" sheetId="1" r:id="rId1"/></sheets>' +
+        '<sheets><sheet name="Compliance" sheetId="1" r:id="rId1"/>' +
+          (sheet2 ? '<sheet name="' + esc(String(sheet2.name || 'Datasheet rows').slice(0, 31)) + '" sheetId="2" r:id="rId3"/>' : '') + '</sheets>' +
       '</workbook>';
 
     var wbRels =
@@ -477,6 +507,7 @@
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+        (sheet2 ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' : '') +
       '</Relationships>';
 
     var files = [
@@ -487,6 +518,8 @@
       { name: 'xl/styles.xml',              data: strToU8(STYLES_XML) },
       { name: 'xl/worksheets/sheet1.xml',   data: strToU8(sheetXml) }
     ];
+
+    if (sheet2) files.push({ name: 'xl/worksheets/sheet2.xml', data: strToU8(buildSheet2(sheet2)) });
 
     var zipped = zip(files);
     return new Blob([zipped], {

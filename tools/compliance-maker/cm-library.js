@@ -40,7 +40,7 @@
   factorySel.addEventListener('change', function () { resetResult(); applyGate(); });
 
   (window.hubReady || Promise.reject(new Error('Not signed in'))).then(function (profile) {
-    if (profile.user.role === 'admin') $('lib-manage').hidden = false;
+    if (window.Hub.canEdit(profile, 'compliance-maker')) $('lib-manage').hidden = false;
     return window.Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     products = res.products || [];

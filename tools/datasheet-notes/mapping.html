@@ -19,10 +19,12 @@
   .dm-help li + li { margin-top: 3px; }
   .dm-help code { font: inherit; font-weight: 650; padding: 0 3px; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); }
   .dm-wrap { max-height: 70vh; overflow: auto; }
-  .dm-table { table-layout: fixed; min-width: 900px; }
+  .dm-table { table-layout: fixed; min-width: 1280px; }
+  .dm-keys { resize: vertical; min-height: 36px; line-height: 1.35; font-family: inherit; }
   .dm-table thead th { position: sticky; top: 0; z-index: 2; }
-  .dm-table th:nth-child(1) { width: 64px; } .dm-table th:nth-child(2) { width: 24%; }
-  .dm-table th:nth-child(3) { width: 18%; }  .dm-table th:nth-child(5) { width: 24%; }
+  .dm-table th:nth-child(1) { width: 64px; } .dm-table th:nth-child(2) { width: 17%; }
+  .dm-table th:nth-child(3) { width: 12%; }  .dm-table th:nth-child(4) { width: 10%; }
+  .dm-table th:nth-child(6) { width: 15%; } .dm-table th:nth-child(7) { width: 20%; }
   .dm-table td { vertical-align: top; padding: 8px 12px; overflow-wrap: anywhere; }
   .dm-table td .input { min-height: 36px; padding: 6px 10px; font-size: 14px; }
   .dm-table tr.group td { background: var(--surface-2); font-weight: 650; border-top: 2px solid var(--border); }
@@ -46,19 +48,17 @@
   <div class="page-head">
     <p class="small"><a href="index.html">&larr; Datasheet Notes</a></p>
     <h1>Row mapping</h1>
-    <p>Choose which datasheet rows go into the Excel table and what each row says. Kept separately for each factory.</p>
+    <p>Choose which datasheet rows go into the Excel table and what each row says. One mapping per product, used for every factory.</p>
   </div>
 
   <div class="stack">
     <section class="card stack" aria-labelledby="h-scope">
-      <h2 id="h-scope">Factory</h2>
+      <h2 id="h-scope">Product</h2>
       <div class="dm-grid">
         <label class="field"><span>Product</span>
           <select class="input" id="dm-product" disabled><option value="">Loading…</option></select></label>
-        <label class="field"><span>Factory</span>
-          <select class="input" id="dm-factory" disabled><option value="">Choose a product first</option></select></label>
       </div>
-      <p class="hint" id="dm-scope-hint" role="status">Choose a product and factory to see its mapping.</p>
+      <p class="hint" id="dm-scope-hint" role="status">Choose a product to see its mapping.</p>
     </section>
 
     <section class="card stack" id="dm-panel" aria-labelledby="h-rows" hidden>
@@ -70,8 +70,13 @@
           <li>Untick <strong>Show</strong> to leave a row out of the table.</li>
           <li>Leave <strong>Response</strong> empty to print the datasheet value as it is.</li>
           <li>Type a sentence to print the same standard response every time.</li>
+          <li><strong>Remove text</strong> takes text out of the datasheet value: <em>+ PE</em> turns
+              <em>380V/3Ph/60Hz + PE</em> into <em>380V/3Ph/60Hz</em>. Separate several texts with <code>;</code>.</li>
           <li>Put <code>$</code> or <code>*</code> where the datasheet value should go:
               <em>Panel thickness is $ Thermal break</em> prints <em>Panel thickness is 62 mm Thermal break</em>.</li>
+          <li><strong>Spec keywords</strong> are used by the Compliance Maker to find this row's clause in a specification.
+              Separate entries with <code>;</code>. An entry finds a clause when every word of it starts a word of the clause:
+              <em>fin spac</em> finds "fins shall be spaced". Empty means the row is not searched for.</li>
           <li><strong>Name in Excel</strong> changes what is printed in the Component column. Empty keeps the datasheet name.</li>
         </ul>
       </div>
@@ -92,10 +97,10 @@
       <p class="hint" id="dm-status" role="status" aria-live="polite"></p>
       <div class="notice error" id="dm-error" hidden></div>
 
-      <div class="empty" id="dm-empty" hidden>No rows are mapped for this factory yet. Load a datasheet to list its rows.</div>
+      <div class="empty" id="dm-empty" hidden>No rows are mapped for this product yet. Load a datasheet to list its rows.</div>
       <div class="table-wrap dm-wrap" id="dm-wrap" tabindex="0" role="region" aria-labelledby="h-rows" hidden>
         <table class="table dm-table">
-          <thead><tr><th>Show</th><th>Datasheet row</th><th>Name in Excel</th><th>Response</th><th>Result</th></tr></thead>
+          <thead><tr><th>Show</th><th>Datasheet row</th><th>Name in Excel</th><th>Remove text</th><th>Response</th><th>Result</th><th>Spec keywords</th></tr></thead>
           <tbody id="dm-body"></tbody>
         </table>
       </div>

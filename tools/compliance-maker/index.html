@@ -103,7 +103,15 @@
 
     #panel-format, #result-panel { margin-top: var(--space-4); }
     #paste-input { min-height: 220px; font-family: var(--font-mono); font-size: 0.875rem; }
-  </style>
+    /* Datasheet rows table */
+  .rows-wrap { max-height: 560px; overflow: auto; }
+  .rows-table { table-layout: fixed; min-width: 720px; }
+  table.rows-table th, table.rows-table td { vertical-align: top; overflow-wrap: anywhere; }
+  table.rows-table td.rows-sec { font-weight: 600; }
+  table.rows-table td.rows-text { white-space: pre-line; }
+  table.rows-table tr.rows-first td { border-top: 2px solid var(--color-border); }
+  table.rows-table tr.rows-sub td { background: var(--color-surface-sunken); font-weight: 600; }
+</style>
   <script src="../../assets/js/config.js"></script>
   <script src="../../assets/js/api.js"></script>
   <script src="../../assets/js/hub.js"></script>
@@ -281,6 +289,23 @@ starters</textarea>
       <p class="hint" id="count-note"></p>
     </section>
 
+    <!-- Datasheet rows: the rows of the Datasheet Notes table, with the clause found for each -->
+    <section class="panel" id="rows-panel" aria-labelledby="step-rows" hidden>
+      <div class="panel__head">
+        <h2 id="step-rows">Datasheet rows</h2>
+        <label class="check"><input type="checkbox" id="rows-only"> <span>Only rows found in the specification</span></label>
+      </div>
+      <p id="rows-note" class="hint" role="status" aria-live="polite" style="margin-bottom:var(--space-2)"></p>
+      <div class="table-wrap rows-wrap" tabindex="0" role="region" aria-labelledby="step-rows">
+        <table class="data rows-table">
+          <thead><tr><th style="width:18%">Section</th><th style="width:20%">Component</th><th>Specification requirement</th><th style="width:14%">Remarks</th></tr></thead>
+          <tbody id="rows-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">This table is the second sheet of the Excel ("Datasheet rows"), with every row. Clauses come from Part 2 of the
+        specification first, then Part 1; Part 3 is not searched.</p>
+    </section>
+
     <section class="panel" style="margin-top:var(--space-4)" aria-labelledby="tips">
       <div class="panel__head"><h2 id="tips">Tips</h2></div>
       <p class="muted">
@@ -301,6 +326,7 @@ starters</textarea>
   <script src="../../assets/js/reflow.js"></script>
   <script src="xlsx-writer.js"></script>
   <script src="cm-library.js"></script>
+  <script src="cm-rows.js"></script>
   <script src="compliance-maker.js"></script>
 </body>
 </html>

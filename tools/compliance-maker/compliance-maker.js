@@ -91,8 +91,22 @@
     return isCaps || isProper || endsColon;
   }
 
+  // "2.02 CASING" is a section. A wrapped line that happens to start with a decimal
+  // ("0.68 W/m2 °K ...", "1.52 mm (16 gage) ...") is not: sections start at 1 and their
+  // title starts with a capitalised word, not a unit.
+  function sectionMatch(line) {
+    var m = line.match(RE.section);
+    if (!m) return null;
+    var first = m[2].trim().split(/\s+/)[0] || '';
+    if (/^0\./.test(m[1])) return null;
+    if (first && !/^[A-Z][A-Za-z,&'’\-]*[:.]?$/.test(first)) {
+      if (/^\d{1,2}\.\d{2}$/.test(m[1]) || !/^[A-Za-z]/.test(first)) return null;
+    }
+    return m;
+  }
+
   function startsNewItem(line) {
-    return RE.part.test(line) || RE.section.test(line) ||
+    return RE.part.test(line) || !!sectionMatch(line) ||
            RE.number.test(line) || RE.letter.test(line) ||
            RE.letterLoose.test(line);
   }
@@ -100,7 +114,7 @@
   function classify(line) {
     var m;
     if ((m = line.match(RE.part)))    return { type: 'part',    sr: m[1].toUpperCase(), spec: (m[2] || '').trim() };
-    if ((m = line.match(RE.section))) {
+    if ((m = sectionMatch(line))) {
       var stext = m[2].trim();
       // x.xx (two-decimal) is always a section (classic spec numbering).
       // x.x (one-decimal) is a section only if it reads like a heading.
@@ -469,6 +483,33 @@
     return lines;
   }
 
+  /* Running headers and footers ("SECTION 15720", "Rev 0  12 of 32  Contract No:") sit in
+     the first or last few lines of a page and repeat on most pages. Left in, they get glued
+     into the middle of a clause that runs over a page break. A line is removed only when
+     the same text (digits ignored) is at the top or bottom of at least 3 pages and 40% of
+     the pages. Edits pageLines in place and returns how many lines were removed. */
+  var EDGE_LINES = 4;
+  function dropPageFurniture(pageLines) {
+    function key(s) { return s.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(); }
+    function edges(lines) {
+      var idx = [];
+      lines.forEach(function (l, i) { if (l.trim()) idx.push(i); });
+      return idx.slice(0, EDGE_LINES).concat(idx.slice(-EDGE_LINES)).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    }
+    var count = {};
+    pageLines.forEach(function (lines) {
+      var seen = {};
+      edges(lines).forEach(function (i) { var k = key(lines[i]); if (k && !seen[k]) { seen[k] = 1; count[k] = (count[k] || 0) + 1; } });
+    });
+    var need = Math.max(3, Math.ceil(pageLines.length * 0.4)), removed = 0;
+    pageLines.forEach(function (lines, p) {
+      var drop = {};
+      edges(lines).forEach(function (i) { if (count[key(lines[i])] >= need) drop[i] = 1; });
+      pageLines[p] = lines.filter(function (l, i) { if (drop[i]) { removed++; return false; } return true; });
+    });
+    return removed;
+  }
+
   /* ======================================================================
      BUILD
      ====================================================================== */
@@ -478,6 +519,9 @@
     renderPreview(rows);
     setStatus(baseMsg + '.', 'ok');
     saveToLibrary(rows);
+    // second table: the datasheet rows with the clause found for each (cm-rows.js)
+    var sel = window.CMLibrary && window.CMLibrary.selection();
+    if (window.CMRows) window.CMRows.update(rows, sel ? { id: sel.productId, name: sel.productName } : null);
   }
 
   /* DAME Tools Hub: every conversion is saved to the master compliance
@@ -545,7 +589,7 @@
       var task = window['pdfjsLib'].getDocument({ data: new Uint8Array(reader.result) });
       task.promise.then(function (pdf) {
         var maxPages = Math.min(pdf.numPages, MAX_PAGES);
-        var allLines = [];
+        var allLines = [], pageLines = [];
 
         function readPage(p) {
           if (p > maxPages) return Promise.resolve();
@@ -553,13 +597,15 @@
           return pdf.getPage(p)
             .then(function (page) { return page.getTextContent(); })
             .then(function (tc) {
-              allLines = allLines.concat(extractLinesFromTextContent(tc));
+              pageLines.push(extractLinesFromTextContent(tc));
               return new Promise(function (r) { setTimeout(r, 0); });
             })
             .then(function () { return readPage(p + 1); });
         }
 
         return readPage(1).then(function () {
+          var dropped = dropPageFurniture(pageLines);
+          pageLines.forEach(function (pl) { allLines = allLines.concat(pl); });
           var joined = allLines.join('').trim();
           if (!joined) {
             setStatus('No selectable text found. This looks like a scanned PDF — OCR is not supported.', 'error');
@@ -572,7 +618,8 @@
           var note = pdf.numPages > MAX_PAGES
             ? ' (first ' + MAX_PAGES + ' of ' + pdf.numPages + ' pages)'
             : '';
-          finishBuild(rows, 'Done — ' + rows.length + ' rows' + note);
+          finishBuild(rows, 'Done — ' + rows.length + ' rows' + note +
+            (dropped ? ' · ' + dropped + ' page header and footer lines removed' : ''));
           setConverting(false);
         });
       }).catch(function (err) {
@@ -662,6 +709,7 @@
 
   function clearAll() {
     currentRows = null;
+    if (window.CMRows) window.CMRows.clear();
     pendingFile = null;
     fileInput.value = '';
     fileSlot.innerHTML = '';
@@ -742,7 +790,8 @@
     var re = buildHighlighter();
     var sel = window.CMLibrary && window.CMLibrary.selection();
     var band = sel ? 'Product : ' + sel.productName + '     Factory : ' + sel.factoryName : '';
-    var blob = window.xlsxWriter.build(currentRows, re, splitRuns, { bandText: band });
+    var blob = window.xlsxWriter.build(currentRows, re, splitRuns,
+      { bandText: band, sheet2: window.CMRows ? window.CMRows.sheet() : null });
     downloadBlob(blob, currentName + '.xlsx');
   });
 
