@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en" data-loading>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Admin - DAME Tools Hub</title>
+<link rel="icon" href="assets/favicon.svg">
+<link rel="stylesheet" href="assets/css/theme.css">
+<script src="assets/js/config.js"></script>
+<script src="assets/js/api.js"></script>
+<script src="assets/js/hub.js"></script>
+</head>
+<body>
+<header id="topbar"></header>
+<main class="page">
+  <div class="page-head">
+    <p class="small"><a href="dashboard.html">&larr; Dashboard</a></p>
+    <h1>Admin</h1>
+    <p id="adminIntro">Approve people, decide which team tiles they can open and which tools they can edit.</p>
+    <p class="small" style="margin-top:8px"><a href="tools/compliance-maker/library.html">Compliance library</a> &middot; <a href="tools/datasheet-notes/mapping.html">Datasheet row mapping</a></p>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="users" aria-selected="true">Users <span class="badge warn" id="pendingCount" hidden></span></button>
+    <button class="tab" role="tab" data-tab="tools" aria-selected="false" data-super hidden>Tools</button>
+    <button class="tab" role="tab" data-tab="tiles" aria-selected="false" data-super hidden>Team tiles</button>
+  </div>
+
+  <!-- USERS -->
+  <section id="tab-users" class="stack">
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>User</th><th>Team (as requested)</th><th>Status</th><th>Role</th><th>Tile access</th><th>Can edit</th><th></th></tr></thead>
+        <tbody id="userRows"></tbody>
+      </table>
+    </div>
+    <p class="small muted" id="usersNote">General is open to every approved user. Admins can open every tile and edit every tool. "Can edit" gives a user write access to one tool's library or mapping. Changes apply when you press Save.</p>
+  </section>
+
+  <!-- TOOLS -->
+  <section id="tab-tools" class="stack" hidden>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Tool</th><th>Tile</th><th>Status</th><th>Edit screen</th><th>Folder</th><th></th></tr></thead>
+        <tbody id="toolRows"></tbody>
+      </table>
+    </div>
+    <form id="toolForm" class="card stack">
+      <h2 id="toolFormTitle">Add a tool</h2>
+      <div class="grid">
+        <label class="field"><span>Tool id</span><input class="input" name="id" required pattern="[a-z0-9\-]{2,40}" placeholder="fcu-costing">
+          <div class="hint">Lowercase, dashes. Same as the folder name under /tools.</div></label>
+        <label class="field"><span>Name</span><input class="input" name="name" required maxlength="60"></label>
+        <label class="field"><span>Tile</span><select class="input" name="category_id"></select></label>
+        <label class="field"><span>Status</span><select class="input" name="status">
+          <option value="soon">Coming soon</option><option value="live">Live</option><option value="hidden">Hidden</option></select></label>
+        <label class="field"><span>Order</span><input class="input" name="sort" type="number" value="100"></label>
+      </div>
+      <label class="field"><span>Description</span><input class="input" name="description" maxlength="140"></label>
+      <label class="check"><input type="checkbox" name="editable"> Has an edit screen (a library or row mapping). Admins can edit it, and users can be given edit access on the Users tab.</label>
+      <div class="row"><button class="btn" type="submit">Save tool</button><button class="btn ghost" type="reset">Clear</button></div>
+    </form>
+  </section>
+
+  <!-- TILES -->
+  <section id="tab-tiles" class="stack" hidden>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Tile</th><th>Id</th><th>Who can open it</th></tr></thead>
+        <tbody id="tileRows"></tbody>
+      </table>
+    </div>
+    <form id="tileForm" class="card stack">
+      <h2>Add a team tile</h2>
+      <div class="grid">
+        <label class="field"><span>Tile id</span><input class="input" name="id" required pattern="[a-z0-9\-]{2,30}" placeholder="service"></label>
+        <label class="field"><span>Name</span><input class="input" name="name" required maxlength="40"></label>
+        <label class="field"><span>Order</span><input class="input" name="sort" type="number" value="100"></label>
+      </div>
+      <label class="field"><span>Description</span><input class="input" name="description" maxlength="120"></label>
+      <label class="check"><input type="checkbox" name="is_default"> Open to every approved user</label>
+      <div class="row"><button class="btn" type="submit">Save tile</button></div>
+    </form>
+  </section>
+</main>
+<script>
+(function () {
+  "use strict";
+  var el = Hub.el, data, me;
+  var $ = function (id) { return document.getElementById(id); };
+  var STATUS = { pending: ["Pending", "warn"], approved: ["Approved", "ok"], rejected: ["Rejected", "danger"], disabled: ["Disabled", ""] };
+
+  function call(promise, okMsg) {
+    return promise.then(function () { if (okMsg) Hub.toast(okMsg); return refresh(); },
+                        function (err) { Hub.toast(err.message, true); });
+  }
+  function select(options, value) {
+    var s = el("select", { "class": "input" });
+    options.forEach(function (o) { var op = el("option", { value: o[0], text: o[1] }); if (o[0] === value) op.selected = true; s.appendChild(op); });
+    return s;
+  }
+
+  // ---------- users ----------
+  // What the signed-in person may do to this row. The database enforces the same rules.
+  function mayManage(u) { return Hub.isSuper(me) || u.role === "user"; }
+  function userRow(u) {
+    var pending = u.status === "pending", isSuperRow = u.role === "superuser", editable = mayManage(u);
+    var isAdminRow = u.role === "admin" || isSuperRow;
+    var statusSel = select([["pending", "Pending"], ["approved", "Approved"], ["rejected", "Rejected"], ["disabled", "Disabled"]], u.status);
+    var roleOptions = [["user", "User"], ["admin", "Admin"]];
+    if (isSuperRow) roleOptions.push(["superuser", "Super user"]);
+    var roleSel = select(roleOptions, u.role);
+    roleSel.disabled = !Hub.isSuper(me) || isSuperRow;      // roles are the super user's alone; the super user is set in the database
+    if (isSuperRow) statusSel.disabled = true;
+    var boxes = data.categories.map(function (c) {
+      var cb = el("input", { type: "checkbox", value: c.id });
+      cb.checked = c.is_default || isAdminRow || u.categories.indexOf(c.id) >= 0; cb.disabled = c.is_default || isAdminRow || !editable;
+      return el("label", { "class": "check", style: "margin-right:12px" }, [cb, c.name]);
+    });
+    var editTools = data.tools.filter(function (t) { return t.editable; });
+    var editBoxes = editTools.map(function (t) {
+      var cb = el("input", { type: "checkbox", value: t.id });
+      cb.checked = isAdminRow || (u.edit_tools || []).indexOf(t.id) >= 0; cb.disabled = isAdminRow || !editable;
+      return el("label", { "class": "check", style: "margin-right:12px;white-space:nowrap" }, [cb, t.name]);
+    });
+    // the role box drives the two checkbox groups: admins get everything, so the boxes grey out
+    roleSel.addEventListener("change", function () {
+      var all = roleSel.value !== "user";
+      boxes.forEach(function (b) { var cb = b.firstChild; if (!data.categories.filter(function (c) { return c.id === cb.value; })[0].is_default) { cb.disabled = all; if (all) cb.checked = true; } });
+      editBoxes.forEach(function (b) { b.firstChild.disabled = all; if (all) b.firstChild.checked = true; });
+    });
+    function checked(group) { return group.map(function (b) { return b.firstChild; }).filter(function (cb) { return cb.checked && !cb.disabled; }).map(function (cb) { return cb.value; }); }
+    function payload(status) {
+      return { id: u.id, status: status || statusSel.value, role: roleSel.value, categories: checked(boxes), editTools: checked(editBoxes) };
+    }
+    var actions = el("div", { "class": "row", style: "justify-content:flex-end;flex-wrap:nowrap" });
+    if (!editable) {
+      actions.appendChild(el("span", { "class": "small muted", text: isSuperRow ? "Site owner" : "Managed by the super user" }));
+    } else if (pending) {
+      actions.appendChild(el("button", { "class": "btn sm", type: "button", text: "Approve", onclick: function () { call(Api.adminSetUser(Hub.token(), payload("approved")), u.username + " approved"); } }));
+      actions.appendChild(el("button", { "class": "btn danger sm", type: "button", text: "Reject", onclick: function () { call(Api.adminSetUser(Hub.token(), payload("rejected")), u.username + " rejected"); } }));
+    } else {
+      actions.appendChild(el("button", { "class": "btn sm", type: "button", text: "Save", onclick: function () { call(Api.adminSetUser(Hub.token(), payload()), "Saved " + u.username); } }));
+      actions.appendChild(el("button", { "class": "btn ghost sm", type: "button", text: "Reset password", onclick: function () {
+        var pw = window.prompt("New password for " + u.username + " (at least 8 characters):");
+        if (pw) call(Api.adminResetPassword(Hub.token(), u.id, pw), "Password reset for " + u.username);
+      } }));
+      if (u.status !== "approved" && u.id !== me.id && Hub.isSuper(me)) {
+        actions.appendChild(el("button", { "class": "btn danger sm", type: "button", text: "Delete", onclick: function () {
+          if (window.confirm("Delete " + u.username + " permanently?")) call(Api.adminDeleteUser(Hub.token(), u.id), "Deleted " + u.username);
+        } }));
+      }
+    }
+    return el("tr", {}, [
+      el("td", {}, [el("b", { text: u.full_name }), el("div", { "class": "small muted", text: u.username })]),
+      el("td", { text: u.team_note || "-" }),
+      el("td", {}, pending ? [el("span", { "class": "badge warn", text: "Pending" })] : [statusSel]),
+      el("td", {}, [roleSel]),
+      el("td", {}, isAdminRow ? [el("span", { "class": "small muted", text: "All tiles" })] : boxes),
+      el("td", {}, isAdminRow ? [el("span", { "class": "small muted", text: "All tools" })] : (editBoxes.length ? editBoxes : [el("span", { "class": "small muted", text: "-" })])),
+      el("td", {}, [actions])
+    ]);
+  }
+
+  // ---------- tools / tiles ----------
+  function catName(id) { var c = data.categories.filter(function (x) { return x.id === id; })[0]; return c ? c.name : id; }
+  function toolRow(t) {
+    var s = { live: ["Live", "ok"], soon: ["Coming soon", "warn"], hidden: ["Hidden", ""] }[t.status];
+    return el("tr", {}, [
+      el("td", {}, [el("b", { text: t.name }), el("div", { "class": "small muted", text: t.description })]),
+      el("td", { text: catName(t.category_id) }),
+      el("td", {}, [el("span", { "class": "badge " + s[1], text: s[0] })]),
+      el("td", { "class": "small muted", text: t.editable ? "Yes" : "-" }),
+      el("td", { "class": "small muted", text: t.path || "-" }),
+      el("td", { style: "text-align:right" }, [el("button", { "class": "btn ghost sm", type: "button", text: "Edit", onclick: function () {
+        var f = $("toolForm"); f.elements.id.value = t.id; f.elements.name.value = t.name; f.elements.category_id.value = t.category_id;
+        f.elements.status.value = t.status; f.elements.sort.value = t.sort; f.elements.description.value = t.description; f.elements.editable.checked = !!t.editable;
+        $("toolFormTitle").textContent = "Edit " + t.name; f.elements.name.focus();
+      } })])
+    ]);
+  }
+
+  function render() {
+    var n = data.users.filter(function (u) { return u.status === "pending"; }).length;
+    $("pendingCount").hidden = !n; $("pendingCount").textContent = n;
+    var ur = $("userRows"); ur.textContent = ""; data.users.forEach(function (u) { ur.appendChild(userRow(u)); });
+    var tr = $("toolRows"); tr.textContent = "";
+    if (!data.tools.length) tr.appendChild(el("tr", {}, [el("td", { colspan: "6", "class": "muted", text: "No tools yet." })]));
+    data.tools.forEach(function (t) { tr.appendChild(toolRow(t)); });
+    var sel = $("toolForm").category_id, keep = sel.value; sel.textContent = "";
+    data.categories.forEach(function (c) { sel.appendChild(el("option", { value: c.id, text: c.name })); });
+    if (keep) sel.value = keep;
+    var tl = $("tileRows"); tl.textContent = "";
+    data.categories.forEach(function (c) {
+      tl.appendChild(el("tr", {}, [el("td", {}, [el("b", { text: c.name })]), el("td", { "class": "small muted", text: c.id }),
+        el("td", { text: c.is_default ? "Every approved user" : "Users ticked on the Users tab" })]));
+    });
+  }
+
+  function refresh() { return Api.adminOverview(Hub.token()).then(function (d) { data = d; render(); }, function (err) { Hub.toast(err.message, true); }); }
+
+  // ---------- wiring ----------
+  [].forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      [].forEach.call(document.querySelectorAll(".tab"), function (t) {
+        t.setAttribute("aria-selected", t === tab ? "true" : "false");
+        $("tab-" + t.getAttribute("data-tab")).hidden = t !== tab;
+      });
+    });
+  });
+  $("toolForm").addEventListener("reset", function () { $("toolFormTitle").textContent = "Add a tool"; });
+  $("toolForm").addEventListener("submit", function (e) {
+    e.preventDefault(); var f = e.target;
+    call(Api.adminSaveTool(Hub.token(), { id: f.elements.id.value.trim(), name: f.elements.name.value.trim(), category_id: f.elements.category_id.value,
+      description: f.elements.description.value.trim(), path: "tools/" + f.elements.id.value.trim() + "/", status: f.elements.status.value, sort: parseInt(f.elements.sort.value, 10) || 100,
+      editable: f.elements.editable.checked }),
+      "Tool saved").then(function () { f.reset(); });
+  });
+  $("tileForm").addEventListener("submit", function (e) {
+    e.preventDefault(); var f = e.target;
+    call(Api.adminSaveCategory(Hub.token(), { id: f.elements.id.value.trim(), name: f.elements.name.value.trim(), description: f.elements.description.value.trim(),
+      sort: parseInt(f.elements.sort.value, 10) || 100, is_default: f.elements.is_default.checked }), "Tile saved").then(function () { f.reset(); });
+  });
+
+  Hub.requireLogin({ admin: true }).then(function (p) {
+    me = p.user;
+    if (Hub.isSuper(me)) {
+      [].forEach.call(document.querySelectorAll("[data-super]"), function (n) { n.hidden = false; });
+      $("adminIntro").textContent = "Approve people, set roles, tile access and edit rights, and manage the tools on each tile.";
+    } else {
+      $("usersNote").textContent = "General is open to every approved user. \"Can edit\" gives a user write access to one tool's library or mapping. Admin accounts, roles and the tool list are managed by the super user. Changes apply when you press Save.";
+    }
+    refresh();
+  });
+})();
+</script>
+</body>
+</html>
