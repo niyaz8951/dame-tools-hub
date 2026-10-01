@@ -22,6 +22,7 @@
   var SKIP = /^(Technical Report\s*•|The certified standard performances|\d+\s*\/\s*\d+$)/;
   var TOP  = /^(EN\s*13053|Section List|Options List|Sound Report|NRVU\b.*|Electrical Power Inputs Data)$/i;
   var NUMBERED = /^(\d+)\)\s*(.+)$/;
+  var FACTORY = { '9': 'Riyadh', '5': 'Dubai' };   // last character of the Material Name, e.g. ADN10FGW9
   var CELL_GAP = 25;      // points between two pieces of text that makes them separate cells
   var DOT = /\s*•\s*/;
 
@@ -173,6 +174,12 @@
     // Power supply = the Electrical Connection printed for Fan Supply in "Electrical Power Inputs Data".
     var fan = elec.filter(function (e) { return /^Fan Supply$/i.test(e.component); })[0] ||
               elec.filter(function (e) { return /^Fan\b/i.test(e.component); })[0];
+    // Factory = the last character of the Material Name (owner's rule): ...9 Riyadh, ...5 Dubai.
+    var code = clean(hdr.material || '').slice(-1);
+    if (FACTORY[code]) hdr.factory = FACTORY[code];
+    else warnings.push(hdr.material ? 'The Material Name "' + hdr.material + '" does not end in ' + Object.keys(FACTORY).join(' or ') + ', so the factory is not known and the Factory row is missing.'
+                                    : 'No Material Name was found on the datasheet, so the Factory row is missing.');
+
     if (fan) { hdr.power = fan.connection; hdr.powerFrom = fan.component; }
     else warnings.push('No Fan Supply line was found under "Electrical Power Inputs Data", so the Power Supply row is missing.');
     return { hdr: hdr, unit: unit, sections: sections, warnings: warnings, elec: elec };
@@ -247,7 +254,7 @@
     // The unit tag is the heading of the unit's column, so there is no "Unit" row.
     var h = data.hdr;
     function g(label, v) { if (v) push('General', 'General', 1, '', label, v); }
-    g('Product', choice && choice.product); g('Factory', h.factory); g('Power Supply', h.power);
+    g('Factory', h.factory); g('Product', choice && choice.product); g('Power Supply', h.power);
     g('Project', h.project); g('Reference', h.reference);
     g('Material Name', h.material); g('Selection Software', h.software); g('Report Date', h.date);
     body('Unit Data', 'Unit Data', 1, data.unit);
