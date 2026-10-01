@@ -3,10 +3,10 @@
    (ASTRAWEB selection software, text-based PDF).
 
    DSParse.lines(items, pageNo)  pdf.js text items -> lines of cells
-   DSParse.parse(pages)          lines of every page -> structured data
-   DSParse.rows(data, choice)    structured data -> every row, each with a mapping key
-   DSParse.apply(rows, mapping)  rows + the admin's row mapping -> the table
-   DSParse.table(data, choice, mapping)   the two steps above in one call
+   DSParse.parseAll(pages)       lines of every page -> [structured data, one per unit]
+   DSParse.rows(data, choice)    one unit -> every row, each with a mapping key
+   DSParse.grid(units, choice, mapping)   all units + the admin's row mapping -> the table
+                                 (one column per unit tag)
 
    Rule: the reader adds and assumes nothing. Every value is text
    printed on the datasheet; wording is changed only by the admin's
@@ -73,7 +73,7 @@
 
   function parse(pages) {
     var body = bodyHeight(pages);
-    var hdr = {}, unit = { rows: [], options: [] }, sections = [], warnings = [];
+    var hdr = {}, unit = { rows: [], options: [] }, sections = [], warnings = [], elec = [];
     var mode = 'head', sec = null, sub = '', optTarget = null;
     var valueX = null, labelX = null, lastY = null, lastRow = null, secHeadH = null;
 
@@ -86,6 +86,14 @@
         if (SKIP.test(text)) return;
         var heading = ln.h >= body + 0.8;
         var m = NUMBERED.exec(text);
+
+        if (/^Electrical Power Inputs Data$/i.test(text)) { mode = 'elec'; return; }
+        if (mode === 'elec') {
+          // table rows: Component | Electrical Connection | Absorbed power - current
+          if (!heading && ln.cells.length >= 2) elec.push({ component: ln.cells[0].s, connection: ln.cells[1].s });
+          else if (heading && !/Component|Electrical Connection|Absorbed|Current/i.test(text)) mode = 'skip';
+          return;
+        }
 
         if (heading) {
           if (/^Unit Data$/i.test(text)) { mode = 'unit'; lastRow = null; return; }
@@ -161,7 +169,24 @@
     });
 
     sections.forEach(splitFilters);
-    return { hdr: hdr, unit: unit, sections: sections, warnings: warnings };
+
+    // Power supply = the Electrical Connection printed for Fan Supply in "Electrical Power Inputs Data".
+    var fan = elec.filter(function (e) { return /^Fan Supply$/i.test(e.component); })[0] ||
+              elec.filter(function (e) { return /^Fan\b/i.test(e.component); })[0];
+    if (fan) { hdr.power = fan.connection; hdr.powerFrom = fan.component; }
+    else warnings.push('No Fan Supply line was found under "Electrical Power Inputs Data", so the Power Supply row is missing.');
+    return { hdr: hdr, unit: unit, sections: sections, warnings: warnings, elec: elec };
+  }
+
+  /* One PDF can hold several units, each starting on a page with the "Unit Data" heading.
+     Pages are cut into one block per unit and each block is read on its own. */
+  function parseAll(pages) {
+    var starts = [];
+    pages.forEach(function (pg, i) { if (pg.some(function (ln) { return /^Unit Data$/i.test(ln.text); })) starts.push(i); });
+    if (starts.length < 2) return [parse(pages)];
+    return starts.map(function (from, k) {
+      return parse(pages.slice(k === 0 ? 0 : from, k + 1 < starts.length ? starts[k + 1] : pages.length));
+    });
   }
 
   /* One filter section can hold two filters: a repeated "Filter Class" starts the next one. */
@@ -207,25 +232,29 @@
   }
 
   function rows(data, choice) {
-    var out = [];
-    function push(group, title, sub, component, value) {
-      out.push({ group: group, title: title, sub: sub, component: component, value: value, key: rowKey(group, sub, component) });
+    var out = [], count = {};
+    function push(group, title, nth, sub, component, value) {
+      out.push({ group: group, title: title, nth: nth, sub: sub, component: component, value: value, key: rowKey(group, sub, component) });
     }
-    function body(group, title, t) {
+    function body(group, title, nth, t) {
       var subs = [];
-      function add(r) { expand(r.param, r.value).forEach(function (e) { push(group, title, r.sub, e.param, e.value); }); }
+      function add(r) { expand(r.param, r.value).forEach(function (e) { push(group, title, nth, r.sub, e.param, e.value); }); }
       t.rows.forEach(function (r) { if (!r.sub) add(r); else if (subs.indexOf(r.sub) < 0) subs.push(r.sub); });
       subs.forEach(function (s) { t.rows.forEach(function (r) { if (r.sub === s) add(r); }); });
-      t.options.forEach(function (o) { push(group, title, 'Options', 'Option', o); });
+      t.options.forEach(function (o) { push(group, title, nth, 'Options', 'Option', o); });
     }
 
+    // The unit tag is the heading of the unit's column, so there is no "Unit" row.
     var h = data.hdr;
-    function g(label, v) { if (v) push('General', 'General', '', label, v); }
-    g('Product', choice && choice.product); g('Factory', choice && choice.factory); g('Power Supply', choice && choice.power);
-    g('Project', h.project); g('Unit', h.unit); g('Reference', h.reference);
+    function g(label, v) { if (v) push('General', 'General', 1, '', label, v); }
+    g('Product', choice && choice.product); g('Factory', choice && choice.factory); g('Power Supply', h.power);
+    g('Project', h.project); g('Reference', h.reference);
     g('Material Name', h.material); g('Selection Software', h.software); g('Report Date', h.date);
-    body('Unit Data', 'Unit Data', data.unit);
-    data.sections.forEach(function (s) { body(s.name, s.no + ') ' + s.name, s); });
+    body('Unit Data', 'Unit Data', 1, data.unit);
+    data.sections.forEach(function (s) {
+      count[s.name] = (count[s.name] || 0) + 1;          // 2nd, 3rd ... section with the same name in this unit
+      body(s.name, s.no + ') ' + s.name, count[s.name], s);
+    });
     return out;
   }
 
@@ -237,31 +266,67 @@
     return r.replace(/[$*]/g, function () { return value; });
   }
 
-  /* ---- rows + the admin's mapping -> the table that is shown and exported ----
+  /* ---- every unit + the admin's mapping -> the table that is shown and exported ----
+     units:   [data, ...] from parseAll()
      mapping: { showUnmapped: true|false, rules: { key: { show, label, response } } }
-     Out: { section, component, specs, kind }  kind = 'row' | 'sub'.
-     section is filled on the first row of a section only. A sub-heading is written
-     only when at least one of its rows is shown. */
-  function apply(all, mapping) {
-    var rules = (mapping && mapping.rules) || {}, unmapped = !mapping || mapping.showUnmapped !== false;
-    var out = [], title = null, sub = '';
-    all.forEach(function (r) {
-      var rule = rules[r.key];
-      if (rule ? rule.show === false : !unmapped) return;
-      var first = r.title !== title;
-      if (first) { title = r.title; sub = ''; }
-      if (r.sub !== sub) {
-        sub = r.sub;
-        if (sub) { out.push({ section: first ? title : '', component: sub, specs: '', kind: 'sub' }); first = false; }
-      }
-      out.push({ section: first ? title : '', component: (rule && clean(rule.label || '')) || r.component,
-                 specs: fill(rule && rule.response, r.value), kind: 'row' });
+     Out: { columns: [unit tag, ...], rows: [{ section, component, cells: [one per unit], kind }] }
+       kind = 'row' | 'sub'. section is filled on the first row of a section only. A sub-heading
+       is written only when at least one of its rows is shown.
+
+     One unit: the Section column shows the datasheet's own heading ("2) Filter Supply").
+     Several units: section numbers differ from unit to unit, so rows are lined up by section
+     NAME (2nd, 3rd section of the same name as "Filter Supply (2)" ...), sub-heading and
+     component. Option lines are lined up by their text. A unit that does not have a row
+     gets "-" in its cell. */
+  var MISSING = '-';
+  function optionId(text) { return norm(text).replace(/^\d+\s*x\s+/, ''); }
+
+  function tags(units) {
+    var seen = {};
+    return units.map(function (u, i) {
+      var t = clean(u.hdr.unit || '') || 'Unit ' + (i + 1);
+      seen[t] = (seen[t] || 0) + 1;
+      return seen[t] > 1 ? t + ' (' + seen[t] + ')' : t;
     });
-    return out;
   }
 
-  function table(data, choice, mapping) { return apply(rows(data, choice), mapping); }
+  function grid(units, choice, mapping) {
+    var rules = (mapping && mapping.rules) || {}, unmapped = !mapping || mapping.showUnmapped !== false;
+    var many = units.length > 1, merged = [], byId = {};
 
-  window.DSParse = { readers: { ahu: true }, lines: lines, parse: parse, rows: rows, apply: apply, fill: fill,
-                     table: table, expand: expand, rowKey: rowKey };
+    units.forEach(function (data, u) {
+      var pos = -1, dup = {};
+      rows(data, choice).forEach(function (r) {
+        var id = norm(r.group) + '#' + r.nth + '|' + norm(r.sub) + '|';
+        if (r.sub === 'Options') id += optionId(r.value);
+        else { id += norm(r.component); dup[id] = (dup[id] || 0) + 1; if (dup[id] > 1) id += '#' + dup[id]; }
+        var m = byId[id];
+        if (m) pos = Math.max(pos, merged.indexOf(m));
+        else {
+          m = byId[id] = { key: r.key, sub: r.sub, component: r.component, values: [],
+                           title: many ? r.group + (r.nth > 1 ? ' (' + r.nth + ')' : '') : r.title };
+          merged.splice(++pos, 0, m);                      // a row only a later unit has goes after the row before it
+        }
+        m.values[u] = r.value;
+      });
+    });
+
+    var out = [], title = null, sub = '', blank = units.map(function () { return ''; });
+    merged.forEach(function (m) {
+      var rule = rules[m.key];
+      if (rule ? rule.show === false : !unmapped) return;
+      var first = m.title !== title;
+      if (first) { title = m.title; sub = ''; }
+      if (m.sub !== sub) {
+        sub = m.sub;
+        if (sub) { out.push({ section: first ? title : '', component: sub, cells: blank, kind: 'sub' }); first = false; }
+      }
+      out.push({ section: first ? title : '', component: (rule && clean(rule.label || '')) || m.component, kind: 'row',
+                 cells: units.map(function (x, u) { return m.values[u] === undefined ? MISSING : fill(rule && rule.response, m.values[u]); }) });
+    });
+    return { columns: tags(units), rows: out };
+  }
+
+  window.DSParse = { readers: { ahu: true }, lines: lines, parse: parse, parseAll: parseAll, rows: rows, grid: grid,
+                     fill: fill, expand: expand, rowKey: rowKey };
 })();

@@ -1,10 +1,12 @@
 /* ============================================================
    Datasheet Notes - Excel writer (no library).
-   DSXlsx.build(rows, sheetName) -> Blob of a one-sheet .xlsx
+   DSXlsx.build(grid, sheetName) -> Blob of a one-sheet .xlsx
 
-   rows: [{ section, component, specs, kind }] from DSParse.table().
-   Sheet: Section | Component | Specs | Remarks, header row filled,
-   every cell bordered and wrapped, Remarks left empty to fill in.
+   grid: { columns: [unit tag, ...], rows: [{ section, component, cells, kind }] }
+   from DSParse.grid().
+   Sheet: Section | Component | one column per unit tag | Remarks,
+   header row filled, every cell bordered and wrapped, Remarks left
+   empty to fill in.
    ============================================================ */
 (function () {
   'use strict';
@@ -12,8 +14,7 @@
   var HEADER_FILL = 'FF773562';   // header colour of the owner's compliance table format
   var SUB_FILL    = 'FFF4ECF1';
   var LINE        = 'FF8C8C8C';
-  var WIDTHS = [26, 36, 56, 36];
-  var HEAD = ['Section', 'Component', 'Specs', 'Remarks'];
+  function colName(i) { var s = '', n = i + 1; while (n > 0) { s = String.fromCharCode(65 + (n - 1) % 26) + s; n = Math.floor((n - 1) / 26); } return s; }
 
   var CRC = (function () {
     var t = [], n, c, k;
@@ -52,7 +53,7 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function cell(col, row, style, text) {
-    var ref = 'ABCD'.charAt(col) + row;
+    var ref = colName(col) + row;
     if (text === '' || text == null) return '<c r="' + ref + '" s="' + style + '"/>';
     return '<c r="' + ref + '" s="' + style + '" t="inlineStr"><is><t xml:space="preserve">' + esc(text) + '</t></is></c>';
   }
@@ -82,24 +83,31 @@
       '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
   }
 
-  function sheetXml(rows) {
+  function sheetXml(grid) {
+    var units = grid.columns.length;
+    var HEAD = ['Section', 'Component'].concat(grid.columns, ['Remarks']);
+    var unitWidth = units === 1 ? 56 : units <= 3 ? 40 : 32;
+    var WIDTHS = [26, 36].concat(grid.columns.map(function () { return unitWidth; }), [36]);
     var out = ['<row r="1" ht="24" customHeight="1">' + HEAD.map(function (h, i) { return cell(i, 1, 1, h); }).join('') + '</row>'];
-    rows.forEach(function (r, i) {
-      var n = i + 2, sub = r.kind === 'sub';
-      out.push('<row r="' + n + '">' + cell(0, n, 2, r.section) + cell(1, n, sub ? 4 : 3, r.component) +
-               cell(2, n, sub ? 4 : 3, r.specs) + cell(3, n, sub ? 4 : 3, '') + '</row>');
+    grid.rows.forEach(function (r, i) {
+      var n = i + 2, st = r.kind === 'sub' ? 4 : 3;
+      out.push('<row r="' + n + '">' + cell(0, n, 2, r.section) + cell(1, n, st, r.component) +
+               r.cells.map(function (v, u) { return cell(2 + u, n, st, v); }).join('') + cell(2 + units, n, st, '') + '</row>');
     });
     return X + '<worksheet xmlns="' + NS + '">' +
       '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +      // prints one page wide
-      '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+      '<sheetViews><sheetView workbookViewId="0">' +
+        (units > 1 ? '<pane xSplit="2" ySplit="1" topLeftCell="C2" activePane="bottomRight" state="frozen"/>'
+                   : '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>') +
+        '</sheetView></sheetViews>' +
       '<sheetFormatPr defaultRowHeight="15"/>' +
       '<cols>' + WIDTHS.map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' +
       '<sheetData>' + out.join('') + '</sheetData>' +
       '<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
-      '<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/></worksheet>';
+      '<pageSetup paperSize="9" orientation="' + (units > 1 ? 'landscape' : 'portrait') + '" fitToWidth="1" fitToHeight="0"/></worksheet>';
   }
 
-  function build(rows, sheetName) {
+  function build(grid, sheetName) {
     var name = esc(String(sheetName || 'Datasheet Notes').replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 31));
     return zip([
       ['[Content_Types].xml', X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
@@ -107,7 +115,7 @@
       ['xl/workbook.xml', X + '<workbook xmlns="' + NS + '" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="' + name + '" sheetId="1" r:id="rId1"/></sheets></workbook>'],
       ['xl/_rels/workbook.xml.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
       ['xl/styles.xml', stylesXml()],
-      ['xl/worksheets/sheet1.xml', sheetXml(rows)]
+      ['xl/worksheets/sheet1.xml', sheetXml(grid)]
     ]);
   }
 

@@ -74,12 +74,15 @@ Goal: collect every specification line the company meets, answer each one once, 
 
 ## 2e. Datasheet Notes and its row mapping
 
-Goal: turn a product datasheet PDF into the compliance table format: Section / Component / Specs / Remarks. Admins control the rows and the wording from the website, with no code change.
+Goal: turn a product datasheet PDF into the compliance table format: Section / Component / one column per unit tag / Remarks. Admins control the rows and the wording from the website, with no code change.
 
-- The user must choose **Product**, **Factory** and **Power supply** (380 V / 3 Ph / 60 Hz, 400 V / 3 Ph / 50 Hz, 460 V / 3 Ph / 60 Hz) before the upload appears. Products and factories come from `Api.cmOptions` (same list as the Compliance Maker). The three choices are rows of the first block ("General"); they do not change any datasheet value.
+- The user must choose **Product** and **Factory** before the upload appears. Products and factories come from `Api.cmOptions` (same list as the Compliance Maker). There is no power supply dropdown.
+- **Power Supply** is read from the datasheet: the Electrical Connection printed for `Fan Supply` in "Electrical Power Inputs Data" (for example `400V/3Ph/50Hz + PE`), as printed. If there is no Fan Supply line the first line starting with "Fan" is used; if there is none the row is missing and the page says so.
+- **Several units.** One PDF can hold several units (a unit starts on the page with the "Unit Data" heading; `DSParse.parseAll`), and several PDFs can be chosen at once. Every unit gets its own column headed by its unit tag (the "Unit" line of the datasheet; repeated tags get "(2)", "(3)"). Remarks is the last column. There is no "Unit" row, the tag is the column heading.
+- With one unit the Section column shows the datasheet heading (`2) Filter Supply`). With several units section numbers differ per unit, so rows are lined up by section name (a 2nd section of the same name is `Filter Supply (2)`), sub-heading and component; option lines are lined up by their text. A unit that does not have a row gets `-`. A row only a later unit has is placed after the row that comes before it in that unit. Only `DSParse.grid` builds the table.
 - The PDF is read in the browser with the local pdf.js. The datasheet is never uploaded or saved. Only new section and row names are saved (see row mapping below); the page tells the user so.
 - Only the AHU reader exists (Daikin ASTRAWEB technical report). FCU and Chiller show "not ready yet" until sample datasheets are supplied; add a reader and switch it on in `DSParse.readers`.
-- The reader gives: General, Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report, NRVU and Electrical pages are not read.
+- The reader gives: General (product, factory, power supply, project, reference, material name, software, report date), Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report and NRVU pages are not read; from the Electrical page only the Fan Supply connection is used.
 - Labels paired with a solid dot become one row each: `Panel • Insulation` = `62 mm • Foam` gives Panel: 62 mm and Insulation: Foam. A one-word second label takes its context from the first (`Temp. Dry Bulb In • Out` gives Temp. Dry Bulb In / Temp. Dry Bulb Out). A value with dots under a single label stays as printed (`Mounting`: `Internal • Left`).
 - Two filters printed in one section are shown as Filter 1 / Filter 2. Sub-headings (Damper One Supply, Geometry, Cooling, Motor Data, Options) are shaded rows, written only when one of their rows is shown.
 - Remarks is always empty.
@@ -94,7 +97,7 @@ Goal: turn a product datasheet PDF into the compliance table format: Section / C
 - The admin finds rows with "Load rows from a datasheet". Every listed row is saved, so the list is there without a datasheet next time. Rows saved earlier that are not on the loaded datasheet can be removed.
 - The tool loads the mapping with `Api.dnRules` when a factory is chosen. If it cannot be loaded, every row is shown as printed and the page says so.
 - Database functions: `dn_get_rules` and `dn_add_rows` (any approved user), `dn_admin_save_rules` (editors of datasheet-notes). The permissions block at the end of `schema.sql` opens `dn_*` functions to the website the same way as `app_*` and `cm_*`.
-- Files: `index.html` + `datasheet-notes.js` (tool), `mapping.html` + `mapping.js` (row mapping), `ds-parse.js` (reader, keys, mapping rules), `ds-read.js` (opens the PDF), `ds-xlsx.js` (styled Excel). The Excel header colour follows the owner's compliance table format, not the site theme.
+- Files: `index.html` + `datasheet-notes.js` (tool), `mapping.html` + `mapping.js` (row mapping), `ds-parse.js` (reader, keys, mapping rules), `ds-read.js` (opens the PDFs, returns the units), `ds-xlsx.js` (styled Excel; landscape and first two columns frozen when there are several units). The Excel header colour follows the owner's compliance table format, not the site theme.
 
 ## 2f. Psychrometric Chart
 

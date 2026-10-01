@@ -12,7 +12,6 @@
 
   var $ = function (id) { return document.getElementById(id); };
   var el = window.Hub.el, P = window.DSParse;
-  var SAMPLE_POWER = '400 V / 3 Ph / 50 Hz';     // only used to show an example in the Result column
   var NO_VALUE = '‹datasheet value›';
 
   var productSel = $('dm-product'), factorySel = $('dm-factory'), hint = $('dm-scope-hint');
@@ -44,9 +43,11 @@
     function add(row) { if (order.indexOf(row.group) < 0) order.push(row.group); out.push(row); }
     if (sheet) {
       var f = factory(), p = product();
-      P.rows(sheet, { product: p.name, factory: f.name, power: SAMPLE_POWER }).forEach(function (r) {
-        if (seen[r.key]) return; seen[r.key] = 1;
-        add(makeRow({ key: r.key, group: r.group, sub: /^Filter \d+$/i.test(r.sub) ? '' : r.sub, component: r.component, value: r.value }, byKey[r.key], true));
+      sheet.forEach(function (unit) {            // every unit in the PDF; the first value found is the example
+        P.rows(unit, { product: p.name, factory: f.name }).forEach(function (r) {
+          if (seen[r.key]) return; seen[r.key] = 1;
+          add(makeRow({ key: r.key, group: r.group, sub: /^Filter \d+$/i.test(r.sub) ? '' : r.sub, component: r.component, value: r.value }, byKey[r.key], true));
+        });
       });
     }
     rules.forEach(function (r) {
