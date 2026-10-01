@@ -1,13 +1,14 @@
 /* ============================================================
    Datasheet Notes - page logic.
-   Product and factory must be chosen before the upload appears.
+   The product must be chosen before the upload appears. There is no
+   factory choice: one row mapping per product serves every factory.
    The PDF is read in the browser (ds-read.js); the datasheet is
    never sent to the database. One PDF can hold several units and
    several PDFs can be chosen at once: every unit gets its own
    column, headed by its unit tag. The power supply is read from
    the datasheet (Fan Supply under Electrical Power Inputs Data).
    Which rows appear and what they say follows the admin's row
-   mapping for the chosen factory (Api.dnRules, edited in mapping.html).
+   mapping for the chosen product (Api.dnRules, edited in mapping.html).
    Row names the mapping has not seen are added to it (Api.dnAddRows).
    Products and factories come from the same list the Compliance
    Maker uses (Api.cmOptions).
@@ -18,43 +19,34 @@
   var $ = function (id) { return document.getElementById(id); };
   var el = window.Hub.el;
 
-  var productSel = $('dn-product'), factorySel = $('dn-factory');
+  var productSel = $('dn-product');
   var hint = $('dn-scope-hint'), upload = $('dn-upload'), result = $('dn-result');
   var drop = $('dn-drop'), fileInput = $('dn-file'), status = $('dn-status'), mapNote = $('dn-map-note');
   var products = [], parsed = null, grid = null, fileName = '', busy = false;   // parsed: [unit, ...]
-  var mappings = {}, mapping = null, mapFactory = '';   // mapping per factory, loaded once each
+  var mappings = {}, mapping = null, mapProduct = '';   // mapping per product, loaded once each
 
   /* ---------- selection ---------- */
   function option(value, text) { return el('option', { value: value, text: text }); }
   function product() { return products.filter(function (p) { return p.id === productSel.value; })[0] || null; }
   function choice() {
     var p = product();
-    var f = p && p.factories.filter(function (x) { return x.id === factorySel.value; })[0];
-    return p && f ? { productId: p.id, factoryId: f.id, product: p.name, factory: f.name } : null;
+    return p ? { productId: p.id, product: p.name } : null;
   }
   function canRead(p) { return !!(p && window.DSParse.readers[String(p.id).toLowerCase()]); }
 
-  function fillFactories() {
-    var p = product();
-    factorySel.textContent = '';
-    factorySel.appendChild(option('', p ? 'Choose a factory' : 'Choose a product first'));
-    (p ? p.factories : []).forEach(function (f) { factorySel.appendChild(option(f.id, f.name)); });
-    factorySel.disabled = !p;
-  }
-
-  /* The admin's row mapping for the chosen factory. If it cannot be loaded the tool still
+  /* The admin's row mapping for the chosen product. If it cannot be loaded the tool still
      works and shows every datasheet row, with a notice saying so. */
-  function loadMapping(factoryId) {
-    mapFactory = factoryId; mapping = mappings[factoryId] || null;
+  function loadMapping(productId) {
+    mapProduct = productId; mapping = mappings[productId] || null;
     mapNote.hidden = true;
-    if (!factoryId || mapping) return;
-    window.Api.dnRules(window.Hub.token(), factoryId).then(function (res) {
+    if (!productId || mapping) return;
+    window.Api.dnRules(window.Hub.token(), productId).then(function (res) {
       var rules = {};
       (res.rules || []).forEach(function (r) { rules[r.key] = r; });
-      mappings[factoryId] = { showUnmapped: res.show_unmapped !== false, rules: rules, count: (res.rules || []).length };
+      mappings[productId] = { showUnmapped: res.show_unmapped !== false, rules: rules, count: (res.rules || []).length };
     }, function (err) {
-      mappings[factoryId] = { showUnmapped: true, rules: {}, count: 0, error: (err && err.message) || String(err) };
-    }).then(function () { if (mapFactory === factoryId) { mapping = mappings[factoryId]; applyGate(); } });
+      mappings[productId] = { showUnmapped: true, rules: {}, count: 0, error: (err && err.message) || String(err) };
+    }).then(function () { if (mapProduct === productId) { mapping = mappings[productId]; applyGate(); } });
   }
 
   function applyGate() {
@@ -66,18 +58,17 @@
       upload.hidden = true; result.hidden = true;
       return;
     }
-    hint.textContent = c ? c.product + ', ' + c.factory + ' factory. The power supply is read from the datasheet.'
-                         : 'Choose product and factory to continue.';
+    hint.textContent = c ? 'The unit tags and the power supply are read from the datasheet.'
+                         : 'Choose a product to continue.';
     var ready = !!(c && mapping);
     upload.hidden = !ready;
     mapNote.hidden = !(ready && mapping.error);
-    if (ready && mapping.error) mapNote.textContent = 'The row mapping for this factory could not be loaded (' + mapping.error + '). Every datasheet row is shown as printed.';
+    if (ready && mapping.error) mapNote.textContent = 'The row mapping for this product could not be loaded (' + mapping.error + '). Every datasheet row is shown as printed.';
     if (!ready) result.hidden = true;
     else if (parsed) render();            // choices changed: the table follows, no need to upload again
   }
 
-  productSel.addEventListener('change', function () { fillFactories(); loadMapping(''); applyGate(); });
-  factorySel.addEventListener('change', function () { loadMapping(factorySel.value); applyGate(); });
+  productSel.addEventListener('change', function () { var p = product(); loadMapping(p && canRead(p) ? p.id : ''); applyGate(); });
 
   /* ---------- file ---------- */
   function say(text, kind) {
@@ -115,7 +106,7 @@
       .then(function () { busy = false; drop.disabled = false; });
   }
 
-  /* Row names this factory's mapping has not seen before are added to the admins' mapping list,
+  /* Row names this product's mapping has not seen before are added to the admins' mapping list,
      so new sections and rows turn up there without anyone loading the datasheet again.
      Only names go to the database, never values. The table on screen does not wait for it. */
   function register() {
@@ -129,7 +120,7 @@
       });
     });
     if (!fresh.length) return;
-    window.Api.dnAddRows(window.Hub.token(), { factoryId: c.factoryId, rows: fresh }).then(function () {
+    window.Api.dnAddRows(window.Hub.token(), { productId: c.productId, rows: fresh }).then(function () {
       // remembered as they were added, so the next datasheet in this visit does not send them again
       fresh.forEach(function (r) { m.rules[r.key] = { key: r.key, show: m.showUnmapped, label: '', response: '' }; });
     }, function () { /* the next run sends them again */ });
@@ -141,6 +132,23 @@
     var seen = [];
     parsed.forEach(function (u) { if (u.hdr.project && seen.indexOf(u.hdr.project) < 0) seen.push(u.hdr.project); });
     return seen;
+  }
+
+  /* The rows to draw. With "Only rows that differ" ticked, rows that match the first unit are
+     dropped; the section name and the sub-heading move to the first row that is kept.
+     The Excel always holds every row. */
+  function onScreen() {
+    if (!$('dn-only').checked) return grid.rows;
+    var out = [], sec = '', secDone = true, sub = null;
+    grid.rows.forEach(function (r) {
+      if (r.section) { sec = r.section; secDone = false; sub = null; }
+      if (r.kind === 'sub') { sub = r; return; }
+      if (!r.marks || !r.marks.some(Boolean)) return;
+      if (sub) { out.push({ section: secDone ? '' : sec, component: sub.component, cells: sub.cells, kind: 'sub' }); secDone = true; sub = null; }
+      out.push({ section: secDone ? '' : sec, component: r.component, cells: r.cells, marks: r.marks, kind: 'row' });
+      secDone = true;
+    });
+    return out;
   }
 
   function render() {
@@ -157,6 +165,12 @@
     var facts = $('dn-facts'); facts.textContent = '';
     var list = [units + (units === 1 ? ' unit' : ' units'), shown + (shown === 1 ? ' row' : ' rows')];
     if (shown < total) list.push((total - shown) + ' datasheet rows left out by the row mapping');
+    var differ = grid.rows.filter(function (r) { return r.marks && r.marks.some(Boolean); }).length;
+    if (units > 1) list.push(differ ? differ + (differ === 1 ? ' row differs' : ' rows differ') + ' from ' + grid.columns[0] : 'All units match ' + grid.columns[0]);
+    $('dn-diff').hidden = units < 2;
+    $('dn-diff-text').textContent = grid.columns[0] + ' is taken as the reference. In each row, a value that differs from it is highlighted: yellow for the first different value, another colour for each further different value. The same colour in a row means the same value.';
+    $('dn-only-wrap').hidden = !differ;
+    if (!differ) $('dn-only').checked = false;
     list.forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
 
     var notes = [];
@@ -183,11 +197,14 @@
     table.style.minWidth = (510 + unitW * units) + 'px';
 
     var body = $('dn-body'), frag = document.createDocumentFragment();
-    grid.rows.forEach(function (r) {
-      var cls = (r.kind === 'sub' ? 'sub' : '') + (r.section ? ' first' : '');
+    onScreen().forEach(function (r) {
+      var cls = (r.kind === 'sub' ? 'sub' : '') + (r.section ? ' first' : '') + (r.marks && r.marks.some(Boolean) ? ' differs' : '');
       frag.appendChild(el('tr', { 'class': cls.trim() || null },
         [el('td', { 'class': 'sec', text: r.section }), el('td', { text: r.component })]
-          .concat(r.cells.map(function (v) { return el('td', { text: v }); }), [el('td')])));
+          .concat(r.cells.map(function (v, u) {
+            var mk = r.marks ? r.marks[u] : 0;
+            return el('td', { text: v, 'class': mk ? 'diff d' + ((mk - 1) % 5 + 1) : null, title: mk ? 'Differs from ' + grid.columns[0] : null });
+          }), [el('td')])));
     });
     body.textContent = ''; body.appendChild(frag);
     $('dn-table').hidden = !grid.rows.length;
@@ -208,6 +225,8 @@
     window.Hub.toast('Excel downloaded.');
   });
 
+  $('dn-only').addEventListener('change', render);
+
   $('dn-clear').addEventListener('click', function () {
     parsed = null; grid = null; fileName = '';
     result.hidden = true; say('');
@@ -224,7 +243,8 @@
     productSel.appendChild(option('', 'Choose a product'));
     products.forEach(function (p) { productSel.appendChild(option(p.id, p.name)); });
     productSel.disabled = false;
-    fillFactories(); applyGate();
+    if (products.length === 1) { productSel.value = products[0].id; loadMapping(canRead(products[0]) ? products[0].id : ''); }
+    applyGate();
   }, function (err) {
     productSel.textContent = ''; productSel.appendChild(option('', 'Could not load'));
     hint.className = 'notice error';

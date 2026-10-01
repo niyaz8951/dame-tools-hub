@@ -56,9 +56,9 @@
     cmAdminRuns: function (t, d) { return rpc("cm_admin_runs", { p_token: t, p_limit: (d && d.limit) || 50, p_offset: (d && d.offset) || 0 }); },
     cmAdminExport: function (t, factoryId) { return rpc("cm_admin_export", { p_token: t, p_factory_id: factoryId }); },
     // Datasheet Notes row mapping
-    dnRules: function (t, factoryId) { return rpc("dn_get_rules", { p_token: t, p_factory_id: factoryId }); },
-    dnAddRows: function (t, d) { return rpc("dn_add_rows", { p_token: t, p_factory_id: d.factoryId, p_rows: d.rows || [] }); },
-    dnAdminSaveRules: function (t, d) { return rpc("dn_admin_save_rules", { p_token: t, p_factory_id: d.factoryId, p_show_unmapped: d.showUnmapped !== false, p_rules: d.rules || [], p_remove: d.remove || [] }); },
+    dnRules: function (t, productId) { return rpc("dn_get_rules", { p_token: t, p_product_id: productId }); },
+    dnAddRows: function (t, d) { return rpc("dn_add_rows", { p_token: t, p_product_id: d.productId, p_rows: d.rows || [] }); },
+    dnAdminSaveRules: function (t, d) { return rpc("dn_admin_save_rules", { p_token: t, p_product_id: d.productId, p_show_unmapped: d.showUnmapped !== false, p_rules: d.rules || [], p_remove: d.remove || [] }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
 
@@ -145,6 +145,11 @@
     db.cm.products.forEach(function (p) { p.factories.forEach(function (f) { if (f.id === id) out = { id: f.id, name: f.name, product: p.name }; }); });
     if (!out) fail("Choose a product and factory first.");
     return out;
+  }
+  function dnProduct(db, id) {      // the row mapping is kept per product, one for all factories
+    var p = db.cm.products.filter(function (x) { return x.id === id; })[0];
+    if (!p) fail("Choose a product first.");
+    return p;
   }
   function checkPw(p) { if (!p || p.length < 8) fail("Password must be at least 8 characters."); }
   function demo(fn) {
@@ -288,28 +293,28 @@
       return { lines: db.cm.lines.filter(function (x) { return x.factory_id === f.id; }) };
     }),
     // ---- Datasheet Notes row mapping (same rules as db/schema.sql) ----
-    dnRules: demo(function (db, t, factoryId) {
-      sessionUser(db, t); var f = cmFactory(db, factoryId), m = (db.dn || {})[f.id] || { show_unmapped: true, rules: [] };
+    dnRules: demo(function (db, t, productId) {
+      sessionUser(db, t); var f = dnProduct(db, productId), m = (db.dn || {})[f.id] || { show_unmapped: true, rules: [] };
       return { show_unmapped: m.show_unmapped, rules: m.rules };
     }),
     dnAddRows: demo(function (db, t, d) {
-      sessionUser(db, t); var f = cmFactory(db, d.factoryId), added = 0;
+      sessionUser(db, t); var f = dnProduct(db, d.productId), added = 0;
       db.dn = db.dn || {}; var m = db.dn[f.id] || { show_unmapped: true, rules: [] };
       (d.rows || []).forEach(function (r) {
         var k = String(r.key || "").trim();
         if (!k || k.length > 300 || m.rules.some(function (x) { return x.key === k; })) return;
         added++; m.rules.push({ key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
-                                show: m.show_unmapped, label: "", response: "", "new": true });
+                                show: m.show_unmapped, label: "", strip: "", response: "", "new": true });
       });
       db.dn[f.id] = m; return { ok: true, added: added };
     }),
     dnAdminSaveRules: demo(function (db, t, d) {
-      editor(db, t, "datasheet-notes"); var f = cmFactory(db, d.factoryId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;
+      editor(db, t, "datasheet-notes"); var f = dnProduct(db, d.productId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;
       if (rules.length > 3000) fail("Too many rows to save in one go (more than 3000).");
       rules.forEach(function (r) {
         var k = String(r.key || "").trim();
         if (!k || k.length > 300) fail("A row has no name and cannot be saved.");
-        if (String(r.label || "").length > 120 || String(r.response || "").length > 1000) fail("A name is longer than 120 characters or a response is longer than 1000 characters.");
+        if (String(r.label || "").length > 120 || String(r.response || "").length > 1000 || String(r.strip || "").length > 300) fail("A name is longer than 120 characters, a \"remove from value\" text is longer than 300, or a response is longer than 1000.");
       });
       db.dn = db.dn || {};
       var m = db.dn[f.id] || { show_unmapped: true, rules: [] }, before = m.rules.length;
@@ -318,7 +323,7 @@
       rules.forEach(function (r) {
         var k = String(r.key).trim(); if (seen[k]) return; seen[k] = 1; saved++;
         var row = { key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
-                    show: r.show !== false, label: String(r.label || "").trim(), response: String(r.response || "").trim(), "new": false };
+                    show: r.show !== false, label: String(r.label || "").trim(), strip: String(r.strip || "").trim(), response: String(r.response || "").trim(), "new": false };
         m.rules = m.rules.filter(function (x) { return x.key !== k; }); m.rules.push(row);
       });
       m.show_unmapped = d.showUnmapped !== false; db.dn[f.id] = m;

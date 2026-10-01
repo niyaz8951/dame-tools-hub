@@ -247,7 +247,7 @@
     // The unit tag is the heading of the unit's column, so there is no "Unit" row.
     var h = data.hdr;
     function g(label, v) { if (v) push('General', 'General', 1, '', label, v); }
-    g('Product', choice && choice.product); g('Factory', choice && choice.factory); g('Power Supply', h.power);
+    g('Product', choice && choice.product); g('Factory', h.factory); g('Power Supply', h.power);
     g('Project', h.project); g('Reference', h.reference);
     g('Material Name', h.material); g('Selection Software', h.software); g('Report Date', h.date);
     body('Unit Data', 'Unit Data', 1, data.unit);
@@ -260,16 +260,31 @@
 
   /* An admin response: empty = the datasheet value, plain text = a standard response,
      $ or * inside the text = the place where the datasheet value goes. */
-  function fill(response, value) {
-    var r = clean(response || '');
-    if (!r) return value;
-    return r.replace(/[$*]/g, function () { return value; });
+  function fill(response, value, strip) {
+    var v = remove(value, strip), r = clean(response || '');
+    if (!r) return v;
+    return r.replace(/[$*]/g, function () { return v; });
+  }
+
+  /* "Remove from value": text the admin wants taken out of the datasheet value before it is used,
+     e.g. "+ PE" turns "380V/3Ph/60Hz + PE" into "380V/3Ph/60Hz". Several texts are separated by ";".
+     Upper and lower case are treated the same. */
+  function remove(value, strip) {
+    var v = String(value == null ? '' : value);
+    String(strip || '').split(';').forEach(function (part) {
+      part = clean(part);
+      if (!part) return;
+      var re = new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s*'), 'gi');
+      v = v.replace(re, ' ');
+    });
+    return clean(v);
   }
 
   /* ---- every unit + the admin's mapping -> the table that is shown and exported ----
      units:   [data, ...] from parseAll()
-     mapping: { showUnmapped: true|false, rules: { key: { show, label, response } } }
-     Out: { columns: [unit tag, ...], rows: [{ section, component, cells: [one per unit], kind }] }
+     mapping: { showUnmapped: true|false, rules: { key: { show, label, strip, response } } }
+     Out: { columns: [unit tag, ...], rows: [{ section, component, cells: [one per unit], marks, kind }] }
+       marks: per cell, 0 = same as the first unit, 1, 2 ... = 1st, 2nd ... different value (see marks()).
        kind = 'row' | 'sub'. section is filled on the first row of a section only. A sub-heading
        is written only when at least one of its rows is shown.
 
@@ -279,6 +294,18 @@
      component. Option lines are lined up by their text. A unit that does not have a row
      gets "-" in its cell. */
   var MISSING = '-';
+
+  /* The first unit is the reference. For one row: 0 = same as the first unit, 1 = the first
+     different value, 2 = the next different value ... so equal deviations share a number
+     (and a colour). Compared as printed in the table, ignoring case and spacing. */
+  function marks(cells) {
+    var seen = [norm(cells[0])];
+    return cells.map(function (c) {
+      var k = norm(c), i = seen.indexOf(k);
+      if (i < 0) { seen.push(k); i = seen.length - 1; }
+      return i;
+    });
+  }
   function optionId(text) { return norm(text).replace(/^\d+\s*x\s+/, ''); }
 
   function tags(units) {
@@ -321,8 +348,9 @@
         sub = m.sub;
         if (sub) { out.push({ section: first ? title : '', component: sub, cells: blank, kind: 'sub' }); first = false; }
       }
+      var cells = units.map(function (x, u) { return m.values[u] === undefined ? MISSING : fill(rule && rule.response, m.values[u], rule && rule.strip); });
       out.push({ section: first ? title : '', component: (rule && clean(rule.label || '')) || m.component, kind: 'row',
-                 cells: units.map(function (x, u) { return m.values[u] === undefined ? MISSING : fill(rule && rule.response, m.values[u]); }) });
+                 cells: cells, marks: marks(cells) });
     });
     return { columns: tags(units), rows: out };
   }

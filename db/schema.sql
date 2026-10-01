@@ -1025,20 +1025,25 @@ end $$;
 -- ============================================================
 -- DATASHEET NOTES - row mapping
 --
--- The Datasheet Notes tool reads a product datasheet in the browser and
--- builds a Section / Component / Specs / Remarks table. Admins decide, per
--- factory, which rows go into that table and what each row says:
---   dn_rules      one row per datasheet row (key = section | sub-heading | component)
---                   show      false = the row is left out
---                   label     name to print in the Component column ('' = as on the datasheet)
---                   response  '' = datasheet value; text = standard response;
---                             $ or * in the text = where the datasheet value goes
---                   reviewed  false = added automatically from a user's datasheet and not
---                             yet looked at by an admin (shown as "New" on the mapping screen)
---   dn_settings   per factory: are rows with no rule shown or hidden
+-- The Datasheet Notes tool reads product datasheets in the browser and builds a
+-- Section / Component / one column per unit / Remarks table. Editors decide, per
+-- PRODUCT (one mapping for all factories), which rows go into that table and what each says:
+--   dn_map            one row per datasheet row (key = section | sub-heading | component)
+--                       show      false = the row is left out
+--                       label     name to print in the Component column ('' = as on the datasheet)
+--                       strip     text to take out of the datasheet value first, e.g. '+ PE'
+--                                 (several texts separated by ;)
+--                       response  '' = datasheet value; text = standard response;
+--                                 $ or * in the text = where the datasheet value goes
+--                       reviewed  false = added automatically from a user's datasheet and not
+--                                 yet looked at by an editor (shown as "New" on the mapping screen)
+--   dn_map_settings   per product: are rows with no rule shown or hidden
 -- Every run of the tool by any user adds the row names it has not seen before
 -- (dn_add_rows), so the mapping list keeps growing on its own. Only names are
 -- stored. The datasheet and its values are never stored.
+--
+-- dn_rules / dn_settings are the first version, kept per factory. They are no longer read
+-- or written; their content is copied into dn_map once (below) and they stay as a backup.
 -- ============================================================
 
 create table if not exists public.dn_rules (
@@ -1074,49 +1079,118 @@ do $$ begin
   end if;
 end $$;
 
--- The mapping for one factory. Any approved user: the tool needs it to build the table.
-create or replace function public.dn_get_rules(p_token text, p_factory_id text)
+create table if not exists public.dn_map (
+  product_id text not null references public.cm_products(id) on delete cascade,
+  row_key    text not null,
+  section    text not null default '',
+  sub        text not null default '',
+  component  text not null default '',
+  show       boolean not null default true,
+  label      text not null default '',
+  strip      text not null default '',
+  response   text not null default '',
+  sort       int  not null default 0,
+  reviewed   boolean not null default true,
+  updated_by uuid references public.app_users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (product_id, row_key)
+);
+
+create table if not exists public.dn_map_settings (
+  product_id    text primary key references public.cm_products(id) on delete cascade,
+  show_unmapped boolean not null default true,
+  updated_by    uuid references public.app_users(id) on delete set null,
+  updated_at    timestamptz not null default now()
+);
+
+alter table public.dn_map          enable row level security;
+alter table public.dn_map_settings enable row level security;
+revoke all on public.dn_map, public.dn_map_settings from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.dn_map, public.dn_map_settings from anon, authenticated;
+  end if;
+end $$;
+
+-- One-time copy of the per-factory mappings into the per-product mapping. It runs only for a
+-- product that has no rows in dn_map yet, so re-running this file never brings back a row an
+-- editor removed. Where two factories hold the same row, the one an editor has worked on wins
+-- (reviewed, then one with a name / response / left out, then the most recently saved).
+insert into public.dn_map (product_id, row_key, section, sub, component, show, label, response, sort, reviewed, updated_by, updated_at)
+select distinct on (f.product_id, r.row_key)
+       f.product_id, r.row_key, r.section, r.sub, r.component, r.show, r.label, r.response, r.sort, r.reviewed, r.updated_by, r.updated_at
+  from public.dn_rules r
+  join public.cm_factories f on f.id = r.factory_id
+ where not exists (select 1 from public.dn_map m where m.product_id = f.product_id)
+ order by f.product_id, r.row_key, r.reviewed desc,
+          (r.label <> '' or r.response <> '' or not r.show) desc, r.updated_at desc
+on conflict (product_id, row_key) do nothing;
+
+insert into public.dn_map_settings (product_id, show_unmapped, updated_by, updated_at)
+select distinct on (f.product_id) f.product_id, s.show_unmapped, s.updated_by, s.updated_at
+  from public.dn_settings s
+  join public.cm_factories f on f.id = s.factory_id
+ order by f.product_id, s.updated_at desc
+on conflict (product_id) do nothing;
+
+-- The functions keep their names but now take a product, not a factory. A parameter cannot be
+-- renamed in place, so the old ones are dropped first.
+drop function if exists public.dn_get_rules(text, text);
+drop function if exists public.dn_add_rows(text, text, jsonb);
+drop function if exists public.dn_admin_save_rules(text, text, boolean, jsonb, jsonb);
+
+create or replace function public.dn__product(p_product_id text) returns text
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if not exists (select 1 from public.cm_products p where p.id = p_product_id and p.active) then
+    perform public.app__fail('Choose a product first.');
+  end if;
+  return p_product_id;
+end $$;
+
+-- The mapping for one product. Any approved user: the tool needs it to build the table.
+create or replace function public.dn_get_rules(p_token text, p_product_id text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
-declare f public.cm_factories;
+declare v_product text;
 begin
   perform public.app__session_user(p_token);
-  f := public.cm__factory(p_factory_id);
+  v_product := public.dn__product(p_product_id);
   return jsonb_build_object(
-    'show_unmapped', coalesce((select s.show_unmapped from public.dn_settings s where s.factory_id = f.id), true),
+    'show_unmapped', coalesce((select s.show_unmapped from public.dn_map_settings s where s.product_id = v_product), true),
     'rules', coalesce((
       select jsonb_agg(jsonb_build_object('key', r.row_key, 'section', r.section, 'sub', r.sub,
-               'component', r.component, 'show', r.show, 'label', r.label, 'response', r.response,
-               'new', not r.reviewed)
+               'component', r.component, 'show', r.show, 'label', r.label, 'strip', r.strip,
+               'response', r.response, 'new', not r.reviewed)
              order by r.sort, r.row_key)
-        from public.dn_rules r where r.factory_id = f.id), '[]'::jsonb));
+        from public.dn_map r where r.product_id = v_product), '[]'::jsonb));
 end $$;
 
 -- Called by the tool after every datasheet it reads, for any approved user.
--- Adds the rows this factory's mapping has not seen before; rows already there are not touched.
+-- Adds the rows this product's mapping has not seen before; rows already there are not touched.
 --   p_rows: [{ "key", "section", "sub", "component" }, ...] in datasheet order
--- A new row starts as shown or left out according to the factory's "rows not in the list yet"
--- setting, with the datasheet value, and is marked for the admins to review.
-create or replace function public.dn_add_rows(p_token text, p_factory_id text, p_rows jsonb)
+-- A new row starts as shown or left out according to the product's "rows not in the list yet"
+-- setting, with the datasheet value, and is marked for the editors to review.
+create or replace function public.dn_add_rows(p_token text, p_product_id text, p_rows jsonb)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
-  f public.cm_factories;
+  v_product text;
   v_show boolean; v_base int; v_added int := 0;
 begin
   perform public.app__session_user(p_token);
-  f := public.cm__factory(p_factory_id);
+  v_product := public.dn__product(p_product_id);
   if p_rows is null or jsonb_typeof(p_rows) <> 'array' then
     perform public.app__fail('The rows could not be read.');
   end if;
   if jsonb_array_length(p_rows) > 3000 then
     perform public.app__fail('Too many rows to add in one go (more than 3000).');
   end if;
-  v_show := coalesce((select s.show_unmapped from public.dn_settings s where s.factory_id = f.id), true);
-  v_base := coalesce((select max(r.sort) from public.dn_rules r where r.factory_id = f.id), 0);
+  v_show := coalesce((select s.show_unmapped from public.dn_map_settings s where s.product_id = v_product), true);
+  v_base := coalesce((select max(r.sort) from public.dn_map r where r.product_id = v_product), 0);
 
-  insert into public.dn_rules (factory_id, row_key, section, sub, component, show, sort, reviewed)
-  select f.id, x.key, x.section, x.sub, x.component, v_show, v_base + x.ord, false
+  insert into public.dn_map (product_id, row_key, section, sub, component, show, sort, reviewed)
+  select v_product, x.key, x.section, x.sub, x.component, v_show, v_base + x.ord, false
     from (
       select distinct on (trim(e->>'key'))
              trim(e->>'key') as key,
@@ -1128,26 +1202,26 @@ begin
        where length(trim(coalesce(e->>'key', ''))) between 1 and 300
        order by trim(e->>'key'), ord
     ) x
-  on conflict (factory_id, row_key) do nothing;
+  on conflict (product_id, row_key) do nothing;
   get diagnostics v_added = row_count;
   return jsonb_build_object('ok', true, 'added', v_added);
 end $$;
 
--- Save the mapping for one factory (admins, and users given edit access to datasheet-notes).
---   p_rules:  [{ "key", "section", "sub", "component", "show", "label", "response" }, ...] in display order.
+-- Save the mapping for one product (admins, and users given edit access to datasheet-notes).
+--   p_rules:  [{ "key", "section", "sub", "component", "show", "label", "strip", "response" }, ...] in display order.
 --             Rows already stored and not in the list are kept as they are.
 --   p_remove: ["key", ...] rules to delete.
 create or replace function public.dn_admin_save_rules(
-  p_token text, p_factory_id text, p_show_unmapped boolean, p_rules jsonb, p_remove jsonb default '[]'::jsonb)
+  p_token text, p_product_id text, p_show_unmapped boolean, p_rules jsonb, p_remove jsonb default '[]'::jsonb)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
   u public.app_users;
-  f public.cm_factories;
+  v_product text;
   v_saved int := 0; v_removed int := 0;
 begin
   u := public.app__require_editor(p_token, 'datasheet-notes');
-  f := public.cm__factory(p_factory_id);
+  v_product := public.dn__product(p_product_id);
   p_rules  := coalesce(p_rules,  '[]'::jsonb);
   p_remove := coalesce(p_remove, '[]'::jsonb);
   if jsonb_typeof(p_rules) <> 'array' or jsonb_typeof(p_remove) <> 'array' then
@@ -1161,17 +1235,18 @@ begin
     perform public.app__fail('A row has no name and cannot be saved.');
   end if;
   if exists (select 1 from jsonb_array_elements(p_rules) e
-              where length(coalesce(e->>'label', '')) > 120 or length(coalesce(e->>'response', '')) > 1000) then
-    perform public.app__fail('A name is longer than 120 characters or a response is longer than 1000 characters.');
+              where length(coalesce(e->>'label', '')) > 120 or length(coalesce(e->>'response', '')) > 1000
+                 or length(coalesce(e->>'strip', '')) > 300) then
+    perform public.app__fail('A name is longer than 120 characters, a "remove from value" text is longer than 300, or a response is longer than 1000.');
   end if;
 
-  delete from public.dn_rules r
-   where r.factory_id = f.id
+  delete from public.dn_map r
+   where r.product_id = v_product
      and r.row_key in (select jsonb_array_elements_text(p_remove));
   get diagnostics v_removed = row_count;
 
-  insert into public.dn_rules (factory_id, row_key, section, sub, component, show, label, response, sort, updated_by, updated_at, reviewed)
-  select f.id, x.key, x.section, x.sub, x.component, x.show, x.label, x.response, x.sort, u.id, now(), true
+  insert into public.dn_map (product_id, row_key, section, sub, component, show, label, strip, response, sort, updated_by, updated_at, reviewed)
+  select v_product, x.key, x.section, x.sub, x.component, x.show, x.label, x.strip, x.response, x.sort, u.id, now(), true
     from (
       select distinct on (trim(e->>'key'))
              trim(e->>'key') as key,
@@ -1180,25 +1255,26 @@ begin
              left(trim(coalesce(e->>'component', '')), 200) as component,
              coalesce((e->>'show')::boolean, true)          as show,
              trim(coalesce(e->>'label', ''))                as label,
+             trim(coalesce(e->>'strip', ''))                as strip,
              trim(coalesce(e->>'response', ''))             as response,
              ord::int                                       as sort
         from jsonb_array_elements(p_rules) with ordinality as t(e, ord)
        order by trim(e->>'key'), ord
     ) x
-  on conflict (factory_id, row_key) do update
+  on conflict (product_id, row_key) do update
      set section = excluded.section, sub = excluded.sub, component = excluded.component, sort = excluded.sort,
-         updated_by = case when (dn_rules.show, dn_rules.label, dn_rules.response)
-                                is distinct from (excluded.show, excluded.label, excluded.response)
-                           then excluded.updated_by else dn_rules.updated_by end,
-         updated_at = case when (dn_rules.show, dn_rules.label, dn_rules.response)
-                                is distinct from (excluded.show, excluded.label, excluded.response)
-                           then excluded.updated_at else dn_rules.updated_at end,
-         show = excluded.show, label = excluded.label, response = excluded.response, reviewed = true;
+         updated_by = case when (dn_map.show, dn_map.label, dn_map.strip, dn_map.response)
+                                is distinct from (excluded.show, excluded.label, excluded.strip, excluded.response)
+                           then excluded.updated_by else dn_map.updated_by end,
+         updated_at = case when (dn_map.show, dn_map.label, dn_map.strip, dn_map.response)
+                                is distinct from (excluded.show, excluded.label, excluded.strip, excluded.response)
+                           then excluded.updated_at else dn_map.updated_at end,
+         show = excluded.show, label = excluded.label, strip = excluded.strip, response = excluded.response, reviewed = true;
   get diagnostics v_saved = row_count;
 
-  insert into public.dn_settings (factory_id, show_unmapped, updated_by, updated_at)
-  values (f.id, coalesce(p_show_unmapped, true), u.id, now())
-  on conflict (factory_id) do update
+  insert into public.dn_map_settings (product_id, show_unmapped, updated_by, updated_at)
+  values (v_product, coalesce(p_show_unmapped, true), u.id, now())
+  on conflict (product_id) do update
      set show_unmapped = excluded.show_unmapped, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
 
   return jsonb_build_object('ok', true, 'saved', v_saved, 'removed', v_removed);

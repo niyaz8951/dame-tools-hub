@@ -13,6 +13,9 @@
 
   var HEADER_FILL = 'FF773562';   // header colour of the owner's compliance table format
   var SUB_FILL    = 'FFF4ECF1';
+  // cells that differ from the first unit: yellow for the 1st different value in a row, then one colour
+  // per further different value; after the last colour it starts again at yellow
+  var DIFF_FILLS  = ['FFFFF59D', 'FFBDD7EE', 'FFC6E0B4', 'FFF8CBAD', 'FFD9C3EC'];
   var LINE        = 'FF8C8C8C';
   function colName(i) { var s = '', n = i + 1; while (n > 0) { s = String.fromCharCode(65 + (n - 1) % 26) + s; n = Math.floor((n - 1) / 26); } return s; }
 
@@ -61,7 +64,7 @@
   var X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
   var NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 
-  /* cell styles: 1 header, 2 section name, 3 body, 4 sub-heading */
+  /* cell styles: 1 header, 2 section name, 3 body, 4 sub-heading, 5.. body with a "differs" fill */
   function stylesXml() {
     var side = '<left style="thin"><color rgb="' + LINE + '"/></left><right style="thin"><color rgb="' + LINE + '"/></right>' +
                '<top style="thin"><color rgb="' + LINE + '"/></top><bottom style="thin"><color rgb="' + LINE + '"/></bottom><diagonal/>';
@@ -73,13 +76,15 @@
       '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font>' +
         '<font><b/><sz val="11"/><name val="Calibri"/></font>' +
         '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>' +
-      '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+      '<fills count="' + (4 + DIFF_FILLS.length) + '"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
         '<fill><patternFill patternType="solid"><fgColor rgb="' + HEADER_FILL + '"/></patternFill></fill>' +
-        '<fill><patternFill patternType="solid"><fgColor rgb="' + SUB_FILL + '"/></patternFill></fill></fills>' +
+        '<fill><patternFill patternType="solid"><fgColor rgb="' + SUB_FILL + '"/></patternFill></fill>' +
+        DIFF_FILLS.map(function (c) { return '<fill><patternFill patternType="solid"><fgColor rgb="' + c + '"/></patternFill></fill>'; }).join('') + '</fills>' +
       '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>' + side + '</border></borders>' +
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-      '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
-        xf(2, 2) + xf(1, 0) + xf(0, 0) + xf(1, 3) + '</cellXfs>' +
+      '<cellXfs count="' + (5 + DIFF_FILLS.length) + '"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+        xf(2, 2) + xf(1, 0) + xf(0, 0) + xf(1, 3) +
+        DIFF_FILLS.map(function (c, i) { return xf(0, 4 + i); }).join('') + '</cellXfs>' +
       '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
   }
 
@@ -92,7 +97,10 @@
     grid.rows.forEach(function (r, i) {
       var n = i + 2, st = r.kind === 'sub' ? 4 : 3;
       out.push('<row r="' + n + '">' + cell(0, n, 2, r.section) + cell(1, n, st, r.component) +
-               r.cells.map(function (v, u) { return cell(2 + u, n, st, v); }).join('') + cell(2 + units, n, st, '') + '</row>');
+               r.cells.map(function (v, u) {
+                 var mk = r.marks ? r.marks[u] : 0;
+                 return cell(2 + u, n, mk ? 5 + (mk - 1) % DIFF_FILLS.length : st, v === '' && mk ? ' ' : v);
+               }).join('') + cell(2 + units, n, st, '') + '</row>');
     });
     return X + '<worksheet xmlns="' + NS + '">' +
       '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +      // prints one page wide

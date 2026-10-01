@@ -33,6 +33,15 @@
   .dn-preview tr.first td { border-top: 2px solid var(--border); }
   .dn-preview tr.sub td { background: var(--surface-2); font-weight: 650; }
   .dn-list { margin: 6px 0 0; padding-left: 18px; }
+  /* Cells that differ from the first unit. Built from the theme tokens so they follow day and night. */
+  .dn-preview td.diff { font-weight: 600; }
+  .dn-preview td.d1 { background: var(--warn-bg); }
+  .dn-preview td.d2 { background: color-mix(in srgb, var(--brand) 26%, var(--surface)); }
+  .dn-preview td.d3 { background: var(--ok-bg); }
+  .dn-preview td.d4 { background: var(--danger-bg); }
+  .dn-preview td.d5 { background: color-mix(in srgb, var(--brand-sky) 50%, var(--surface)); }
+  .dn-diff { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .dn-diff p { flex: 1 1 320px; }
 </style>
 </head>
 <body>
@@ -48,16 +57,14 @@
     <!-- 1. selection -->
     <section class="card stack" aria-labelledby="h-unit">
       <div class="dn-head">
-        <h2 id="h-unit">Product and factory</h2>
+        <h2 id="h-unit">Product</h2>
         <a class="btn ghost sm" id="dn-manage" href="mapping.html" hidden>Row mapping</a>
       </div>
       <div class="dn-grid">
         <label class="field"><span>Product</span>
           <select class="input" id="dn-product" disabled><option value="">Loading…</option></select></label>
-        <label class="field"><span>Factory</span>
-          <select class="input" id="dn-factory" disabled><option value="">Choose a product first</option></select></label>
       </div>
-      <p class="hint" id="dn-scope-hint" role="status">Choose product and factory to continue.</p>
+      <p class="hint" id="dn-scope-hint" role="status">Choose a product to continue.</p>
     </section>
 
     <!-- 2. datasheet -->
@@ -87,8 +94,12 @@
         </div>
       </div>
       <div class="dn-facts" id="dn-facts"></div>
+      <div class="notice dn-diff" id="dn-diff" hidden>
+        <p class="small" id="dn-diff-text"></p>
+        <label class="check" id="dn-only-wrap"><input type="checkbox" id="dn-only"> Only rows that differ</label>
+      </div>
       <div class="notice warn" id="dn-warn" hidden></div>
-      <div class="empty" id="dn-empty" hidden>The row mapping for this factory leaves out every row of this datasheet. Ask an admin to check the row mapping.</div>
+      <div class="empty" id="dn-empty" hidden>The row mapping for this product leaves out every row of this datasheet. Ask an admin to check the row mapping.</div>
       <div class="table-wrap dn-preview" id="dn-table" tabindex="0" role="region" aria-labelledby="h-result">
         <table class="table">
           <colgroup id="dn-cols"></colgroup>
@@ -96,7 +107,7 @@
           <tbody id="dn-body"></tbody>
         </table>
       </div>
-      <p class="hint">Rows and wording follow the row mapping set by the admins for this factory; values come from the datasheet.
+      <p class="hint">Rows and wording follow the row mapping set by the admins for this product; values come from the datasheet.
         Remarks stay empty for you to fill in Excel. Check the table against the datasheet before sending it out.</p>
     </section>
   </div>

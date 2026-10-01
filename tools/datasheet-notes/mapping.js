@@ -1,6 +1,7 @@
 /* ============================================================
    Datasheet Notes - row mapping (admins, and users given edit access to this tool).
-   Per factory, each datasheet row has: Show, Name in Excel, Response.
+   Per product (one mapping for every factory), each datasheet row has:
+   Show, Name in Excel, Remove from value, Response.
    Rows are found by loading a datasheet; every row listed is saved,
    so the list is there next time without loading a datasheet again.
    Database: Api.dnRules / Api.dnAdminSaveRules.
@@ -14,14 +15,13 @@
   var el = window.Hub.el, P = window.DSParse;
   var NO_VALUE = '‹datasheet value›';
 
-  var productSel = $('dm-product'), factorySel = $('dm-factory'), hint = $('dm-scope-hint');
+  var productSel = $('dm-product'), hint = $('dm-scope-hint');
   var panel = $('dm-panel'), body = $('dm-body'), unmappedSel = $('dm-unmapped'), search = $('dm-search');
   var saveBtn = $('dm-save'), changes = $('dm-changes'), status = $('dm-status'), errorBox = $('dm-error');
-  var products = [], factoryId = '', list = [], removed = [], savedUnmapped = true, sheet = null, sheetName = '', busy = false;
+  var products = [], productId = '', list = [], removed = [], savedUnmapped = true, sheet = null, sheetName = '', busy = false;
 
   function option(value, text) { return el('option', { value: value, text: text }); }
   function product() { return products.filter(function (p) { return p.id === productSel.value; })[0] || null; }
-  function factory() { var p = product(); return p && p.factories.filter(function (f) { return f.id === factorySel.value; })[0] || null; }
   function fail(msg) { errorBox.hidden = !msg; errorBox.textContent = msg || ''; }
 
   /* ---------- state ---------- */
@@ -30,9 +30,9 @@
       key: src.key, group: src.group, sub: src.sub, component: src.component,
       sample: onSheet ? src.value : null, onSheet: onSheet, saved: !!rule, isNew: !!(rule && rule['new']),
       show: rule ? rule.show !== false : unmappedSel.value === 'show',
-      label: rule ? rule.label || '' : '', response: rule ? rule.response || '' : ''
+      label: rule ? rule.label || '' : '', strip: rule ? rule.strip || '' : '', response: rule ? rule.response || '' : ''
     };
-    r.orig = { show: r.show, label: r.label, response: r.response };
+    r.orig = { show: r.show, label: r.label, strip: r.strip, response: r.response };
     return r;
   }
 
@@ -42,9 +42,9 @@
     rules.forEach(function (r) { byKey[r.key] = r; });
     function add(row) { if (order.indexOf(row.group) < 0) order.push(row.group); out.push(row); }
     if (sheet) {
-      var f = factory(), p = product();
+      var p = product();
       sheet.forEach(function (unit) {            // every unit in the PDF; the first value found is the example
-        P.rows(unit, { product: p.name, factory: f.name }).forEach(function (r) {
+        P.rows(unit, { product: p.name }).forEach(function (r) {
           if (seen[r.key]) return; seen[r.key] = 1;
           add(makeRow({ key: r.key, group: r.group, sub: /^Filter \d+$/i.test(r.sub) ? '' : r.sub, component: r.component, value: r.value }, byKey[r.key], true));
         });
@@ -60,10 +60,10 @@
   }
 
   function current() {            // what is on screen, as saved rules (keeps edits when a datasheet is loaded)
-    return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, response: r.response, 'new': r.isNew, _row: r }; });
+    return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, strip: r.strip, response: r.response, 'new': r.isNew, _row: r }; });
   }
 
-  function changed(r) { return !r.saved || r.isNew || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.response.trim() !== r.orig.response; }
+  function changed(r) { return !r.saved || r.isNew || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.strip.trim() !== r.orig.strip || r.response.trim() !== r.orig.response; }
   function pending() {
     var n = list.filter(changed).length + removed.length;
     if ((unmappedSel.value === 'show') !== savedUnmapped) n++;
@@ -78,7 +78,7 @@
   /* ---------- table ---------- */
   function resultText(r) {
     if (!r.show) return 'Left out';
-    return P.fill(r.response, r.sample === null ? NO_VALUE : r.sample);
+    return P.fill(r.response, r.sample === null ? NO_VALUE : r.sample, r.strip);
   }
 
   function groupCount(g) {
@@ -93,7 +93,7 @@
         group = r.group;
         var g = group;
         r_count[g] = el('span', { 'class': 'small muted', text: groupCount(g) });
-        frag.appendChild(el('tr', { 'class': 'group', 'data-group': g }, el('td', { colspan: '5' }, el('div', { 'class': 'dm-group' }, [
+        frag.appendChild(el('tr', { 'class': 'group', 'data-group': g }, el('td', { colspan: '6' }, el('div', { 'class': 'dm-group' }, [
           el('span', {}, [g + '  ', r_count[g]]),
           el('span', { 'class': 'row' }, [
             el('button', { type: 'button', 'class': 'btn ghost sm', text: 'Show all', onclick: function () { setGroup(g, true); } }),
@@ -116,15 +116,17 @@
     var resp = el('input', { 'class': 'input', maxlength: '1000', placeholder: 'Datasheet value', 'aria-label': 'Response for ' + name });
     var result = el('td');
     var tr = el('tr', { 'data-group': r.group });
-    check.checked = r.show; label.value = r.label; resp.value = r.response;
+    var strip = el('input', { 'class': 'input', maxlength: '300', placeholder: 'Nothing', 'aria-label': 'Text to remove from the value of ' + name });
+    check.checked = r.show; label.value = r.label; strip.value = r.strip; resp.value = r.response;
 
     function paint() {
       tr.className = r.show ? '' : 'off';
       result.textContent = resultText(r);
-      label.disabled = resp.disabled = !r.show;
+      label.disabled = strip.disabled = resp.disabled = !r.show;
     }
     check.addEventListener('change', function () { r.show = check.checked; paint(); r_count[r.group].textContent = groupCount(r.group); refreshSave(); });
     label.addEventListener('input', function () { r.label = label.value; refreshSave(); });
+    strip.addEventListener('input', function () { r.strip = strip.value; paint(); refreshSave(); });
     resp.addEventListener('input', function () { r.response = resp.value; paint(); refreshSave(); });
     r.paint = function () { check.checked = r.show; paint(); };
     r.tr = tr;
@@ -141,6 +143,7 @@
     tr.appendChild(el('td', {}, el('label', { 'class': 'dm-check' }, check)));
     tr.appendChild(el('td', {}, info));
     tr.appendChild(el('td', {}, label));
+    tr.appendChild(el('td', {}, strip));
     tr.appendChild(el('td', {}, resp));
     tr.appendChild(result);
     paint();
@@ -177,22 +180,22 @@
 
   /* ---------- load, save ---------- */
   function load() {
-    var f = factory();
-    factoryId = f ? f.id : ''; sheet = null; sheetName = ''; removed = []; list = []; search.value = ''; fail('');
+    var f = product();
+    productId = f ? f.id : ''; sheet = null; sheetName = ''; removed = []; list = []; search.value = ''; fail('');
     panel.hidden = true;
-    hint.textContent = f ? 'Loading the mapping…' : 'Choose a product and factory to see its mapping.';
+    hint.textContent = f ? 'Loading the mapping…' : 'Choose a product to see its mapping.';
     if (!f) return;
     var id = f.id;
     window.Api.dnRules(window.Hub.token(), id).then(function (res) {
-      if (factoryId !== id) return;
+      if (productId !== id) return;
       savedUnmapped = res.show_unmapped !== false;
       unmappedSel.value = savedUnmapped ? 'show' : 'hide';
       build(res.rules || []);
-      hint.textContent = 'Mapping for ' + product().name + ', ' + f.name + ' factory.';
+      hint.textContent = 'Mapping for ' + f.name + ', used for every factory.';
       panel.hidden = false;
       render(); describe();
     }, function (err) {
-      if (factoryId !== id) return;
+      if (productId !== id) return;
       hint.textContent = '';
       panel.hidden = false; $('dm-wrap').hidden = true; $('dm-empty').hidden = true;
       fail('The mapping could not be loaded: ' + ((err && err.message) || err));
@@ -219,13 +222,13 @@
   });
 
   saveBtn.addEventListener('click', function () {
-    if (busy || !factoryId) return;
+    if (busy || !productId) return;
     busy = true; saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; fail('');
-    var id = factoryId, show = unmappedSel.value === 'show';
-    var rules = list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label.trim(), response: r.response.trim() }; });
-    window.Api.dnAdminSaveRules(window.Hub.token(), { factoryId: id, showUnmapped: show, rules: rules, remove: removed }).then(function () {
-      if (factoryId !== id) return;
-      list.forEach(function (r) { r.saved = true; r.isNew = false; r.label = r.label.trim(); r.response = r.response.trim(); r.orig = { show: r.show, label: r.label, response: r.response }; });
+    var id = productId, show = unmappedSel.value === 'show';
+    var rules = list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label.trim(), strip: r.strip.trim(), response: r.response.trim() }; });
+    window.Api.dnAdminSaveRules(window.Hub.token(), { productId: id, showUnmapped: show, rules: rules, remove: removed }).then(function () {
+      if (productId !== id) return;
+      list.forEach(function (r) { r.saved = true; r.isNew = false; r.label = r.label.trim(); r.strip = r.strip.trim(); r.response = r.response.trim(); r.orig = { show: r.show, label: r.label, strip: r.strip, response: r.response }; });
       removed = []; savedUnmapped = show;
       render(); describe();
       window.Hub.toast('Mapping saved.');
@@ -234,27 +237,15 @@
     }).then(function () { busy = false; saveBtn.textContent = 'Save mapping'; refreshSave(); });
   });
 
-  /* ---------- factory choice, leaving with unsaved changes ---------- */
-  function fillFactories() {
-    var p = product();
-    factorySel.textContent = '';
-    factorySel.appendChild(option('', p ? 'Choose a factory' : 'Choose a product first'));
-    (p ? p.factories : []).forEach(function (f) { factorySel.appendChild(option(f.id, f.name)); });
-    factorySel.disabled = !p;
-  }
-  var lastProduct = '', lastFactory = '';
-  function leaveOk() { return !factoryId || !pending() || window.confirm('Changes to this mapping are not saved. Leave them?'); }
+  /* ---------- product choice, leaving with unsaved changes ---------- */
+  var lastProduct = '';
+  function leaveOk() { return !productId || !pending() || window.confirm('Changes to this mapping are not saved. Leave them?'); }
   productSel.addEventListener('change', function () {
     if (!leaveOk()) { productSel.value = lastProduct; return; }
-    lastProduct = productSel.value; lastFactory = '';
-    fillFactories(); load();
-  });
-  factorySel.addEventListener('change', function () {
-    if (!leaveOk()) { factorySel.value = lastFactory; return; }
-    lastFactory = factorySel.value;
+    lastProduct = productSel.value;
     load();
   });
-  window.addEventListener('beforeunload', function (e) { if (factoryId && pending()) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', function (e) { if (productId && pending()) { e.preventDefault(); e.returnValue = ''; } });
 
   /* ---------- start ---------- */
   window.Hub.requireLogin({ edit: 'datasheet-notes' }).then(function () {
@@ -266,8 +257,7 @@
     productSel.appendChild(option('', 'Choose a product'));
     products.forEach(function (p) { productSel.appendChild(option(p.id, p.name)); });
     productSel.disabled = false;
-    if (products.length === 1) { productSel.value = lastProduct = products[0].id; }
-    fillFactories();
+    if (products.length === 1) { productSel.value = lastProduct = products[0].id; load(); }
   }, function (err) {
     productSel.textContent = ''; productSel.appendChild(option('', 'Could not load'));
     hint.className = 'notice error';
