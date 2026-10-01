@@ -72,6 +72,15 @@ Goal: collect every specification line the company meets, answer each one once, 
 - Users must be told on the page that conversions are saved. Never describe the tool as "nothing is uploaded".
 - Later steps (not built yet, keep the door open): near-match suggestions, AI-drafted answers stored with `answer_source = 'ai'` and shown as unverified until an admin confirms. AI output must never overwrite an admin answer.
 
+## 2d-2. Structure of the compliance library (Part and topic)
+
+- Every library line (`cm_lines`) carries the **Part** it was first seen under (`part`: 1 General, 2 Products, 3 Execution, 0 = not known) and the **section title** as written (`section`, e.g. `FANS`).
+- The **topic** shown to editors is not stored. It is worked out from the section title by `cm__topic` (first match wins): Installation and testing, Submittals, Standards and quality, Filters, Humidifier, Heat recovery, Coils, Dampers and mixing, Sound and vibration, Fans and drives, Controls and electrical, Casing and base, Delivery and spares, General, Other. Improving `cm__topic` re-sorts every line at once. The demo back end mirrors it (`cmTopic` in `api.js`); change both together.
+- Part and section are filled in the database by `cm__fill_structure` from `cm_run_lines` (the stored rows of each conversion): the nearest `PART n` row and the nearest section row above the clause. It runs for each conversion inside `cm_save_run`, and once for all stored conversions when `schema.sql` is run. A value already set is never changed (first seen wins). Contents lines (dot leaders) and false sections starting with `0.` are ignored. The page sends nothing extra.
+- Matching is unchanged: a clause is still the same line when its normalised text matches. Part and topic are for browsing and for the later clause-to-datasheet-row link; they are not part of the key.
+- Library screen: filters "Part" and "Topic" (with lines still to answer), lines grouped under "Part 2 Products · Fans and drives" headings, section title under each clause. Order: to answer first, then Part, topic, section. Download has Part / Topic / Section columns first; the upload still finds Specifications / Compliance / Remarks by heading, so a downloaded file can be filled and uploaded back.
+- Contents lines are no longer added to the library as clauses.
+
 ## 2e. Datasheet Notes and its row mapping
 
 Goal: turn a product datasheet PDF into the compliance table format: Section / Component / one column per unit tag / Remarks. Admins control the rows and the wording from the website, with no code change.

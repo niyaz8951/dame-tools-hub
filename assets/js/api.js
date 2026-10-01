@@ -49,7 +49,8 @@
     // Compliance Maker library
     cmOptions: function (t) { return rpc("cm_options", { p_token: t }); },
     cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines }); },
-    cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 50, p_offset: d.offset || 0 }); },
+    cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 50, p_offset: d.offset || 0,
+      p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "" }); },
     cmAdminSaveAnswer: function (t, id, c, r) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r }); },
     cmAdminDeleteLine: function (t, id) { return rpc("cm_admin_delete_line", { p_token: t, p_line_id: id }); },
     cmAdminImport: function (t, d) { return rpc("cm_admin_import", { p_token: t, p_factory_id: d.factoryId, p_file_name: d.fileName || "", p_rows: d.rows }); },
@@ -138,6 +139,32 @@
         };
       })
     };
+  }
+  // mirrors cm__part_no and cm__topic in db/schema.sql
+  function cmPartNo(t) {
+    var m = /^\s*PART\s+([0-9]{1,2}|I{1,3})\b/i.exec(t || "");
+    return !m ? 0 : ({ I: 1, II: 2, III: 3 })[m[1].toUpperCase()] || Math.min(parseInt(m[1], 10) || 0, 9);
+  }
+  var CM_TOPICS = [
+    ["Installation and testing", "field quality|install|examin|prepar|adjust|clean|demonstrat|commission|start.?up|testing|connection|training"],
+    ["Submittals", "submittal|shop drawing|closeout"],
+    ["Standards and quality", "quality|warrant|regulat|certif|standard|reference|performance|health|safety|code"],
+    ["Filters", "filter"], ["Humidifier", "humidif|dehumidif"],
+    ["Heat recovery", "heat recovery|recovery wheel|heat wheel|heat pipe|recuperator|run.?around"],
+    ["Coils", "coil|heat exchanger|eliminator|drain pan"],
+    ["Dampers and mixing", "damper|mixing|plenum|louv|economi"],
+    ["Sound and vibration", "sound|noise|acoustic|attenuat|silencer|vibration"],
+    ["Fans and drives", "fan|blower|motor|drive|bearing|belt"],
+    ["Controls and electrical", "control|electric|wiring|starter|variable frequency|vfd|instrument|sensor"],
+    ["Casing and base", "casing|cabinet|enclosure|panel|housing|construction|gasket|door|insulat|base|frame|support|roof"],
+    ["Delivery and spares", "deliver|storage|extra material|spare|maintenance"],
+    ["General", "general|summary|description|scope|includes|related|definition|coordination|manufacturer|material"]
+  ].map(function (t) { return [t[0], new RegExp("\\b(" + t[1] + ")")]; });
+  function cmTopic(section) {
+    var s = String(section || "").toLowerCase();
+    if (!s) return "";
+    for (var i = 0; i < CM_TOPICS.length; i++) if (CM_TOPICS[i][1].test(s)) return CM_TOPICS[i][0];
+    return "Other";
   }
   function cmNorm(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
   function cmFactory(db, id) {
@@ -243,12 +270,17 @@
     cmSaveRun: demo(function (db, t, d) {
       var u = sessionUser(db, t), f = cmFactory(db, d.factoryId), seen = {}, answers = [], matched = 0;
       if (!d.lines || !d.lines.length) fail("There are no lines to save.");
+      var part = 0, section = "";
       d.lines.forEach(function (ln, i) {
+        if (ln.type === "part") { var pn = cmPartNo(ln.spec); if (pn) { part = pn; section = ""; } return; }
+        if (ln.type === "section") { if (!/\.{5,}/.test(ln.spec) && !/^0\./.test(ln.sr || "")) section = String(ln.spec || "").trim().slice(0, 120); return; }
         if (["letter", "number", "text"].indexOf(ln.type) < 0) return;
-        var n = cmNorm(ln.spec); if (n.length < 8) return;
+        var n = cmNorm(ln.spec); if (n.length < 8 || /\.{5,}/.test(ln.spec)) return;
         var line = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === n; })[0];
         if (!line) { line = { id: "l" + Date.now() + "_" + i, factory_id: f.id, norm_text: n, spec_text: ln.spec, compliance: "", remarks: "", status: "open", times_seen: 0, last_seen_at: "", answered_at: null, answered_by: null, answer_source: "" }; db.cm.lines.push(line); }
         if (!seen[n]) { seen[n] = 1; line.times_seen++; line.last_seen_at = new Date().toISOString(); }
+        if (!line.part && part) line.part = part;
+        if (!line.section && section) line.section = section;
         if (line.status === "answered") { matched++; answers.push({ i: i, compliance: line.compliance, remarks: line.remarks }); }
       });
       var run = { id: "r" + Date.now(), kind: "conversion", created_at: new Date().toISOString(), user: u.full_name, username: u.username, product: f.product, factory: f.name, source: d.source, file_name: d.fileName || "", line_count: d.lines.length, unique_count: Object.keys(seen).length, matched_count: matched };
@@ -258,10 +290,22 @@
     cmAdminLines: demo(function (db, t, d) {
       editor(db, t, "compliance-maker"); var f = cmFactory(db, d.factoryId), q = (d.search || "").trim().toLowerCase(), st = d.status || "open";
       var all = db.cm.lines.filter(function (x) { return x.factory_id === f.id; });
-      var list = all.filter(function (x) { return (st === "all" || x.status === st) && x.spec_text.toLowerCase().indexOf(q) >= 0; })
-        .sort(function (a, b) { return (b.status === "open") - (a.status === "open") || b.times_seen - a.times_seen; });
+      all.forEach(function (x) { x.part = x.part || 0; x.section = x.section || ""; x.topic = cmTopic(x.section); });
+      var wantPart = d.part === "" || d.part == null ? null : +d.part, groups = {};
+      all.forEach(function (x) {
+        var k = x.part + "|" + x.topic, g = groups[k] || (groups[k] = { part: x.part, topic: x.topic, all: 0, open: 0 });
+        g.all++; if (x.status === "open") g.open++;
+      });
+      var list = all.filter(function (x) {
+        return (st === "all" || x.status === st) && x.spec_text.toLowerCase().indexOf(q) >= 0 &&
+               (wantPart === null || x.part === wantPart) && (!d.topic || x.topic === d.topic);
+      }).sort(function (a, b) {
+        return (b.status === "open") - (a.status === "open") || (a.part === 0) - (b.part === 0) || a.part - b.part ||
+               a.topic.localeCompare(b.topic) || a.section.localeCompare(b.section) || b.times_seen - a.times_seen;
+      });
       var off = d.offset || 0;
-      return { counts: { all: all.length, open: all.filter(function (x) { return x.status === "open"; }).length, answered: all.filter(function (x) { return x.status === "answered"; }).length },
+      return { groups: Object.keys(groups).map(function (k) { return groups[k]; }).sort(function (a, b) { return (a.part === 0) - (b.part === 0) || a.part - b.part || a.topic.localeCompare(b.topic); }),
+               counts: { all: all.length, open: all.filter(function (x) { return x.status === "open"; }).length, answered: all.filter(function (x) { return x.status === "answered"; }).length },
                total: list.length, lines: list.slice(off, off + (d.limit || 50)) };
     }),
     cmAdminSaveAnswer: demo(function (db, t, id, c, r) {
@@ -290,7 +334,10 @@
     cmAdminRuns: demo(function (db, t) { editor(db, t, "compliance-maker"); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
     cmAdminExport: demo(function (db, t, factoryId) {
       editor(db, t, "compliance-maker"); var f = cmFactory(db, factoryId);
-      return { lines: db.cm.lines.filter(function (x) { return x.factory_id === f.id; }) };
+      return { lines: db.cm.lines.filter(function (x) { return x.factory_id === f.id; }).map(function (x) {
+        return { spec_text: x.spec_text, compliance: x.compliance, remarks: x.remarks, times_seen: x.times_seen,
+                 part: x.part || 0, section: x.section || "", topic: cmTopic(x.section) };
+      }).sort(function (a, b) { return (a.part === 0) - (b.part === 0) || a.part - b.part || a.topic.localeCompare(b.topic) || a.section.localeCompare(b.section); }) };
     }),
     // ---- Datasheet Notes row mapping (same rules as db/schema.sql) ----
     dnRules: demo(function (db, t, productId) {

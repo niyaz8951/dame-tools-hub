@@ -672,6 +672,13 @@ create table if not exists public.cm_answer_log (
 );
 create index if not exists cm_answer_log_line_idx on public.cm_answer_log (line_id, created_at desc);
 
+-- Where a clause sits in the specification: its Part (1 General, 2 Products, 3 Execution, 0 = not known)
+-- and the title of its section ("FANS"). The topic shown in the library ("Fans and drives") is worked
+-- out from the section title by cm__topic, so improving that function re-sorts every line at once.
+alter table public.cm_lines add column if not exists part    int  not null default 0;
+alter table public.cm_lines add column if not exists section text not null default '';
+create index if not exists cm_lines_part_idx on public.cm_lines (factory_id, part);
+
 alter table public.cm_products   enable row level security;
 alter table public.cm_factories  enable row level security;
 alter table public.cm_runs       enable row level security;
@@ -707,6 +714,83 @@ create or replace function public.cm__norm(t text) returns text
 language sql immutable as $$
   select trim(regexp_replace(lower(coalesce(t, '')), '[^a-z0-9]+', ' ', 'g'));
 $$;
+
+-- "PART 2 - PRODUCTS" -> 2. Anything else -> 0.
+create or replace function public.cm__part_no(t text) returns int
+language sql immutable as $$
+  select case
+    when m is null then 0
+    when upper(m[1]) = 'I' then 1 when upper(m[1]) = 'II' then 2 when upper(m[1]) = 'III' then 3
+    when m[1] ~ '^[0-9]+$' then least(m[1]::int, 9)
+    else 0 end
+  from (select regexp_match(coalesce(t, ''), '^\s*PART\s+([0-9]{1,2}|I{1,3})\M', 'i') as m) x;
+$$;
+
+-- Section title -> one of a short fixed list of topics, so "FANS", "Supply Fan Section" and
+-- "BEARINGS AND DRIVES" land in the same group. First match wins. The one place this is decided
+-- (the demo back end in api.js mirrors it).
+create or replace function public.cm__topic(t text) returns text
+language sql immutable as $$
+  select case
+    when s = '' then ''
+    when s ~ '\m(field quality|install|examin|prepar|adjust|clean|demonstrat|commission|start.?up|testing|connection|training)' then 'Installation and testing'
+    when s ~ '\m(submittal|shop drawing|closeout)' then 'Submittals'
+    when s ~ '\m(quality|warrant|regulat|certif|standard|reference|performance|health|safety|code)' then 'Standards and quality'
+    when s ~ '\m(filter)' then 'Filters'
+    when s ~ '\m(humidif|dehumidif)' then 'Humidifier'
+    when s ~ '\m(heat recovery|recovery wheel|heat wheel|heat pipe|recuperator|run.?around)' then 'Heat recovery'
+    when s ~ '\m(coil|heat exchanger|eliminator|drain pan)' then 'Coils'
+    when s ~ '\m(damper|mixing|plenum|louv|economi)' then 'Dampers and mixing'
+    when s ~ '\m(sound|noise|acoustic|attenuat|silencer|vibration)' then 'Sound and vibration'
+    when s ~ '\m(fan|blower|motor|drive|bearing|belt)' then 'Fans and drives'
+    when s ~ '\m(control|electric|wiring|starter|variable frequency|vfd|instrument|sensor)' then 'Controls and electrical'
+    when s ~ '\m(casing|cabinet|enclosure|panel|housing|construction|gasket|door|insulat|base|frame|support|roof)' then 'Casing and base'
+    when s ~ '\m(deliver|storage|extra material|spare|maintenance)' then 'Delivery and spares'
+    when s ~ '\m(general|summary|description|scope|includes|related|definition|coordination|manufacturer|material)' then 'General'
+    else 'Other' end
+  from (select lower(coalesce(t, '')) as s) x;
+$$;
+
+-- Fill Part and section of library lines from the saved conversions (cm_run_lines keeps every
+-- row of every conversion in order). A line takes the Part and section it was first seen under;
+-- a value already there is never changed. p_run = one conversion, or null for all of them.
+create or replace function public.cm__fill_structure(p_run uuid default null) returns int
+language plpgsql security definer set search_path = public, extensions as $$
+declare v_n int;
+begin
+  update public.cm_lines l
+     set part    = case when l.part = 0 then s.part else l.part end,
+         section = case when l.section = '' then s.section else l.section end
+    from (
+      select distinct on (rl.line_id) rl.line_id,
+             coalesce(pp.part, 0) as part, coalesce(ss.title, '') as section
+        from public.cm_run_lines rl
+        join public.cm_runs r on r.id = rl.run_id
+        left join lateral (
+          select x.seq, public.cm__part_no(x.spec_text) as part
+            from public.cm_run_lines x
+           where x.run_id = rl.run_id and x.type = 'part' and x.seq < rl.seq
+             and public.cm__part_no(x.spec_text) > 0
+           order by x.seq desc limit 1) pp on true
+        left join lateral (
+          select left(trim(x.spec_text), 120) as title
+            from public.cm_run_lines x
+           where x.run_id = rl.run_id and x.type = 'section' and x.seq < rl.seq
+             and x.seq > coalesce(pp.seq, -1)
+             and x.spec_text !~ '\.{5,}'            -- not a contents line
+             and x.sr !~ '^0\.'                     -- not a wrapped "0.68 W/m2" line read as a section by older versions
+           order by x.seq desc limit 1) ss on true
+       where rl.line_id is not null and (p_run is null or rl.run_id = p_run)
+       order by rl.line_id, r.created_at, rl.seq
+    ) s
+   where l.id = s.line_id
+     and ((l.part = 0 and s.part > 0) or (l.section = '' and s.section <> ''));
+  get diagnostics v_n = row_count;
+  return v_n;
+end $$;
+
+-- Lines saved before Part and section existed: fill them from the conversions already stored.
+do $$ begin perform public.cm__fill_structure(null); end $$;
 
 create or replace function public.cm__factory(p_factory_id text)
 returns public.cm_factories
@@ -777,7 +861,9 @@ begin
     select seq, spec, public.cm__norm(spec) as norm
       from src where type in ('letter','number','text')
   ), uniq as (
-    select distinct on (norm) norm, spec from body where length(norm) >= 8 order by norm, seq
+    select distinct on (norm) norm, spec from body
+     where length(norm) >= 8 and spec !~ '\.{5,}'          -- not a contents line ("1.04 REFERENCES ........ 2")
+     order by norm, seq
   ), up as (
     insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, first_run_id, times_seen)
     select f.product_id, f.id, md5(q.norm), q.norm, q.spec, v_run, 1 from uniq q
@@ -802,6 +888,7 @@ begin
 
   update public.cm_runs set line_count = v_lines, unique_count = v_unique, matched_count = v_matched
    where id = v_run;
+  perform public.cm__fill_structure(v_run);
 
   return jsonb_build_object('ok', true, 'run_id', v_run, 'lines', v_lines,
                             'unique_lines', v_unique, 'matched', v_matched, 'answers', v_answers);
@@ -810,15 +897,19 @@ end $$;
 -- ---------- editor API (admins, and users given edit access to compliance-maker) ----------
 
 -- One page of the library for a factory, unanswered and most-seen first.
+-- p_part: null = every part, 0 = part not known, 1..3. p_topic: '' = every topic, or a cm__topic name.
+drop function if exists public.cm_admin_lines(text, text, text, text, int, int);
 create or replace function public.cm_admin_lines(
   p_token text, p_factory_id text, p_status text default 'open',
-  p_search text default '', p_limit int default 50, p_offset int default 0)
+  p_search text default '', p_limit int default 50, p_offset int default 0,
+  p_part int default null, p_topic text default '')
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
   f public.cm_factories;
   v_like text := '%' || replace(replace(replace(trim(coalesce(p_search, '')), '\', '\\'), '%', '\%'), '_', '\_') || '%';
   v_limit int := least(greatest(coalesce(p_limit, 50), 1), 200);
+  v_topic text := trim(coalesce(p_topic, ''));
 begin
   perform public.app__require_editor(p_token, 'compliance-maker');
   f := public.cm__factory(p_factory_id);
@@ -827,23 +918,36 @@ begin
                         'open', count(*) filter (where status = 'open'),
                         'answered', count(*) filter (where status = 'answered'))
                  from public.cm_lines where factory_id = f.id),
+    -- every Part / topic of this factory with its line counts, for the two filters
+    'groups', coalesce((
+      select jsonb_agg(jsonb_build_object('part', g.part, 'topic', g.topic, 'all', g.n, 'open', g.o)
+                       order by (g.part = 0), g.part, g.topic)
+        from (select l.part, public.cm__topic(l.section) as topic, count(*) as n,
+                     count(*) filter (where l.status = 'open') as o
+                from public.cm_lines l where l.factory_id = f.id group by 1, 2) g), '[]'::jsonb),
     'total', (select count(*) from public.cm_lines l
                where l.factory_id = f.id
                  and (p_status = 'all' or l.status = p_status)
+                 and (p_part is null or l.part = p_part)
+                 and (v_topic = '' or public.cm__topic(l.section) = v_topic)
                  and l.spec_text ilike v_like),
     'lines', coalesce((
       select jsonb_agg(x.j order by x.rn) from (
-        select row_number() over (order by (l.status = 'open') desc, l.times_seen desc, l.last_seen_at desc, l.id) as rn,
+        select row_number() over (order by (l.status = 'open') desc, (l.part = 0), l.part, public.cm__topic(l.section), l.section,
+                                           l.times_seen desc, l.last_seen_at desc, l.id) as rn,
                jsonb_build_object('id', l.id, 'spec_text', l.spec_text, 'compliance', l.compliance,
                  'remarks', l.remarks, 'status', l.status, 'times_seen', l.times_seen,
                  'last_seen_at', l.last_seen_at, 'answered_at', l.answered_at,
                  'answer_source', l.answer_source,
+                 'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section),
                  'answered_by', (select au.full_name from public.app_users au where au.id = l.answered_by)) as j
           from public.cm_lines l
          where l.factory_id = f.id
            and (p_status = 'all' or l.status = p_status)
+           and (p_part is null or l.part = p_part)
+           and (v_topic = '' or public.cm__topic(l.section) = v_topic)
            and l.spec_text ilike v_like
-         order by (l.status = 'open') desc, l.times_seen desc, l.last_seen_at desc, l.id
+         order by rn
          limit v_limit offset greatest(coalesce(p_offset, 0), 0)
       ) x), '[]'::jsonb));
 end $$;
@@ -985,8 +1089,9 @@ begin
   f := public.cm__factory(p_factory_id);
   return jsonb_build_object('lines', coalesce((
     select jsonb_agg(jsonb_build_object('spec_text', l.spec_text, 'compliance', l.compliance,
-                                        'remarks', l.remarks, 'times_seen', l.times_seen)
-                     order by (l.status = 'open') desc, l.times_seen desc, l.spec_text)
+                                        'remarks', l.remarks, 'times_seen', l.times_seen,
+                                        'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section))
+                     order by (l.part = 0), l.part, public.cm__topic(l.section), l.section, l.spec_text)
       from public.cm_lines l where l.factory_id = f.id), '[]'::jsonb));
 end $$;
 

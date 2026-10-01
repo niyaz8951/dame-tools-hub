@@ -25,6 +25,8 @@
   .lib td { vertical-align: top; }
   .lib .spec { min-width: 280px; line-height: 1.45; overflow-wrap: anywhere; }
   .lib .meta { font-size: 12px; color: var(--text-soft); margin-top: 4px; }
+  .lib .where { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .lib tr.group td { background: var(--surface-2); font-weight: 650; font-size: 13px; padding: 8px 12px; }
   .lib textarea.input { min-height: 40px; height: 40px; resize: vertical; min-width: 200px; }
   .lib input.input { min-width: 140px; }
   .lib .state { font-size: 12px; white-space: nowrap; min-width: 64px; }
@@ -70,6 +72,8 @@
         <select class="input" id="fStatus" aria-label="Show">
           <option value="open">To answer</option><option value="answered">Answered</option><option value="all">All lines</option>
         </select>
+        <select class="input" id="fPart" aria-label="Part of the specification"><option value="">All parts</option></select>
+        <select class="input" id="fTopic" aria-label="Topic"><option value="">All topics</option></select>
         <input class="input grow" id="fSearch" type="search" placeholder="Search clause text" aria-label="Search clause text">
         <button class="btn ghost" type="button" id="btnExport">Download library (Excel)</button>
       </div>
@@ -163,6 +167,7 @@
     $("work").hidden = !on; $("stats").hidden = !on;
     $("upScope").textContent = scopeName();
     resetUpload();
+    $("fPart").value = ""; $("fTopic").value = "";
     if (on) { offset = 0; loadLines(); }
   }
   $("product").addEventListener("change", function () { fillFactories(); scopeChanged(); });
@@ -200,30 +205,63 @@
     var meta = "Seen in " + l.times_seen + (l.times_seen === 1 ? " conversion" : " conversions") +
       (l.answered_at && (l.compliance || l.remarks) ? " · answered " + fmt(l.answered_at) + (l.answered_by ? " by " + l.answered_by : "") + (l.answer_source === "upload" ? " (upload)" : "") : "");
     return el("tr", {}, [
-      el("td", { "class": "spec" }, [el("div", { text: l.spec_text }), el("div", { "class": "meta", text: meta })]),
+      el("td", { "class": "spec" }, [el("div", { text: l.spec_text }),
+        el("div", { "class": "meta", text: (l.section ? "Section: " + l.section + " · " : "") + meta })]),
       el("td", {}, [comp]), el("td", {}, [rem]),
       el("td", { style: "text-align:right;white-space:nowrap" }, [state, " ", del])
     ]);
   }
   function loadLines() {
     if (!factoryId()) return;
-    var req = factoryId() + "|" + offset;
+    var req = factoryId() + "|" + offset + "|" + $("fPart").value + "|" + $("fTopic").value;
     loadLines.last = req;
-    Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value, limit: PAGE, offset: offset }).then(function (res) {
+    Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value, limit: PAGE, offset: offset,
+                                     part: $("fPart").value, topic: $("fTopic").value }).then(function (res) {
       if (loadLines.last !== req) return;
-      total = res.total; setCounts(res.counts);
+      total = res.total; setCounts(res.counts); fillGroups(res.groups || []);
       var body = $("rows"); body.textContent = "";
       if (!res.lines.length) {
         var msg = res.counts.all === 0 ? "No lines yet for this factory. They appear here after the first conversion or upload."
+                : $("fPart").value || $("fTopic").value ? "No lines here for this part and topic."
                 : $("fSearch").value ? "No lines match that search."
                 : $("fStatus").value === "open" ? "Nothing left to answer for this factory." : "No lines here.";
         body.appendChild(el("tr", {}, [el("td", { colspan: "4", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
       }
-      res.lines.forEach(function (l) { body.appendChild(lineRow(l)); });
+      var group = null;
+      res.lines.forEach(function (l) {
+        var g = partName(l.part) + (l.topic ? "  ·  " + l.topic : "");
+        if (g !== group) { group = g; body.appendChild(el("tr", { "class": "group" }, [el("td", { colspan: "4", text: g })])); }
+        body.appendChild(lineRow(l));
+      });
       $("pageInfo").textContent = total ? "Showing " + (offset + 1) + " to " + Math.min(offset + PAGE, total) + " of " + total : "";
       $("prev").disabled = offset === 0; $("next").disabled = offset + PAGE >= total;
     }, fail);
   }
+  // Part and topic filters: filled from what this factory's library holds, with the lines still to answer.
+  var PARTS = { 1: "Part 1 General", 2: "Part 2 Products", 3: "Part 3 Execution" };
+  function partName(p) { return !p ? "Part not known" : PARTS[p] || "Part " + p; }
+  function fillGroups(groups) {
+    function fill(sel, first, items) {
+      var keep = sel.value;
+      sel.textContent = ""; sel.appendChild(el("option", { value: "", text: first }));
+      items.forEach(function (it) { sel.appendChild(el("option", { value: it.value, text: it.text })); });
+      sel.value = keep; if (sel.value !== keep) sel.value = "";
+    }
+    var parts = {}, topics = {}, partSel = $("fPart").value;
+    groups.forEach(function (g) {
+      var p = parts[g.part] || (parts[g.part] = { all: 0, open: 0 }); p.all += g.all; p.open += g.open;
+      if (partSel !== "" && String(g.part) !== partSel) return;       // topics of the chosen part only
+      var k = g.topic || "";
+      var t = topics[k] || (topics[k] = { all: 0, open: 0 }); t.all += g.all; t.open += g.open;
+    });
+    function tail(c) { return " (" + c.open + " to answer of " + c.all + ")"; }
+    fill($("fPart"), "All parts", Object.keys(parts).sort(function (a, b) { return (a === "0") - (b === "0") || a - b; })
+      .map(function (k) { return { value: k, text: partName(+k) + tail(parts[k]) }; }));
+    fill($("fTopic"), "All topics", Object.keys(topics).filter(Boolean).sort()
+      .map(function (k) { return { value: k, text: k + tail(topics[k]) }; }));
+  }
+  $("fPart").addEventListener("change", function () { $("fTopic").value = ""; offset = 0; loadLines(); });
+  $("fTopic").addEventListener("change", function () { offset = 0; loadLines(); });
   $("fStatus").addEventListener("change", function () { offset = 0; loadLines(); });
   $("fSearch").addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(function () { offset = 0; loadLines(); }, 300); });
   $("prev").addEventListener("click", function () { offset = Math.max(0, offset - PAGE); loadLines(); window.scrollTo(0, 0); });
@@ -236,8 +274,10 @@
   $("btnExport").addEventListener("click", function () {
     Api.cmAdminExport(Hub.token(), factoryId()).then(function (res) {
       if (!res.lines.length) { Hub.toast("There are no lines to download yet."); return; }
-      var rows = [["Specifications", "Compliance", "Remarks", "Times seen"]].concat(res.lines.map(function (l) { return [l.spec_text, l.compliance, l.remarks, l.times_seen]; }));
-      download(HubXlsx.build(rows, "Library", [90, 22, 50, 12]), "compliance-library-" + factoryId() + ".xlsx");
+      var rows = [["Part", "Topic", "Section", "Specifications", "Compliance", "Remarks", "Times seen"]].concat(res.lines.map(function (l) {
+        return [partName(l.part), l.topic || "", l.section || "", l.spec_text, l.compliance, l.remarks, l.times_seen];
+      }));
+      download(HubXlsx.build(rows, "Library", [18, 24, 30, 90, 22, 50, 12]), "compliance-library-" + factoryId() + ".xlsx");
     }, fail);
   });
 
