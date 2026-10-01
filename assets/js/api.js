@@ -304,7 +304,7 @@
         var k = String(r.key || "").trim();
         if (!k || k.length > 300 || m.rules.some(function (x) { return x.key === k; })) return;
         added++; m.rules.push({ key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
-                                show: m.show_unmapped, label: "", strip: "", response: "", keywords: "", "new": true });
+                                show: m.show_unmapped, label: "", strip: "", response: "", "new": true });
       });
       db.dn[f.id] = m; return { ok: true, added: added };
     }),
@@ -314,7 +314,7 @@
       rules.forEach(function (r) {
         var k = String(r.key || "").trim();
         if (!k || k.length > 300) fail("A row has no name and cannot be saved.");
-        if (String(r.label || "").length > 120 || String(r.response || "").length > 1000 || String(r.strip || "").length > 300 || String(r.keywords || "").length > 600) fail("A name is longer than 120 characters, a \"remove from value\" text is longer than 300, or a response is longer than 1000.");
+        if (String(r.label || "").length > 120 || String(r.response || "").length > 1000 || String(r.strip || "").length > 300) fail("A name is longer than 120 characters, a \"remove from value\" text is longer than 300, or a response is longer than 1000.");
       });
       db.dn = db.dn || {};
       var m = db.dn[f.id] || { show_unmapped: true, rules: [] }, before = m.rules.length;
@@ -323,7 +323,7 @@
       rules.forEach(function (r) {
         var k = String(r.key).trim(); if (seen[k]) return; seen[k] = 1; saved++;
         var row = { key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
-                    show: r.show !== false, label: String(r.label || "").trim(), strip: String(r.strip || "").trim(), response: String(r.response || "").trim(), keywords: String(r.keywords || "").trim(), "new": false };
+                    show: r.show !== false, label: String(r.label || "").trim(), strip: String(r.strip || "").trim(), response: String(r.response || "").trim(), "new": false };
         m.rules = m.rules.filter(function (x) { return x.key !== k; }); m.rules.push(row);
       });
       m.show_unmapped = d.showUnmapped !== false; db.dn[f.id] = m;

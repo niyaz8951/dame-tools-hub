@@ -30,10 +30,9 @@
       key: src.key, group: src.group, sub: src.sub, component: src.component,
       sample: onSheet ? src.value : null, onSheet: onSheet, saved: !!rule, isNew: !!(rule && rule['new']),
       show: rule ? rule.show !== false : unmappedSel.value === 'show',
-      label: rule ? rule.label || '' : '', strip: rule ? rule.strip || '' : '', response: rule ? rule.response || '' : '',
-      keywords: rule ? rule.keywords || '' : ''
+      label: rule ? rule.label || '' : '', strip: rule ? rule.strip || '' : '', response: rule ? rule.response || '' : ''
     };
-    r.orig = { show: r.show, label: r.label, strip: r.strip, response: r.response, keywords: r.keywords };
+    r.orig = { show: r.show, label: r.label, strip: r.strip, response: r.response };
     return r;
   }
 
@@ -61,10 +60,10 @@
   }
 
   function current() {            // what is on screen, as saved rules (keeps edits when a datasheet is loaded)
-    return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, strip: r.strip, response: r.response, keywords: r.keywords, 'new': r.isNew, _row: r }; });
+    return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, strip: r.strip, response: r.response, 'new': r.isNew, _row: r }; });
   }
 
-  function changed(r) { return !r.saved || r.isNew || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.strip.trim() !== r.orig.strip || r.response.trim() !== r.orig.response || r.keywords.trim() !== r.orig.keywords; }
+  function changed(r) { return !r.saved || r.isNew || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.strip.trim() !== r.orig.strip || r.response.trim() !== r.orig.response; }
   function pending() {
     var n = list.filter(changed).length + removed.length;
     if ((unmappedSel.value === 'show') !== savedUnmapped) n++;
@@ -94,7 +93,7 @@
         group = r.group;
         var g = group;
         r_count[g] = el('span', { 'class': 'small muted', text: groupCount(g) });
-        frag.appendChild(el('tr', { 'class': 'group', 'data-group': g }, el('td', { colspan: '7' }, el('div', { 'class': 'dm-group' }, [
+        frag.appendChild(el('tr', { 'class': 'group', 'data-group': g }, el('td', { colspan: '6' }, el('div', { 'class': 'dm-group' }, [
           el('span', {}, [g + '  ', r_count[g]]),
           el('span', { 'class': 'row' }, [
             el('button', { type: 'button', 'class': 'btn ghost sm', text: 'Show all', onclick: function () { setGroup(g, true); } }),
@@ -118,23 +117,20 @@
     var result = el('td');
     var tr = el('tr', { 'data-group': r.group });
     var strip = el('input', { 'class': 'input', maxlength: '300', placeholder: 'Nothing', 'aria-label': 'Text to remove from the value of ' + name });
-    var keys = el('textarea', { 'class': 'input dm-keys', maxlength: '600', rows: '1', placeholder: 'None', 'aria-label': 'Specification keywords for ' + name });
-    check.checked = r.show; label.value = r.label; strip.value = r.strip; resp.value = r.response; keys.value = r.keywords;
+    check.checked = r.show; label.value = r.label; strip.value = r.strip; resp.value = r.response;
 
     function paint() {
       tr.className = r.show ? '' : 'off';
       result.textContent = resultText(r);
-      label.disabled = strip.disabled = resp.disabled = keys.disabled = !r.show;
+      label.disabled = strip.disabled = resp.disabled = !r.show;
     }
     check.addEventListener('change', function () { r.show = check.checked; paint(); r_count[r.group].textContent = groupCount(r.group); refreshSave(); });
     label.addEventListener('input', function () { r.label = label.value; refreshSave(); });
     strip.addEventListener('input', function () { r.strip = strip.value; paint(); refreshSave(); });
-    keys.addEventListener('input', function () { r.keywords = keys.value.replace(/\s*\n+\s*/g, '; '); refreshSave(); });
     resp.addEventListener('input', function () { r.response = resp.value; paint(); refreshSave(); });
     r.paint = function () { check.checked = r.show; paint(); };
     r.tr = tr;
     r.text = (r.group + ' ' + name + ' ' + (r.sample || '') + (r.isNew ? ' new' : '')).toLowerCase();
-    r.keysText = function () { return r.keywords.toLowerCase(); };
 
     var info = [el('span', { 'class': 'dm-name', text: name })];
     if (r.isNew) info.push(el('span', { 'class': 'badge brand', style: 'margin-left:8px', text: 'New' }));
@@ -150,7 +146,6 @@
     tr.appendChild(el('td', {}, strip));
     tr.appendChild(el('td', {}, resp));
     tr.appendChild(result);
-    tr.appendChild(el('td', {}, keys));
     paint();
     return tr;
   }
@@ -230,10 +225,10 @@
     if (busy || !productId) return;
     busy = true; saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; fail('');
     var id = productId, show = unmappedSel.value === 'show';
-    var rules = list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label.trim(), strip: r.strip.trim(), response: r.response.trim(), keywords: r.keywords.trim() }; });
+    var rules = list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label.trim(), strip: r.strip.trim(), response: r.response.trim() }; });
     window.Api.dnAdminSaveRules(window.Hub.token(), { productId: id, showUnmapped: show, rules: rules, remove: removed }).then(function () {
       if (productId !== id) return;
-      list.forEach(function (r) { r.saved = true; r.isNew = false; r.label = r.label.trim(); r.strip = r.strip.trim(); r.response = r.response.trim(); r.keywords = r.keywords.trim(); r.orig = { show: r.show, label: r.label, strip: r.strip, response: r.response, keywords: r.keywords }; });
+      list.forEach(function (r) { r.saved = true; r.isNew = false; r.label = r.label.trim(); r.strip = r.strip.trim(); r.response = r.response.trim(); r.orig = { show: r.show, label: r.label, strip: r.strip, response: r.response }; });
       removed = []; savedUnmapped = show;
       render(); describe();
       window.Hub.toast('Mapping saved.');

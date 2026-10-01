@@ -1035,9 +1035,6 @@ end $$;
 --                                 (several texts separated by ;)
 --                       response  '' = datasheet value; text = standard response;
 --                                 $ or * in the text = where the datasheet value goes
---                       keywords  words that find this row's clause in a specification (Compliance
---                                 Maker, sheet "Datasheet rows"). Entries separated by ; . An entry
---                                 matches a clause when every word of it starts a word of the clause.
 --                       reviewed  false = added automatically from a user's datasheet and not
 --                                 yet looked at by an editor (shown as "New" on the mapping screen)
 --   dn_map_settings   per product: are rows with no rule shown or hidden
@@ -1106,8 +1103,6 @@ create table if not exists public.dn_map_settings (
   updated_at    timestamptz not null default now()
 );
 
-alter table public.dn_map add column if not exists keywords text not null default '';
-
 alter table public.dn_map          enable row level security;
 alter table public.dn_map_settings enable row level security;
 revoke all on public.dn_map, public.dn_map_settings from public;
@@ -1138,46 +1133,6 @@ select distinct on (f.product_id) f.product_id, s.show_unmapped, s.updated_by, s
  order by f.product_id, s.updated_at desc
 on conflict (product_id) do nothing;
 
--- Starter keywords for the AHU rows, so the "Datasheet rows" sheet finds something on day one.
--- Runs only while no AHU row has keywords, so it never overwrites or brings back what an editor
--- typed or cleared. Editors change them on the Row mapping screen.
-update public.dn_map m set keywords = k.keywords
-  from (values
-    ('general||power supply',                          'power supply; electrical characteristic; volt phase'),
-    ('unit data||panel',                               'double wall; double skin; panel thick; casing thick; wall thick'),
-    ('unit data||insulation',                          'insulation; glass fiber; mineral wool; rockwool; polyurethane; injected foam; thermal conductance'),
-    ('unit data||panel inner skin',                    'inner panel; inside casing; inner skin; inner sheet; interior panel'),
-    ('unit data||panel outer skin',                    'outer panel; outside casing; outer skin; outer sheet; exterior panel'),
-    ('unit data||profile',                             'thermal break; frame profile; aluminium profile; aluminum profile; support channel'),
-    ('unit data||ahu base',                            'base rail; base frame; steel base; channel base'),
-    ('unit data||roof',                                'roof; outdoor install; weatherproof; weather resistant; canopy'),
-    ('unit data||door',                                'access door; inspection door; hinge'),
-    ('unit data||supply air flow',                     'airflow rate; air quantity; design air flow'),
-    ('unit data||external pressure drop',              'external static'),
-    ('unit data||sfpv (clean filters)',                'specific fan power; sfp'),
-    ('unit data||erp compliant',                       'erp; ecodesign'),
-    ('mixing box supply||drain pan',                   'drain pan'),
-    ('mixing box supply|damper one supply|material',   'damper blade; damper galvan; damper alumin; blade damper'),
-    ('filter supply||filter class',                    'filter efficien; filter class; panel filter; bag filter; hepa; extended surface; dust spot'),
-    ('filter supply||material',                        'filter media'),
-    ('filter supply||dirty pressure drop',             'final resistance; dirty filter; filter pressure drop'),
-    ('coil cooling dx supply|geometry|rows',           'rows deep; coil rows; row coil'),
-    ('coil cooling dx supply|geometry|frame',          'coil frame; coil casing; channel frame'),
-    ('coil cooling dx supply|geometry|tube material',  'copper tube; tube material; seamless copper'),
-    ('coil cooling dx supply|geometry|tube thickness', 'tube wall thick; tube thick'),
-    ('coil cooling dx supply|geometry|fin material',   'fin alumin; fin copper; fin material; fin coated'),
-    ('coil cooling dx supply|geometry|fin space',      'fins per; fin spac; fpi'),
-    ('coil cooling dx supply|geometry|air velocity',   'face velocity'),
-    ('coil cooling dx supply|geometry|drain pan',      'drain pan'),
-    ('coil cooling dx supply|cooling|total capacity',  'cooling capacity; total capacity'),
-    ('fan supply||type',                               'centrifugal fan; plug fan; plenum fan; ec fan; backward curved; forward curved; fan type'),
-    ('fan supply||efficiency',                         'fan efficien; static efficien'),
-    ('fan supply|motor data|efficiency class',         'motor efficien; ie2; ie3; ie4; ie5; premium efficien'),
-    ('fan supply|motor data|electrical connection',    'motor volt; motor phase')
-  ) as k(row_key, keywords)
- where m.product_id = 'ahu' and m.row_key = k.row_key
-   and not exists (select 1 from public.dn_map x where x.product_id = 'ahu' and x.keywords <> '');
-
 -- The functions keep their names but now take a product, not a factory. A parameter cannot be
 -- renamed in place, so the old ones are dropped first.
 drop function if exists public.dn_get_rules(text, text);
@@ -1206,7 +1161,7 @@ begin
     'rules', coalesce((
       select jsonb_agg(jsonb_build_object('key', r.row_key, 'section', r.section, 'sub', r.sub,
                'component', r.component, 'show', r.show, 'label', r.label, 'strip', r.strip,
-               'response', r.response, 'keywords', r.keywords, 'new', not r.reviewed)
+               'response', r.response, 'new', not r.reviewed)
              order by r.sort, r.row_key)
         from public.dn_map r where r.product_id = v_product), '[]'::jsonb));
 end $$;
@@ -1281,8 +1236,8 @@ begin
   end if;
   if exists (select 1 from jsonb_array_elements(p_rules) e
               where length(coalesce(e->>'label', '')) > 120 or length(coalesce(e->>'response', '')) > 1000
-                 or length(coalesce(e->>'strip', '')) > 300 or length(coalesce(e->>'keywords', '')) > 600) then
-    perform public.app__fail('A name is longer than 120 characters, a "remove text" is longer than 300, the keywords are longer than 600, or a response is longer than 1000.');
+                 or length(coalesce(e->>'strip', '')) > 300) then
+    perform public.app__fail('A name is longer than 120 characters, a "remove from value" text is longer than 300, or a response is longer than 1000.');
   end if;
 
   delete from public.dn_map r
@@ -1290,8 +1245,8 @@ begin
      and r.row_key in (select jsonb_array_elements_text(p_remove));
   get diagnostics v_removed = row_count;
 
-  insert into public.dn_map (product_id, row_key, section, sub, component, show, label, strip, response, keywords, sort, updated_by, updated_at, reviewed)
-  select v_product, x.key, x.section, x.sub, x.component, x.show, x.label, x.strip, x.response, x.keywords, x.sort, u.id, now(), true
+  insert into public.dn_map (product_id, row_key, section, sub, component, show, label, strip, response, sort, updated_by, updated_at, reviewed)
+  select v_product, x.key, x.section, x.sub, x.component, x.show, x.label, x.strip, x.response, x.sort, u.id, now(), true
     from (
       select distinct on (trim(e->>'key'))
              trim(e->>'key') as key,
@@ -1302,21 +1257,19 @@ begin
              trim(coalesce(e->>'label', ''))                as label,
              trim(coalesce(e->>'strip', ''))                as strip,
              trim(coalesce(e->>'response', ''))             as response,
-             trim(coalesce(e->>'keywords', ''))             as keywords,
              ord::int                                       as sort
         from jsonb_array_elements(p_rules) with ordinality as t(e, ord)
        order by trim(e->>'key'), ord
     ) x
   on conflict (product_id, row_key) do update
      set section = excluded.section, sub = excluded.sub, component = excluded.component, sort = excluded.sort,
-         updated_by = case when (dn_map.show, dn_map.label, dn_map.strip, dn_map.response, dn_map.keywords)
-                                is distinct from (excluded.show, excluded.label, excluded.strip, excluded.response, excluded.keywords)
+         updated_by = case when (dn_map.show, dn_map.label, dn_map.strip, dn_map.response)
+                                is distinct from (excluded.show, excluded.label, excluded.strip, excluded.response)
                            then excluded.updated_by else dn_map.updated_by end,
-         updated_at = case when (dn_map.show, dn_map.label, dn_map.strip, dn_map.response, dn_map.keywords)
-                                is distinct from (excluded.show, excluded.label, excluded.strip, excluded.response, excluded.keywords)
+         updated_at = case when (dn_map.show, dn_map.label, dn_map.strip, dn_map.response)
+                                is distinct from (excluded.show, excluded.label, excluded.strip, excluded.response)
                            then excluded.updated_at else dn_map.updated_at end,
-         show = excluded.show, label = excluded.label, strip = excluded.strip, response = excluded.response,
-         keywords = excluded.keywords, reviewed = true;
+         show = excluded.show, label = excluded.label, strip = excluded.strip, response = excluded.response, reviewed = true;
   get diagnostics v_saved = row_count;
 
   insert into public.dn_map_settings (product_id, show_unmapped, updated_by, updated_at)
