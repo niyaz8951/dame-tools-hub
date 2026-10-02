@@ -609,7 +609,11 @@ function syncDownloads() {
 /* Rows with a full set of dimensions. Rows with a bad value never get this
    far: Calculate is off while any row shows a message. */
 function usableItems() {
-  return state.items.filter((i) => i.length > 0 && i.width > 0 && i.height > 0);
+  /* srcRow = the row's place in the cargo list. The drawings colour by it, so a
+     piece keeps its row's legend colour when rows are skipped or palletised. */
+  return state.items
+    .map((item, i) => ({ ...item, srcRow: i }))
+    .filter((i) => i.length > 0 && i.width > 0 && i.height > 0);
 }
 
 /* The pallet spec currently in force, in metres and kg. */
@@ -817,8 +821,16 @@ function applyResult(nextPlan, nextFleet) {
   syncDownloads();
 }
 
+/* Which rows went loose in the last palletised run, for the notice in the results. */
+let looseRun = null;
+
 function run() {
   const items = itemsForPacking();
+  looseRun = null;
+  if (state.pallet.on) {
+    const pz = palletise(usableItems());
+    looseRun = { tags: pz.loose.map((r) => r.tag || 'untitled'), rows: pz.report.length };
+  }
   const vehicle = activeVehicle();
   syncSetupPanel();
 
@@ -958,6 +970,22 @@ function renderResults() {
     for (const [key, n] of grouped) list.appendChild(el('li', null, n > 1 ? `${key} (×${n})` : key));
     body.appendChild(list);
     body.appendChild(el('p', null, 'Try a larger vehicle, allow turning on side, or ship these as breakbulk / out-of-gauge.'));
+    alert.appendChild(body);
+    box.appendChild(alert);
+  }
+
+  /* Rows too large for the chosen pallet are packed loose; say so beside the drawings */
+  if (looseRun && looseRun.tags.length) {
+    const all = looseRun.tags.length === looseRun.rows;
+    const alert = el('div', 'notice notice--warning');
+    const body = el('div');
+    body.appendChild(el('h3', null, all
+      ? 'No row fits the chosen pallet'
+      : `${looseRun.tags.length} of ${looseRun.rows} rows do not fit the chosen pallet`));
+    const shown = looseRun.tags.slice(0, 8).join(', ') + (looseRun.tags.length > 8 ? ` and ${looseRun.tags.length - 8} more` : '');
+    body.appendChild(el('p', null, all
+      ? 'Every item is larger than the pallet deck, so all are packed loose and the result is the same as without pallets. Tick a larger pallet or enter a custom pallet to palletise them.'
+      : `Packed loose, without a pallet: ${shown}. Tick a larger pallet or enter a custom pallet to palletise them.`));
     alert.appendChild(body);
     box.appendChild(alert);
   }

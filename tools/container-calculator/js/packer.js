@@ -202,7 +202,7 @@ function expandUnits(items) {
     for (let n = 0; n < qty; n++) {
       units.push({
         uid: `${i}-${n}`,
-        rowIndex: i,
+        rowIndex: Number.isInteger(item.srcRow) ? item.srcRow : i,
         tag: item.tag || `Item ${i + 1}`,
         copy: n + 1,
         qty,
@@ -229,7 +229,7 @@ function expandUnits(items) {
 /* The clearance is a gap between items, not to the walls, so whether an item
    fits the empty vehicle is judged on its real size. */
 function fitsAnywhere(u, vehicle, opt) {
-  for (const o of orientations(u.rawL, u.rawW, u.rawH, opt.allowTilt)) {
+  for (const o of orientations(u.rawL, u.rawW, u.rawH, opt.allowTilt && !u.pallet)) {
     if (o.l <= vehicle.length + EPS && o.w <= vehicle.width + EPS && o.h <= vehicle.height + EPS) return true;
   }
   return false;
@@ -273,7 +273,8 @@ function tryPlace(bin, unit, opt) {
   const gap = opt.gap || 0;
   let best = null;
   for (const pt of bin.points) {
-    for (const o of orientations(unit.rawL, unit.rawW, unit.rawH, opt.allowTilt)) {
+    /* A loaded pallet is never turned on its side, whatever the tilt setting. */
+    for (const o of orientations(unit.rawL, unit.rawW, unit.rawH, opt.allowTilt && !unit.pallet)) {
       const cand = { x: pt.x, y: pt.y, z: pt.z, l: o.l + gap, w: o.w + gap, h: o.h, il: o.l, iw: o.w, stackable: unit.stackable };
       if (cand.x + cand.il > v.length + EPS) continue;
       if (cand.y + cand.iw > v.width + EPS) continue;
