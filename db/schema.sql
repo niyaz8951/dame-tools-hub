@@ -1481,7 +1481,8 @@ end $$;
 --
 -- A tree per product and factory: section > component > the values seen on datasheets,
 -- plus special options and notes typed by editors.
---   po_values   one row per distinct value of a datasheet row, per factory. Filled by
+--   po_values   one row per distinct value of a datasheet row, per factory and, for FCUs,
+--               per unit model (FWW600VA; '' for AHUs, whose tree stays per factory). Filled by
 --               po_collect after every Datasheet Notes run of any user. Only rows the
 --               product's row mapping shows (dn_map.show) and that are not left out of the
 --               tree (dn_map.in_tree) are taken. Project, reference, material name, report
@@ -1493,6 +1494,10 @@ end $$;
 --   dn_map.in_tree   false = the row is left out of the tree for every factory
 --               (performance figures such as airflow that are not an option).
 -- The tree only ever shows rows of the row mapping with Show ticked.
+-- FCU trees are series > model > section > component (owner's rule, 2 Oct 2026): the model is
+-- the Unit Model of the datasheet, the series is the model without its size figure
+-- (FWW600VA, FWW400VA -> series FWWVA; po__series). The page sends the model per unit;
+-- AHU units send none.
 -- ============================================================
 
 alter table public.dn_map add column if not exists in_tree boolean not null default true;
@@ -1500,14 +1505,26 @@ alter table public.dn_map add column if not exists in_tree boolean not null defa
 create table if not exists public.po_values (
   factory_id text not null references public.cm_factories(id) on delete cascade,
   row_key    text not null,
+  model      text not null default '',
   value_key  text not null,
   value      text not null,
   times      int  not null default 1,
   hidden     boolean not null default false,
   first_at   timestamptz not null default now(),
   last_at    timestamptz not null default now(),
-  primary key (factory_id, row_key, value_key)
+  primary key (factory_id, row_key, model, value_key)
 );
+-- 2 Oct 2026: the model became part of the key. Values of FCU factories saved before that carry
+-- no model and cannot be placed under one, so they are removed once; running the datasheets
+-- again fills the tree per model. AHU values are kept (model '').
+do $$ begin
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'po_values' and column_name = 'model') then
+    alter table public.po_values add column model text not null default '';
+    alter table public.po_values drop constraint po_values_pkey;
+    alter table public.po_values add primary key (factory_id, row_key, model, value_key);
+    delete from public.po_values v using public.cm_factories f where f.id = v.factory_id and f.product_id = 'fcu';
+  end if;
+end $$;
 
 create table if not exists public.po_extras (
   id         uuid primary key default gen_random_uuid(),
@@ -1547,6 +1564,12 @@ language sql immutable as $$
                        'general||product', 'general||factory', 'general||unit');
 $$;
 
+-- The series of a unit model: the model without its size figure (FWW600VA -> FWWVA, FWW700VA-D -> FWWVA-D).
+create or replace function public.po__series(p_model text) returns text
+language sql immutable as $$
+  select regexp_replace(coalesce(p_model, ''), '\d+', '', 'g');
+$$;
+
 -- A value as it is kept: spacing tidied, and the quantity in front of an option line removed
 -- ("2 x Inspection window" and "1 x Inspection window" are one option).
 create or replace function public.po__value(p_row_key text, p_value text) returns text
@@ -1557,8 +1580,9 @@ language sql immutable as $$
 $$;
 
 -- Called by Datasheet Notes after every datasheet, for any approved user.
---   p_items: [{ "factory": "Riyadh", "key": "unit data||panel", "value": "62 mm" }, ...]
---            one item per unit and row. The factory is the name read from the datasheet.
+--   p_items: [{ "factory": "Riyadh", "key": "unit data||panel", "value": "62 mm", "model": "" }, ...]
+--            one item per unit and row. The factory is the name read from the datasheet;
+--            model is the unit model for FCUs (tree per model) and empty for AHUs.
 -- Items whose factory is not a factory of the product, whose row is not shown by the row
 -- mapping, or that are left out of the tree, are ignored. At most 300 different values are
 -- kept per row and factory.
@@ -1576,10 +1600,11 @@ begin
     perform public.app__fail('Too many values to save in one go (more than 20000).');
   end if;
 
-  insert into public.po_values (factory_id, row_key, value_key, value, times)
-  select x.factory_id, x.row_key, x.value_key, min(x.value), count(*)::int
+  insert into public.po_values (factory_id, row_key, model, value_key, value, times)
+  select x.factory_id, x.row_key, x.model, x.value_key, min(x.value), count(*)::int
     from (
       select f.id as factory_id, m.row_key,
+             left(regexp_replace(trim(coalesce(e->>'model', '')), '\s+', ' ', 'g'), 60) as model,
              public.po__value(m.row_key, e->>'value') as value,
              lower(public.po__value(m.row_key, e->>'value')) as value_key
         from jsonb_array_elements(p_items) e
@@ -1591,11 +1616,11 @@ begin
     ) x
    where x.value_key not in ('', '-')
      and (exists (select 1 from public.po_values v
-                   where v.factory_id = x.factory_id and v.row_key = x.row_key and v.value_key = x.value_key)
+                   where v.factory_id = x.factory_id and v.row_key = x.row_key and v.model = x.model and v.value_key = x.value_key)
           or (select count(*) from public.po_values v
-               where v.factory_id = x.factory_id and v.row_key = x.row_key) < 300)
-   group by x.factory_id, x.row_key, x.value_key
-  on conflict (factory_id, row_key, value_key) do update
+               where v.factory_id = x.factory_id and v.row_key = x.row_key and v.model = x.model) < 300)
+   group by x.factory_id, x.row_key, x.model, x.value_key
+  on conflict (factory_id, row_key, model, value_key) do update
      set times = po_values.times + excluded.times, last_at = now();
   get diagnostics v_n = row_count;
   return jsonb_build_object('ok', true, 'saved', v_n);
@@ -1605,6 +1630,8 @@ end $$;
 -- Rows: only rows of the row mapping with Show ticked that have a value or an editor's entry
 -- for this factory. Editors also get the rows and values taken out of the tree (marked hidden)
 -- and the list of section names, so they can bring a row back or add to any section.
+-- Every value carries its model ('' for AHUs); 'models' lists the models seen with their series
+-- and how many units each had, so the page can draw series > model groups.
 create or replace function public.po_get_tree(p_token text, p_factory_id text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
@@ -1624,8 +1651,8 @@ begin
                'component', case when m.label <> '' then m.label else m.component end,
                'hidden', not m.in_tree,
                'values', coalesce((
-                 select jsonb_agg(jsonb_build_object('k', v.value_key, 'v', v.value, 'n', v.times, 'hidden', v.hidden)
-                                  order by v.times desc, v.value_key)
+                 select jsonb_agg(jsonb_build_object('k', v.value_key, 'v', v.value, 'n', v.times, 'hidden', v.hidden, 'model', v.model)
+                                  order by v.model, v.times desc, v.value_key)
                    from public.po_values v
                   where v.factory_id = f.id and v.row_key = m.row_key and (v_edit or not v.hidden)), '[]'::jsonb))
              order by m.sort, m.row_key)
@@ -1636,6 +1663,13 @@ begin
                        where v.factory_id = f.id and v.row_key = m.row_key and (v_edit or not v.hidden))
               or exists (select 1 from public.po_extras x where x.factory_id = f.id and x.row_key = m.row_key))
       ), '[]'::jsonb),
+    'models', coalesce((
+      select jsonb_agg(jsonb_build_object('model', t.model, 'series', public.po__series(t.model), 'units', t.units)
+                       order by public.po__series(t.model), t.units desc, t.model)
+        from (select v.model, max(n) as units
+                from (select v.model, v.row_key, sum(v.times) as n from public.po_values v
+                       where v.factory_id = f.id and v.model <> '' group by v.model, v.row_key) v
+               group by v.model) t), '[]'::jsonb),
     'extras', coalesce((
       select jsonb_agg(jsonb_build_object('id', x.id, 'section', x.section, 'key', x.row_key, 'kind', x.kind,
                'body', x.body, 'at', x.updated_at,
@@ -1691,9 +1725,10 @@ end $$;
 
 -- Take a value or a whole row out of the tree, or bring it back. Editors of product-options.
 --   p_value_key '' = the whole row, for every factory of the product (dn_map.in_tree);
---   otherwise that one value for this factory.
+--   otherwise that one value for this factory (and model, '' for AHUs).
+drop function if exists public.po_admin_set_hidden(text, text, text, text, boolean);
 create or replace function public.po_admin_set_hidden(
-  p_token text, p_factory_id text, p_row_key text, p_value_key text, p_hidden boolean)
+  p_token text, p_factory_id text, p_row_key text, p_value_key text, p_hidden boolean, p_model text default '')
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare f public.cm_factories; v_n int;
@@ -1705,7 +1740,7 @@ begin
      where product_id = f.product_id and row_key = p_row_key;
   else
     update public.po_values set hidden = coalesce(p_hidden, false)
-     where factory_id = f.id and row_key = p_row_key and value_key = p_value_key;
+     where factory_id = f.id and row_key = p_row_key and model = coalesce(p_model, '') and value_key = p_value_key;
   end if;
   get diagnostics v_n = row_count;
   if v_n = 0 then perform public.app__fail('That row no longer exists. Refresh the page.'); end if;

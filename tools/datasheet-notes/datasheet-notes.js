@@ -139,15 +139,19 @@
      project, reference, material name, report date or unit tag; they are not sent either.
      The value is sent as printed, after the row's "Remove text", not the standard response. */
   var PROJECT_ROWS = /^general\|\|(?!power supply$)/;
+  // FCU trees are kept per unit model (series > model): the model is the datasheet's Unit Model row.
+  var MODEL_ROW = { fcu: 'unit data||unit model' };
   function collect(c, m, units) {
     var items = [];
     units.forEach(function (unit) {
       if (!unit.hdr.factory) return;
-      window.DSParse.rows(unit, c).forEach(function (r) {
+      var rows = window.DSParse.rows(unit, c), modelKey = MODEL_ROW[unit.type], model = '';
+      if (modelKey) rows.forEach(function (r) { if (r.key === modelKey && !model) model = window.DSParse.fill('', r.value); });
+      rows.forEach(function (r) {
         var rule = m.rules[r.key];
         if (PROJECT_ROWS.test(r.key) || (rule ? rule.show === false : !m.showUnmapped)) return;
         var v = window.DSParse.fill('', r.value, rule && rule.strip);
-        if (v && v !== '-') items.push({ factory: unit.hdr.factory, key: r.key, value: v });
+        if (v && v !== '-') items.push({ factory: unit.hdr.factory, key: r.key, value: v, model: model });
       });
     });
     // the database takes at most 20000 values per call; a long FCU schedule gives more

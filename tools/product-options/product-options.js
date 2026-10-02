@@ -8,6 +8,11 @@
    Editors (admins, and users with "Can edit" for product-options)
    get the Edit switch: add / change / delete special options and
    notes, take a value or a row out of the tree and bring it back.
+   FCU: the values come per unit model (tree.models), so the tree is
+   series > model > section > component, each model with the values
+   its units had (owner's rule, 2 Oct 2026). Special options and
+   notes are per section or row, not per model: they are drawn once
+   under "All models". AHU trees have no models and stay as before.
    ============================================================ */
 (function () {
   'use strict';
@@ -15,6 +20,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var el = window.Hub.el, Api = window.Api;
   var TOOL = 'product-options', FEW = 8, STORE = 'dame_po_choice';
+  var MODEL_ROW = /^unit data\|\|unit model$/;      // says only what the model group already says
 
   var productSel = $('po-product'), factorySel = $('po-factory'), search = $('po-search');
   var hint = $('po-hint'), result = $('po-result'), host = $('po-tree-host');
@@ -172,24 +178,24 @@
 
   function rowNode(s, r, edit) {
     var vals = el('div', { 'class': 'po-vals' }), node = el('div', { 'class': 'po-row' + (r.off ? ' off' : '') });
-    var shown = r.values, all = expanded[r.key] || edit || shown.length <= FEW;
+    var shown = r.values, xk = (r.model || '') + '|' + r.key, all = expanded[xk] || edit || shown.length <= FEW;
     var rg = shown.length > FEW ? range(shown.filter(function (v) { return !v.hidden; })) : '';
     if (rg) vals.appendChild(el('span', { 'class': 'po-chip range', title: 'Lowest and highest value seen so far', text: rg }));
     (all ? shown : (rg ? [] : shown.slice(0, FEW))).forEach(function (v) {
       var c = el('span', { 'class': 'po-chip' + (v.hidden ? ' off' : '') }, [el('span', { text: v.v }), el('small', { text: '×' + v.n, title: v.n + (v.n === 1 ? ' unit' : ' units') + ' had this value' })]);
       if (edit) c.appendChild(xbtn(v.hidden ? 'Bring back' : 'Take out', function (e) {
-        busy(e.currentTarget, Api.poAdminSetHidden(window.Hub.token(), { factoryId: tree.factory.id, key: r.key, valueKey: v.k, hidden: !v.hidden }), v.hidden ? 'Value is back in the tree.' : 'Value taken out.');
+        busy(e.currentTarget, Api.poAdminSetHidden(window.Hub.token(), { factoryId: tree.factory.id, key: r.key, valueKey: v.k, model: v.model || '', hidden: !v.hidden }), v.hidden ? 'Value is back in the tree.' : 'Value taken out.');
       }));
       vals.appendChild(c);
     });
     if (!edit && shown.length > FEW) vals.appendChild(el('button', { type: 'button', 'class': 'po-more',
       text: all ? 'Show fewer' : (rg ? 'Show all ' + shown.length + ' values' : '+ ' + (shown.length - FEW) + ' more'),
-      onclick: function () { expanded[r.key] = !all; render(); } }));
+      onclick: function () { expanded[xk] = !all; render(); } }));
     var ctx = { where: s.name + ' > ' + r.name, anchor: function () { return node; } };
-    extraNodes(r.extras, ctx, edit).forEach(function (n) { vals.appendChild(n); });
+    extraNodes(r.extras, ctx, edit && !r.model).forEach(function (n) { vals.appendChild(n); });
     node.appendChild(el('div', { 'class': 'po-name', text: r.name + (r.off ? ' (left out)' : '') }));
     node.appendChild(vals);
-    if (edit) node.appendChild(el('div', { 'class': 'po-tools' }, [
+    if (edit && !r.model) node.appendChild(el('div', { 'class': 'po-tools' }, [
       xbtn('+ Special option', function () { openForm(node, { kind: 'option', section: s.name, key: r.key, where: ctx.where }); }),
       xbtn('+ Note', function () { openForm(node, { kind: 'note', section: s.name, key: r.key, where: ctx.where }); }),
       xbtn(r.off ? 'Bring row back' : 'Leave out row', function (e) {
@@ -200,39 +206,43 @@
     return node;
   }
 
-  function render() {
-    if (!tree) return;
-    var edit = editing(), q = low(search.value).trim(), secs = build();
-    var nRows = 0, nVals = 0, nExtra = tree.extras.length;
-    host.textContent = '';
-    $('po-edit-note').hidden = !edit;
-
-    var wrap = el('div', { 'class': 'po-tree' }), drawn = 0;
+  /* The sections of one group. model = '' : the plain tree (AHU) or, with extrasOnly, the
+     special options and notes block of an FCU tree; model = 'FWW600VA' : that model's values only. */
+  function drawSections(secs, q, edit, model, extrasOnly) {
+    var wrap = el('div', { 'class': 'po-tree' }), drawn = 0, nRows = 0, nVals = 0;
     secs.forEach(function (s) {
-      var live = s.rows.filter(function (r) { return edit || !r.off; });
+      var live = s.rows.filter(function (r) { return edit || !r.off; }).map(function (r) {
+        var values = extrasOnly ? [] : r.values.filter(function (v) { return model ? v.model === model : true; });
+        return { key: r.key, sub: r.sub, name: r.name, off: r.off, values: values, extras: model ? [] : r.extras, model: model };
+      }).filter(function (r) {
+        if (model && MODEL_ROW.test(r.key)) return false;
+        return r.values.length || r.extras.length || (!model && !extrasOnly && edit);
+      });
       live.forEach(function (r) { if (!r.off) { nRows++; nVals += r.values.filter(function (v) { return !v.hidden; }).length; } });
       var secHit = q && q.split(/\s+/).every(function (w) { return low(s.name).indexOf(w) >= 0; });
       var rows = live.filter(function (r) { return secHit || matches(q, s, r); });
-      var extras = s.extras.filter(function (x) { return secHit || !q || matches(q, { name: s.name, extras: [x] }); });
-      if (!rows.length && !extras.length && !(edit && !q)) return;
+      var extras = model ? [] : s.extras.filter(function (x) { return secHit || !q || matches(q, { name: s.name, extras: [x] }); });
+      if (!rows.length && !extras.length && !(edit && !q && !model)) return;
       drawn++;
 
-      var body = el('div', { 'class': 'po-body' });
-      var d = el('details', { 'class': 'po-sec', open: q ? true : !closed[low(s.name)] }, [
+      var body = el('div', { 'class': 'po-body' }), ck = (model ? 'm:' + low(model) + ':' : '') + low(s.name);
+      var d = el('details', { 'class': 'po-sec', open: q ? true : !closed[ck] }, [
         el('summary', {}, [el('span', { text: s.name }), el('span', { 'class': 'count',
           text: [rows.length ? rows.length + (rows.length === 1 ? ' component' : ' components') : '',
-                 s.extras.length + live.reduce(function (n, r) { return n + r.extras.length; }, 0) ? 'special options and notes' : ''].filter(Boolean).join(' · ') })]),
+                 (model ? 0 : s.extras.length) + live.reduce(function (n, r) { return n + r.extras.length; }, 0) ? 'special options and notes' : ''].filter(Boolean).join(' · ') })]),
         body
       ]);
-      d.addEventListener('toggle', function () { if (!q) closed[low(s.name)] = !d.open; });
+      d.addEventListener('toggle', function () { if (!q) closed[ck] = !d.open; });
 
-      var ctx = { where: s.name, anchor: function () { return sx; } };
-      var sx = el('div', { 'class': 'po-secx' }, extraNodes(extras, ctx, edit));
-      if (edit) sx.appendChild(el('div', { 'class': 'po-tools' }, [
-        xbtn('+ Special option for the section', function () { openForm(sx, { kind: 'option', section: s.name, key: '', where: s.name }); }),
-        xbtn('+ Note for the section', function () { openForm(sx, { kind: 'note', section: s.name, key: '', where: s.name }); })
-      ]));
-      if (sx.childNodes.length) body.appendChild(sx);
+      if (!model) {
+        var ctx = { where: s.name, anchor: function () { return sx; } };
+        var sx = el('div', { 'class': 'po-secx' }, extraNodes(extras, ctx, edit));
+        if (edit) sx.appendChild(el('div', { 'class': 'po-tools' }, [
+          xbtn('+ Special option for the section', function () { openForm(sx, { kind: 'option', section: s.name, key: '', where: s.name }); }),
+          xbtn('+ Note for the section', function () { openForm(sx, { kind: 'note', section: s.name, key: '', where: s.name }); })
+        ]));
+        if (sx.childNodes.length) body.appendChild(sx);
+      }
 
       var sub = '';
       rows.forEach(function (r) {
@@ -241,9 +251,79 @@
       });
       wrap.appendChild(d);
     });
+    return { wrap: wrap, drawn: drawn, rows: nRows, values: nVals };
+  }
+
+  /* models grouped by series, in the order the database gives (series, then most units first) */
+  function seriesList() {
+    var out = [], by = {};
+    (tree.models || []).forEach(function (m) {
+      var k = low(m.series);
+      if (!by[k]) { by[k] = { name: m.series, models: [], units: 0 }; out.push(by[k]); }
+      by[k].models.push(m); by[k].units += m.units || 0;
+    });
+    return out;
+  }
+  function modelMode() { return !!(tree && tree.models && tree.models.length); }
+  function units(n) { return n + (n === 1 ? ' unit' : ' units'); }
+
+  function render() {
+    if (!tree) return;
+    var edit = editing(), q = low(search.value).trim(), secs = build();
+    var nRows = 0, nVals = 0, nExtra = tree.extras.length, drawn = 0;
+    host.textContent = '';
+    $('po-edit-note').hidden = !edit;
+
+    var parts = [], series = modelMode() ? seriesList() : [];
+    if (!modelMode()) {
+      var g = drawSections(secs, q, edit, '', false);
+      drawn = g.drawn; nRows = g.rows; nVals = g.values; parts.push(g.wrap);
+    } else {
+      var words = q ? q.split(/\s+/) : [];
+      series.forEach(function (sr) {
+        var srHit = q && words.every(function (w) { return low(sr.name).indexOf(w) >= 0; });
+        var box = el('div', { 'class': 'po-models' }), shownModels = 0;
+        sr.models.forEach(function (m) {
+          var mHit = srHit || (q && words.every(function (w) { return low(m.model).indexOf(w) >= 0; }));
+          var g = drawSections(secs, mHit ? '' : q, edit, m.model, false);
+          nRows += g.rows; nVals += g.values;
+          if (!g.drawn) return;
+          shownModels++; drawn += g.drawn;
+          var mk = 'model:' + low(m.model);
+          var d = el('details', { 'class': 'po-model', open: q ? true : closed[mk] === false }, [   // models start closed
+            el('summary', {}, [el('span', { text: m.model }), el('span', { 'class': 'count', text: units(m.units) })]),
+            g.wrap
+          ]);
+          d.addEventListener('toggle', function () { if (!q) closed[mk] = !d.open; });
+          box.appendChild(d);
+        });
+        if (!shownModels) return;
+        var sk = 'series:' + low(sr.name);
+        var sd = el('details', { 'class': 'po-series', open: q ? true : !closed[sk] }, [
+          el('summary', {}, [el('span', { text: 'Series ' + sr.name }), el('span', { 'class': 'count',
+            text: shownModels + (shownModels === 1 ? ' model' : ' models') + ' · ' + units(sr.units) })]),
+          box
+        ]);
+        sd.addEventListener('toggle', function () { if (!q) closed[sk] = !sd.open; });
+        parts.push(sd);
+      });
+      // special options and notes are per section or row, for every model
+      var x = drawSections(secs, q, edit, '', true);
+      if (x.drawn) {
+        drawn += x.drawn;
+        var xk = 'series:all';
+        var xd = el('details', { 'class': 'po-series all', open: q ? true : !closed[xk] }, [
+          el('summary', {}, [el('span', { text: 'All models' }), el('span', { 'class': 'count', text: 'special options and notes' })]),
+          x.wrap
+        ]);
+        xd.addEventListener('toggle', function () { if (!q) closed[xk] = !xd.open; });
+        parts.push(xd);
+      }
+    }
 
     var facts = $('po-facts'); facts.textContent = '';
-    [secs.length + (secs.length === 1 ? ' section' : ' sections'), nRows + ' components', nVals + ' values',
+    [modelMode() ? series.length + (series.length === 1 ? ' series' : ' series') + ', ' + tree.models.length + (tree.models.length === 1 ? ' model' : ' models') : secs.length + (secs.length === 1 ? ' section' : ' sections'),
+     nRows + ' components', nVals + ' values',
      nExtra ? nExtra + ' special options and notes' : '', tree.updated ? 'Last datasheet ' + when(tree.updated) : '']
       .filter(Boolean).forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
 
@@ -262,8 +342,9 @@
 
     if (drawn || edit) {
       host.appendChild(el('div', { 'class': 'po-root' }, [
-        el('span', { text: tree.factory.product }), el('span', { 'class': 'badge', text: tree.factory.name + ' factory' })]));
-      host.appendChild(wrap);
+        el('span', { text: tree.factory.product }), el('span', { 'class': 'badge', text: tree.factory.name + ' factory' }),
+        modelMode() ? el('span', { 'class': 'hint', text: 'Series > model > section. A model shows the values its units had on the datasheets run so far.' }) : null]));
+      parts.forEach(function (n) { host.appendChild(n); });
     }
     if (edit && !q) host.appendChild(addSection(secs));
   }
@@ -297,6 +378,11 @@
   function setAll(open) {
     if (!tree) return;
     build().forEach(function (s) { closed[low(s.name)] = !open; });
+    seriesList().forEach(function (sr) {
+      closed['series:' + low(sr.name)] = !open;
+      sr.models.forEach(function (m) { closed['model:' + low(m.model)] = !open; build().forEach(function (s) { closed['m:' + low(m.model) + ':' + low(s.name)] = !open; }); });
+    });
+    closed['series:all'] = !open;
     render();
   }
   $('po-open').addEventListener('click', function () { setAll(true); });
@@ -305,19 +391,26 @@
   /* Excel: what a user sees (nothing that was taken out), one row per component */
   $('po-download').addEventListener('click', function () {
     if (!tree) return;
-    var rows = [['Section', 'Sub-section', 'Component', 'Options seen on datasheets', 'Special options', 'Notes']];
+    var byModel = modelMode(), secs = build();
+    var rows = [(byModel ? ['Series', 'Model'] : []).concat(['Section', 'Sub-section', 'Component', 'Options seen on datasheets', 'Special options', 'Notes'])];
     function txt(list, kind) { return list.filter(function (x) { return x.kind === kind; }).map(function (x) { return x.body; }).join(' | '); }
-    build().forEach(function (s) {
-      if (s.extras.length) rows.push([s.name, '', '(whole section)', '', txt(s.extras, 'option'), txt(s.extras, 'note')]);
-      s.rows.forEach(function (r) {
-        if (r.off) return;
-        var vals = r.values.filter(function (v) { return !v.hidden; });
-        if (!vals.length && !r.extras.length) return;
-        rows.push([s.name, r.sub, r.name, vals.map(function (v) { return v.v; }).join(' | '), txt(r.extras, 'option'), txt(r.extras, 'note')]);
+    function block(model, series) {
+      secs.forEach(function (s) {
+        var lead = byModel ? [series, model] : [];
+        if (!model && s.extras.length) rows.push(lead.concat([s.name, '', '(whole section)', '', txt(s.extras, 'option'), txt(s.extras, 'note')]));
+        s.rows.forEach(function (r) {
+          if (r.off || (model && MODEL_ROW.test(r.key))) return;
+          var vals = model ? r.values.filter(function (v) { return !v.hidden && v.model === model; }) : (byModel ? [] : r.values.filter(function (v) { return !v.hidden; }));
+          var extras = model ? [] : r.extras;
+          if (!vals.length && !extras.length) return;
+          rows.push(lead.concat([s.name, r.sub, r.name, vals.map(function (v) { return v.v; }).join(' | '), txt(extras, 'option'), txt(extras, 'note')]));
+        });
       });
-    });
+    }
+    if (byModel) { seriesList().forEach(function (sr) { sr.models.forEach(function (m) { block(m.model, sr.name); }); }); block('', 'All models'); }
+    else block('', '');
     var name = tree.factory.product + ' ' + tree.factory.name + ' - Product Options.xlsx';
-    var blob = window.HubXlsx.build(rows, 'Product Options', [24, 22, 30, 48, 40, 50]);
+    var blob = window.HubXlsx.build(rows, 'Product Options', (byModel ? [14, 16] : []).concat([24, 22, 30, 48, 40, 50]));
     var a = el('a', { href: URL.createObjectURL(blob), download: name });
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);

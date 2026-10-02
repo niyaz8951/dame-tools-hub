@@ -65,7 +65,7 @@
     poTree: function (t, factoryId) { return rpc("po_get_tree", { p_token: t, p_factory_id: factoryId }); },
     poAdminSaveExtra: function (t, d) { return rpc("po_admin_save_extra", { p_token: t, p_factory_id: d.factoryId, p_id: d.id || null, p_section: d.section, p_row_key: d.key || "", p_kind: d.kind, p_body: d.body }); },
     poAdminDeleteExtra: function (t, id) { return rpc("po_admin_delete_extra", { p_token: t, p_id: id }); },
-    poAdminSetHidden: function (t, d) { return rpc("po_admin_set_hidden", { p_token: t, p_factory_id: d.factoryId, p_row_key: d.key, p_value_key: d.valueKey || "", p_hidden: !!d.hidden }); },
+    poAdminSetHidden: function (t, d) { return rpc("po_admin_set_hidden", { p_token: t, p_factory_id: d.factoryId, p_row_key: d.key, p_value_key: d.valueKey || "", p_hidden: !!d.hidden, p_model: d.model || "" }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
 
@@ -200,6 +200,8 @@
   // mirror po__skip and po__value in db/schema.sql
   var PO_SKIP = ["project", "reference", "material name", "selection software", "report date", "product", "factory", "unit"];
   function poSkip(key) { return /^general\|\|/.test(key) && PO_SKIP.indexOf(key.slice(9)) >= 0; }
+  // the series of a unit model = the model without its size figure (FWW600VA -> FWWVA); mirrors po__series
+  function poSeries(model) { return String(model || "").replace(/\d+/g, ""); }
   function poValue(key, value) {
     var v = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     if (/\|options\|option$/.test(key)) v = v.replace(/^\d+\s*x\s+/i, "");
@@ -415,10 +417,10 @@
         var f = p.factories.filter(function (x) { return x.name.toLowerCase() === String(it.factory || "").trim().toLowerCase(); })[0];
         var key = String(it.key || "").trim(), m = rules.filter(function (r) { return r.key === key; })[0];
         if (!f || !m || m.show === false || m.in_tree === false || poSkip(key)) return;
-        var v = poValue(key, it.value), k = v.toLowerCase();
-        if (!k || k === "-") return;
+        var v = poValue(key, it.value), model = String(it.model || "").replace(/\s+/g, " ").trim().slice(0, 60), k = model + "\u0001" + v.toLowerCase();
+        if (!v || v === "-") return;
         var row = (db.po.values[f.id] = db.po.values[f.id] || {})[key] = (db.po.values[f.id][key] || {});
-        if (row[k]) row[k].n++; else if (Object.keys(row).length < 300) row[k] = { v: v, n: 1, hidden: false }; else return;
+        if (row[k]) row[k].n++; else if (Object.keys(row).filter(function (x) { return x.split("\u0001")[0] === model; }).length < 300) row[k] = { v: v, n: 1, hidden: false, model: model }; else return;
         saved++;
       });
       db.po.updated = new Date().toISOString();
@@ -434,14 +436,19 @@
         if (m.show === false || poSkip(m.key)) return;
         if (m.section && m.section.toLowerCase() !== "general" && sections.indexOf(m.section) < 0) sections.push(m.section);
         if (!edit && m.in_tree === false) return;
-        var list = Object.keys(vals[m.key] || {}).map(function (k) { var x = vals[m.key][k]; return { k: k, v: x.v, n: x.n, hidden: !!x.hidden }; })
+        var list = Object.keys(vals[m.key] || {}).map(function (k) { var x = vals[m.key][k]; return { k: k.split("\u0001")[1], v: x.v, n: x.n, hidden: !!x.hidden, model: x.model || "" }; })
           .filter(function (x) { return edit || !x.hidden; })
-          .sort(function (a, b) { return b.n - a.n || a.k.localeCompare(b.k); });
+          .sort(function (a, b) { return a.model.localeCompare(b.model) || b.n - a.n || a.k.localeCompare(b.k); });
         if (!list.length && !extras.some(function (x) { return x.key === m.key; })) return;
         rows.push({ key: m.key, section: m.section, sub: m.sub, component: m.label || m.component, hidden: m.in_tree === false, values: list });
       });
+      var models = {};
+      Object.keys(vals).forEach(function (key) { var per = {}; Object.keys(vals[key]).forEach(function (k) { var x = vals[key][k]; if (x.model) per[x.model] = (per[x.model] || 0) + x.n; });
+        Object.keys(per).forEach(function (mo) { models[mo] = Math.max(models[mo] || 0, per[mo]); }); });
+      var modelList = Object.keys(models).map(function (mo) { return { model: mo, series: poSeries(mo), units: models[mo] }; })
+        .sort(function (a, b) { return a.series.localeCompare(b.series) || b.units - a.units || a.model.localeCompare(b.model); });
       return { factory: { id: f.id, name: f.name, product_id: p.id, product: p.name }, can_edit: edit, updated: po.updated || null,
-               rows: rows, extras: extras.map(function (x) { return { id: x.id, section: x.section, key: x.key, kind: x.kind, body: x.body, at: x.at, by: x.by }; }),
+               rows: rows, models: modelList, extras: extras.map(function (x) { return { id: x.id, section: x.section, key: x.key, kind: x.kind, body: x.body, at: x.at, by: x.by }; }),
                sections: edit ? sections : [] };
     }),
     poAdminSaveExtra: demo(function (db, t, d) {
@@ -475,7 +482,7 @@
       if (!d.valueKey) {
         (((db.dn || {})[p.id] || { rules: [] }).rules).forEach(function (r) { if (r.key === d.key) { r.in_tree = !d.hidden; found = true; } });
       } else {
-        var v = (((db.po || { values: {} }).values[f.id] || {})[d.key] || {})[d.valueKey];
+        var v = (((db.po || { values: {} }).values[f.id] || {})[d.key] || {})[String(d.model || "") + "\u0001" + d.valueKey];
         if (v) { v.hidden = !!d.hidden; found = true; }
       }
       if (!found) fail("That row no longer exists. Refresh the page.");

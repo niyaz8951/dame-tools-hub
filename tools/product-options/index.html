@@ -49,12 +49,28 @@
   .po-form { grid-column: 1 / -1; display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
   .po-form textarea { min-height: 64px; resize: vertical; }
   .po-secx { padding: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  /* FCU: series > model > section */
+  .po-series { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+  .po-series > summary { cursor: pointer; padding: 12px 14px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; list-style: none; }
+  .po-series > summary::-webkit-details-marker, .po-model > summary::-webkit-details-marker { display: none; }
+  .po-series > summary::before, .po-model > summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--brand); border-bottom: 2px solid var(--brand); transform: rotate(-45deg); transition: transform .15s; flex: none; margin-right: 2px; }
+  .po-series[open] > summary::before, .po-model[open] > summary::before { transform: rotate(45deg); }
+  .po-series > summary:focus-visible, .po-model > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: var(--radius); }
+  .po-series > summary .count, .po-model > summary .count { font-weight: 400; font-size: 13px; color: var(--text-soft); }
+  .po-series.all { background: var(--surface); }
+  .po-models { padding: 0 14px 12px; display: grid; gap: 8px; }
+  .po-model { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .po-model > summary { cursor: pointer; padding: 10px 14px; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; list-style: none; }
+  .po-model > .po-tree { margin: 0 14px 12px 23px; }
+  .po-root .hint { font-weight: 400; font-size: 13px; flex: 1 1 100%; margin: 0; }
   .po-add { margin: 10px 0 0 27px; }
   @media (max-width: 560px) {
     .po-row { grid-template-columns: 1fr; }
     .po-tree { margin-left: 2px; padding-left: 10px; }
     .po-sec::before { left: -11px; width: 10px; }
     .po-add { margin-left: 14px; }
+    .po-models { padding: 0 8px 8px; }
+    .po-model > .po-tree { margin: 0 8px 10px 10px; }
   }
 </style>
 </head>
