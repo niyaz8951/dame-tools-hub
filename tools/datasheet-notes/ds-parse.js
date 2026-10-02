@@ -1,9 +1,12 @@
 /* ============================================================
    Datasheet Notes - reader for the Daikin AHU technical report
-   (ASTRAWEB selection software, text-based PDF).
+   (ASTRAWEB selection software, text-based PDF), plus the shared
+   parts every reader uses (lines, rows, keys, mapping rules, grid).
+   The FCU reader is in ds-fcu.js and registers itself in DSParse.readers.
 
    DSParse.lines(items, pageNo)  pdf.js text items -> lines of cells
    DSParse.parseAll(pages)       lines of every page -> [structured data, one per unit]
+                                 (picks the reader from the pages: DSParse.detect)
    DSParse.rows(data, choice)    one unit -> every row, each with a mapping key
    DSParse.grid(units, choice, mapping)   all units + the admin's row mapping -> the table
                                  (one column per unit tag)
@@ -28,14 +31,43 @@
 
   function clean(s) { return String(s).replace(/\s+/g, ' ').trim(); }
 
-  /* ---- pdf.js items of one page -> lines, top to bottom ---- */
+  /* A superscript is printed as its own tiny item (the "3" of m³) a little above its line, and the
+     host item carries a space where it belongs: "Air Flow(m /h)". The digit goes back into the host
+     as ² or ³ so the row reads as printed. Only one or two digits are taken; anything longer is
+     tiny print (energy label) and is left alone. */
+  var SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  function superscripts(list) {
+    var tiny = list.filter(function (it) { return it.h < 7.5 && /^\d{1,2}$/.test(it.s.trim()); });
+    if (!tiny.length) return list;
+    tiny.forEach(function (t) {
+      var host = list.filter(function (h) {
+        return h !== t && h.h >= 8 && t.y - h.y >= 2 && t.y - h.y <= 7 && t.x >= h.x && t.x <= h.x + h.w + 1;
+      })[0];
+      if (!host || !host.w) return;
+      var sup = t.s.trim().split('').map(function (d) { return SUP[d]; }).join('');
+      var at = Math.round((t.x - host.x) / host.w * host.s.length), s = host.s, i;
+      for (i = 0; i <= 2; i++) {                                   // the space left for it, if there is one
+        if (s[at - i] === ' ') { host.s = s.slice(0, at - i) + sup + s.slice(at - i + 1); t.used = true; return; }
+        if (s[at + i] === ' ') { host.s = s.slice(0, at + i) + sup + s.slice(at + i + 1); t.used = true; return; }
+      }
+      at = Math.max(0, Math.min(s.length, at));
+      host.s = s.slice(0, at) + sup + s.slice(at); t.used = true;
+    });
+    return list.filter(function (it) { return !it.used; });
+  }
+
+  /* ---- pdf.js items of one page -> lines, top to bottom ----
+     Each line: { page, y, x, h, cells, text, items }
+       cells  pieces of text separated by a gap of CELL_GAP or more (label | value for the AHU report)
+       items  every piece as printed { x, w, h, s, f } (f = font name), for readers that split by column */
   function lines(items, pageNo) {
     var list = items
       .filter(function (it) { return it.str && it.str.trim(); })
       .map(function (it) {
         return { s: it.str, x: it.transform[4], y: it.transform[5], w: it.width || 0,
-                 h: Math.abs(it.transform[3]) || it.height || 10 };
-      })
+                 h: Math.abs(it.transform[3]) || it.height || 10, f: it.fontName || '' };
+      });
+    list = superscripts(list)
       .filter(function (it) { return it.h >= 6; })          // tiny print inside the energy label picture
       .sort(function (a, b) { return b.y - a.y || a.x - b.x; });
 
@@ -58,7 +90,8 @@
       });
       cells.forEach(function (c) { c.s = clean(c.s); });
       return { page: pageNo, y: r.y, x: cells[0].x, h: h, cells: cells,
-               text: cells.map(function (c) { return c.s; }).join(' ') };
+               text: cells.map(function (c) { return c.s; }).join(' '),
+               items: r.items.map(function (it) { return { x: it.x, w: it.w, h: it.h, s: clean(it.s), f: it.f }; }) };
     });
   }
 
@@ -182,17 +215,39 @@
 
     if (fan) { hdr.power = fan.connection; hdr.powerFrom = fan.component; }
     else warnings.push('No Fan Supply line was found under "Electrical Power Inputs Data", so the Power Supply row is missing.');
-    return { hdr: hdr, unit: unit, sections: sections, warnings: warnings, elec: elec };
+    return { type: 'ahu', hdr: hdr, unit: unit, sections: sections, warnings: warnings, elec: elec };
   }
 
-  /* One PDF can hold several units, each starting on a page with the "Unit Data" heading.
-     Pages are cut into one block per unit and each block is read on its own. */
+  /* ---- readers, one per product id (the id used in cm_products) ----
+     Each: { name, starts(page lines) -> true when this page starts a unit, parse(pages) -> unit data,
+             unitBlock, sectionsName (words used in notices) }.
+     The AHU reader is in this file; others register themselves (ds-fcu.js). */
+  var readers = {
+    ahu: { name: 'Daikin AHU technical report (ASTRAWEB)', unitBlock: 'Unit Data', sectionsName: 'numbered sections',
+           starts: function (pg) { return pg.some(function (ln) { return /^Unit Data$/i.test(ln.text); }); },
+           parse: parse }
+  };
+
+  /* Which reader a PDF needs: the first reader whose start page is found. */
+  function detect(pages) {
+    var ids = Object.keys(readers);
+    for (var i = 0; i < ids.length; i++) {
+      var r = readers[ids[i]];
+      if (r.starts && pages.some(r.starts)) return ids[i];
+    }
+    return null;
+  }
+
+  /* One PDF can hold several units, each starting on a page the reader recognises (the "Unit Data"
+     heading for an AHU, the report title for an FCU). Pages are cut into one block per unit and
+     each block is read on its own. A PDF no reader recognises is read as an AHU, which gives the
+     "nothing found" message in ds-read.js. */
   function parseAll(pages) {
-    var starts = [];
-    pages.forEach(function (pg, i) { if (pg.some(function (ln) { return /^Unit Data$/i.test(ln.text); })) starts.push(i); });
-    if (starts.length < 2) return [parse(pages)];
+    var id = detect(pages) || 'ahu', r = readers[id], starts = [];
+    pages.forEach(function (pg, i) { if (r.starts(pg)) starts.push(i); });
+    if (starts.length < 2) return [r.parse(pages)];
     return starts.map(function (from, k) {
-      return parse(pages.slice(k === 0 ? 0 : from, k + 1 < starts.length ? starts[k + 1] : pages.length));
+      return r.parse(pages.slice(k === 0 ? 0 : from, k + 1 < starts.length ? starts[k + 1] : pages.length));
     });
   }
 
@@ -260,7 +315,7 @@
     body('Unit Data', 'Unit Data', 1, data.unit);
     data.sections.forEach(function (s) {
       count[s.name] = (count[s.name] || 0) + 1;          // 2nd, 3rd ... section with the same name in this unit
-      body(s.name, s.no + ') ' + s.name, count[s.name], s);
+      body(s.name, s.no ? s.no + ') ' + s.name : s.name, count[s.name], s);   // FCU sections carry no number
     });
     return out;
   }
@@ -362,6 +417,6 @@
     return { columns: tags(units), rows: out };
   }
 
-  window.DSParse = { readers: { ahu: true }, lines: lines, parse: parse, parseAll: parseAll, rows: rows, grid: grid,
-                     fill: fill, expand: expand, rowKey: rowKey };
+  window.DSParse = { readers: readers, detect: detect, clean: clean, lines: lines, parse: parse, parseAll: parseAll,
+                     rows: rows, grid: grid, fill: fill, expand: expand, rowKey: rowKey };
 })();

@@ -54,7 +54,7 @@
     hint.className = 'hint';
     if (p && !canRead(p)) {
       hint.className = 'notice warn';
-      hint.textContent = 'The ' + p.name + ' datasheet reader is not ready yet. Only AHU datasheets can be read for now.';
+      hint.textContent = 'The ' + p.name + ' datasheet reader is not ready yet. Only ' + Object.keys(window.DSParse.readers).join(' and ').toUpperCase() + ' datasheets can be read for now.';
       upload.hidden = true; result.hidden = true;
       return;
     }
@@ -94,15 +94,22 @@
   window.addEventListener('drop', function (e) { e.preventDefault(); });
 
   function read(files) {
+    var c = choice();
+    if (!c) return;
     busy = true; drop.disabled = true; parsed = null; result.hidden = true;
     say('Reading ' + (files.length === 1 ? files[0].name : files.length + ' files') + '…');
-    window.DSRead.files(files).then(function (units) {
-      parsed = units; fileName = files[0].name;
-      say('');
-      render();
-      register();
-      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, function (err) { say(err.message, 'error'); })
+    window.DSRead.files(files, window.DSRead.progress(say)).then(function (units) {
+      window.DSRead.check(units, c.productId);        // an FCU datasheet run as AHU would be mapped under the wrong product
+      if (productSel.value !== c.productId) throw new Error('The product was changed while the datasheet was being read. Choose the datasheet again.');
+      say('Building the table for ' + units.length + (units.length === 1 ? ' unit…' : ' units…'));
+      return new Promise(function (go) { setTimeout(go, 30); }).then(function () {   // let the message show first
+        parsed = units; fileName = files[0].name;
+        say('');
+        render();
+        register();
+        result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }).then(null, function (err) { say(err.message, 'error'); })
       .then(function () { busy = false; drop.disabled = false; });
   }
 
@@ -143,7 +150,12 @@
         if (v && v !== '-') items.push({ factory: unit.hdr.factory, key: r.key, value: v });
       });
     });
-    if (items.length) window.Api.poCollect(window.Hub.token(), { productId: c.productId, items: items }).then(null, function () { /* the tree misses this run */ });
+    // the database takes at most 20000 values per call; a long FCU schedule gives more
+    var chain = Promise.resolve();
+    for (var i = 0; i < items.length; i += 20000) (function (part) {
+      chain = chain.then(function () { return window.Api.poCollect(window.Hub.token(), { productId: c.productId, items: part }); });
+    })(items.slice(i, i + 20000));
+    chain.then(null, function () { /* the tree misses this run */ });
   }
 
   /* ---------- result ---------- */
@@ -177,10 +189,10 @@
     grid = window.DSParse.grid(parsed, c, mapping);
     var units = grid.columns.length, shown = count(grid), total = count(window.DSParse.grid(parsed, c, null));
 
-    var h = parsed[0].hdr;
+    var h = parsed[0].hdr, named = grid.columns.slice(0, 12);
     $('dn-title').textContent = (units === 1
       ? [h.project, grid.columns[0], h.reference ? 'Ref. ' + h.reference : '']
-      : [projects().join(', '), units + ' units: ' + grid.columns.join(', ')]).filter(Boolean).join('  ·  ') || fileName;
+      : [projects().join(', '), units + ' units: ' + named.join(', ') + (units > named.length ? ' … (' + (units - named.length) + ' more)' : '')]).filter(Boolean).join('  ·  ') || fileName;
 
     var facts = $('dn-facts'); facts.textContent = '';
     var list = [units + (units === 1 ? ' unit' : ' units'), shown + (shown === 1 ? ' row' : ' rows')];
@@ -193,12 +205,21 @@
     if (!differ) $('dn-only').checked = false;
     list.forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
 
-    var notes = [];
+    // one line per distinct point, naming the units it concerns (every unit = no names)
+    var notes = [], byText = {}, order = [];
     parsed.forEach(function (u, i) {
-      var tag = units > 1 ? grid.columns[i] + ': ' : '';
-      u.warnings.forEach(function (w) { notes.push(tag + w); });
-      if (!u.unit.rows.length) notes.push(tag + 'No "Unit Data" block was found on the datasheet.');
-      if (!u.sections.length) notes.push(tag + 'No numbered sections were found on the datasheet.');
+      var r = window.DSParse.readers[u.type] || window.DSParse.readers.ahu, list = u.warnings.slice();
+      if (!u.unit.rows.length) list.push('No "' + r.unitBlock + '" block was found on the datasheet.');
+      if (!u.sections.length) list.push('No ' + r.sectionsName + ' were found on the datasheet.');
+      list.forEach(function (w) {
+        if (!byText[w]) { byText[w] = []; order.push(w); }
+        byText[w].push(grid.columns[i]);
+      });
+    });
+    order.forEach(function (w) {
+      var who = byText[w];
+      if (units === 1 || who.length === units) notes.push(w);
+      else notes.push(who.slice(0, 5).join(', ') + (who.length > 5 ? ' and ' + (who.length - 5) + ' more' : '') + ': ' + w);
     });
     var warn = $('dn-warn'); warn.textContent = ''; warn.hidden = !notes.length;
     if (notes.length) {
@@ -208,7 +229,7 @@
 
     // Section | Component | one column per unit tag | Remarks
     var table = $('dn-table').querySelector('table'), cols = $('dn-cols'), head = $('dn-head-row');
-    var unitW = units === 1 ? 320 : 220;
+    var unitW = units === 1 ? 320 : units > 12 ? 160 : 220;
     cols.textContent = ''; head.textContent = '';
     [170, 210].concat(grid.columns.map(function () { return unitW; }), [130]).forEach(function (w) { cols.appendChild(el('col', { style: 'width:' + w + 'px' })); });
     ['Section', 'Component'].concat(grid.columns, ['Remarks']).forEach(function (t, i) {

@@ -212,7 +212,10 @@
     var file = this.files[0]; this.value = '';
     if (!file) return;
     busy = true; fail(''); status.textContent = 'Reading ' + file.name + '…';
-    window.DSRead.file(file).then(function (data) {
+    var id = productId;
+    window.DSRead.file(file, window.DSRead.progress(function (t) { status.textContent = t; })).then(function (data) {
+      window.DSRead.check(data, id);
+      if (productId !== id) throw new Error('The product was changed while the datasheet was being read. Load it again.');
       var keep = current();
       sheet = data; sheetName = file.name;
       build(keep);
