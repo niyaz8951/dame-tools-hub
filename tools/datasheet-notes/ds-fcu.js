@@ -116,13 +116,34 @@
         .map(function (r) { delete r.side; delete r.i; return r; });
     }
     /* Title block. Two fields can share a line ("Software Name: McQuay Smart Tools   Selection date:17/7/2026"),
-       so the line is cut at every field name. "Unit No." is printed with or without a colon. */
-    var FIELD = /(Project|Unit No\.?|Software Name|Software version|Selection date)\s*:?\s*/gi;
+       so the line is cut at the field names. A field name counts only where the title block prints one:
+       - at the start of a piece of text (a piece = text set apart by a gap), with or without a colon
+         ("Unit No." is printed with or without one), or
+       - further along, when it is followed by a colon ("... Selection date:17/7/2026"), or is "Unit No."
+         with its full stop.
+       The same words inside a value stay in the value: the project "Aramco Stadium Project" or
+       "Project Unit No 5 Tower" is kept whole. A field that is already filled is not emptied. */
+    var NAMES = 'Project|Unit No\\.?|Software Name|Software version|Selection date';
+    var FIELD_START = new RegExp('^(' + NAMES + ')(?:\\s*:\\s*|\\s+|$)', 'i');
+    var FIELD_START_NO = /^(Unit No\.)\s*:?\s*/i;                       // "Unit No.FCU-01"
+    var FIELD_INSIDE = new RegExp('\\s(' + NAMES + ')\\s*:\\s*|\\s(Unit No\\.)\\s*', 'gi');
     var head = {};
-    function headLine(text) {
-      var parts = text.split(FIELD);                        // [before, name, value, name, value ...]
-      for (var i = 1; i + 1 < parts.length; i += 2) head[parts[i].replace(/\.$/, '').toLowerCase()] = clean(parts[i + 1]);
+    function headCell(text) {
+      var m = FIELD_START_NO.exec(text) || FIELD_START.exec(text);
+      if (!m) return;
+      var name = m[1], from = m[0].length, n;
+      function put(to) {
+        var k = name.replace(/\.$/, '').toLowerCase(), v = clean(text.slice(from, to));
+        if (v || !head[k]) head[k] = v;
+      }
+      FIELD_INSIDE.lastIndex = from;
+      while ((n = FIELD_INSIDE.exec(text))) {
+        put(n.index);
+        name = n[1] || n[2]; from = n.index + n[0].length;
+      }
+      put(text.length);
     }
+    function headLine(ln) { ln.cells.forEach(function (c) { headCell(c.s); }); }
 
     pages.forEach(function (pg) {
       var col = columns(pg);
@@ -130,7 +151,7 @@
         var text = ln.text, first = ln.items[0];
         if (mode === 'skip') return;
         if (TITLE.test(text)) { mode = 'head'; return; }
-        if (mode === 'head') headLine(text);
+        if (mode === 'head') headLine(ln);
 
         // a bold line alone at the left margin is a heading; "Note" ends the unit
         var heading = ln.items.length === 1 && Math.abs(first.x - col.left) <= SAME_X && first.f !== body;
@@ -190,5 +211,6 @@
   }
 
   P.readers.fcu = { name: 'Daikin FAN COIL UNIT TECHNICAL REPORT (McQuay Smart Tools)', unitBlock: 'General',
-                    sectionsName: 'sections', starts: startsUnit, parse: parse };
+                    sectionsName: 'sections', starts: startsUnit, parse: parse,
+                    factories: FACTORY.map(function (f) { return f.name; }) };   // the factories a datasheet can name
 })();

@@ -26,7 +26,7 @@
   <!-- view 2: one team's tools (tiles are hidden while this is open) -->
   <section id="toolsView" hidden>
     <div class="page-head">
-      <p class="small"><a href="#" id="backLink">&larr; Dashboard</a></p>
+      <p class="small" id="backRow"><a href="#" id="backLink">&larr; Dashboard</a></p>
       <h1 id="toolsTitle"></h1>
       <p id="toolsSub"></p>
     </div>
@@ -38,6 +38,9 @@
   "use strict";
   var el = Hub.el, profile;
   var CAT_ICON = { general: Hub.ICON.grid, sales: Hub.ICON.chart, sbu: Hub.ICON.wrench };
+  var TOOL_ICON = { "compliance-maker": Hub.ICON.checklist, "datasheet-notes": Hub.ICON.table, "product-options": Hub.ICON.tree,
+                    "coil-data-extractor": Hub.ICON.coil, "container-calculator": Hub.ICON.box, "centre-of-gravity": Hub.ICON.target,
+                    "psychrometric-chart": Hub.ICON.curve, "standards": Hub.ICON.book };
 
   function selected() { return decodeURIComponent(location.hash.slice(1)); }
 
@@ -58,10 +61,12 @@
     });
   }
 
-  function renderTools(c) {
-    document.getElementById("toolsTitle").textContent = c.name;
+  // only: the user has this one tile, so its tools are the dashboard
+  function renderTools(c, only) {
+    document.getElementById("backRow").hidden = only;
+    document.getElementById("toolsTitle").textContent = only ? document.getElementById("hello").textContent : c.name;
     document.getElementById("toolsSub").textContent = c.description;
-    document.title = c.name + " - DAME Tools Hub";
+    document.title = (only ? "Dashboard" : c.name) + " - DAME Tools Hub";
     var host = document.getElementById("tools"); host.textContent = "";
     if (!c.tools.length) {
       host.appendChild(el("div", { "class": "empty", style: "grid-column:1/-1", text: "No tools have been added to " + c.name + " yet." }));
@@ -72,7 +77,7 @@
       host.appendChild(el(isLive ? "a" : "div", {
         "class": "tile" + (isLive ? "" : " disabled"), href: isLive ? Hub.url(t.path) : null
       }, [
-        el("span", { "class": "tile-icon", "aria-hidden": "true", html: Hub.ICON.doc }),
+        el("span", { "class": "tile-icon", "aria-hidden": "true", html: TOOL_ICON[t.id] || Hub.ICON.doc }),
         isLive ? null : el("span", { "class": "badge warn", text: "Coming soon" }),
         el("h3", { text: t.name }),
         el("p", { text: t.description })
@@ -81,11 +86,13 @@
   }
 
   // One view at a time: the tiles, or the tools of the tile that was clicked.
+  // A user with a single tile gets its tools straight away.
   function render() {
-    var c = profile.categories.filter(function (x) { return x.id === selected() && x.allowed; })[0];
+    var open = profile.categories.filter(function (x) { return x.allowed; }), only = open.length === 1;
+    var c = only ? open[0] : open.filter(function (x) { return x.id === selected(); })[0];
     document.getElementById("homeView").hidden = !!c;
     document.getElementById("toolsView").hidden = !c;
-    if (c) renderTools(c); else { document.title = "Dashboard - DAME Tools Hub"; renderTiles(); }
+    if (c) renderTools(c, only); else { document.title = "Dashboard - DAME Tools Hub"; renderTiles(); }
     window.scrollTo(0, 0);
   }
 

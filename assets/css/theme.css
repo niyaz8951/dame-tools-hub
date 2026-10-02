@@ -126,6 +126,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-soft); background: var(--surface-2); white-space: nowrap; }
 .table tr:last-child td { border-bottom: 0; }
 .table select.input { min-height: 34px; padding: 4px 8px; width: auto; }
+.table .user-cell { min-width: 210px; }   /* Admin > Users: room for a full name on one line */
 
 /* ---------- login page ---------- */
 .auth {

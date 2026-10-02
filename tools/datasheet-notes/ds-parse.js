@@ -125,8 +125,8 @@
         if (mode === 'elec') {
           // table rows: Component | Electrical Connection | Absorbed power - current
           if (!heading && ln.cells.length >= 2) elec.push({ component: ln.cells[0].s, connection: ln.cells[1].s });
-          else if (heading && !/Component|Electrical Connection|Absorbed|Current/i.test(text)) mode = 'skip';
-          return;
+          if (!heading || /Component|Electrical Connection|Absorbed|Current/i.test(text)) return;
+          mode = 'skip';          // the table has ended; the heading that ends it is read as any other heading
         }
 
         if (heading) {
@@ -225,7 +225,8 @@
   var readers = {
     ahu: { name: 'Daikin AHU technical report (ASTRAWEB)', unitBlock: 'Unit Data', sectionsName: 'numbered sections',
            starts: function (pg) { return pg.some(function (ln) { return /^Unit Data$/i.test(ln.text); }); },
-           parse: parse }
+           parse: parse,
+           factories: Object.keys(FACTORY).map(function (k) { return FACTORY[k]; }) }   // the factories a datasheet can name
   };
 
   /* Which reader a PDF needs: the first reader whose start page is found. */

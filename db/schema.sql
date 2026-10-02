@@ -125,7 +125,13 @@ insert into public.app_tools (id, category_id, name, description, path, status, 
    'tools/centre-of-gravity/', 'live', 40),
   ('datasheet-notes', 'general', 'Datasheet Notes',
    'Turn a product datasheet PDF into an Excel table of unit data, sections and options.',
-   'tools/datasheet-notes/', 'live', 15)
+   'tools/datasheet-notes/', 'live', 15),
+  ('psychrometric-chart', 'general', 'Psychrometric Chart',
+   'Plot air states on an ASHRAE-style chart and read coil loads, SHR and mixing.',
+   'tools/psychrometric-chart/', 'live', 50),
+  ('standards', 'general', 'Standards',
+   'Short summaries of the standards named in AHU, FCU and chiller specifications.',
+   'tools/standards/', 'live', 60)
 on conflict (id) do nothing;
 update public.app_tools set editable = true where id in ('compliance-maker', 'datasheet-notes');
 
@@ -152,6 +158,9 @@ begin
   end if;
   if length(p) > 72 then
     perform public.app__fail('Password must be 72 characters or fewer.');
+  end if;
+  if p !~ '\S' then
+    perform public.app__fail('Password cannot be only spaces.');
   end if;
 end $$;
 

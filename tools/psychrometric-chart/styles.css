@@ -97,6 +97,10 @@
 .psy-row-actions { display: flex; gap: var(--space-1, 4px); justify-content: flex-end; }
 .psy-row-actions .btn { min-width: 32px; padding-inline: var(--space-1, 4px); }
 
+/* A short message under the box it is about. */
+.psy-msg { margin-top: var(--space-1, 4px); font-size: 0.8125rem; color: var(--danger); }
+input[aria-invalid='true'] { border-color: var(--danger); }
+
 /* ----------------------------------------------------------------- chart */
 
 /* A psychrometric chart is intrinsically wide: squeezing it to a phone's width
@@ -189,6 +193,9 @@
 
 .psy-process { stroke-width: 2.6; stroke-linecap: round; opacity: 0.9; }
 .psy-process.is-active { stroke-width: 3.6; opacity: 1; }
+/* Two airstreams meeting, not a coil: dashed, so it does not read as a duty. */
+.psy-process--mix { stroke-width: 2; stroke-dasharray: 7 5; }
+.psy-process--mix.is-active { stroke-width: 2.8; }
 
 /* The right-angled construction under a process line: how far the change is
    sensible, and how far latent. */
@@ -273,9 +280,29 @@
 /* ------------------------------------------------------------- printing */
 
 @media print {
+  /* Shell items that have no place on paper. */
+  .demo-bar, .topbar, .toast { display: none !important; }
   .psy-toolbar, .psy-actions, .psy-layers, .psy-readout, .psy-mix,
-  .psy-chart-help, #topbar, .skip-link, .psy-back { display: none !important; }
+  .psy-chart-help, #topbar, .skip-link, .psy-back, .psy-row-actions { display: none !important; }
   .psy-chart-scroll { overflow: visible; }
   .psy-chart { min-width: 0; }
   .psy-panel { break-inside: avoid; box-shadow: none; }
+
+  /* Every column on the page, portrait or landscape: no scrolling box, tight
+     cells, and input boxes shown as plain figures. */
+  .table-wrap { overflow: visible; }
+  .psy-points, .psy-states, .psy-segments { table-layout: auto; width: 100%; font-size: 0.75rem; }
+  table.data.psy-points th, table.data.psy-points td,
+  table.data.psy-states th, table.data.psy-states td,
+  table.data.psy-segments th, table.data.psy-segments td { padding: 3px 4px; overflow-wrap: anywhere; }
+  .psy-points input, .psy-points select {
+    min-width: 0; width: 100%; padding: 0; border: 0; background: none; font-size: 0.75rem;
+    min-height: 0; appearance: none; -webkit-appearance: none;
+  }
+  .psy-points th:last-child { display: none; }
+  .psy-seg-btn { font-size: 0.75rem; }
+  table.data.psy-states td.num, table.data.psy-states th.num,
+  table.data.psy-segments td.num, table.data.psy-segments th.num,
+  table.data.psy-points td.num { overflow-wrap: normal; white-space: nowrap; }
+  table.data.psy-segments th.num { white-space: normal; }
 }

@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="../../assets/css/legacy-tools.css">
   <link rel="stylesheet" href="styles.css">
   <title>Container &amp; trailer calculator - DAME Tools Hub</title>
-  <meta name="description" content="Work out how many containers or trailers a shipment needs. Upload a packing list or type it in, get a load plan, stowage drawings and a PDF report.">
+  <meta name="description" content="Work out how many containers or trailers a shipment needs. Open a packing list or type it in, get a load plan, stowage drawings and a PDF report.">
   <script src="../../assets/js/config.js"></script>
   <script src="../../assets/js/api.js"></script>
   <script src="../../assets/js/hub.js"></script>
@@ -25,7 +25,7 @@
     <div class="page-head">
       <p class="eyebrow">Tools</p>
       <h1>Container &amp; trailer calculator</h1>
-      <p>Enter your packed dimensions, pick a vehicle, and get the number of containers or trailers you actually need — with a load plan, stowage drawings and a PDF report. Nothing is uploaded.</p>
+      <p>Enter your packed dimensions, pick a vehicle, and get the number of containers or trailers you actually need — with a load plan, stowage drawings and a PDF report. Everything runs in your browser; nothing leaves your computer.</p>
     </div>
 
     <!-- 1 · Project and vehicle -->
@@ -37,6 +37,7 @@
           <label for="project">Project name</label>
           <input id="project" type="text" placeholder="e.g. KJ158 — RSG 13 LB" autocomplete="off">
           <p class="hint">Used as the PDF file name.</p>
+          <p class="hint cc-warn" id="project-warn" role="status" hidden></p>
         </div>
         <div class="field">
           <label for="vehicle">Vehicle</label>
@@ -45,8 +46,14 @@
         </div>
         <div class="field">
           <label for="cost">Cost per vehicle <span class="muted">optional</span></label>
-          <input id="cost" type="number" min="0" step="1" inputmode="decimal" placeholder="0">
-          <p class="hint" id="cost-hint">Any currency. Drives the freight estimate.</p>
+          <input id="cost" type="number" min="0" step="1" inputmode="decimal" placeholder="e.g. 2800" aria-describedby="cost-hint cost-err">
+          <p class="hint" id="cost-hint">Leave empty for no freight estimate.</p>
+          <p class="cc-err" id="cost-err" role="alert" hidden></p>
+        </div>
+        <div class="field">
+          <label for="currency">Currency <span class="muted">optional</span></label>
+          <input id="currency" type="text" maxlength="8" placeholder="e.g. USD" autocomplete="off">
+          <p class="hint">Shown with the freight estimate on screen and in the PDF.</p>
         </div>
       </div>
 
@@ -54,18 +61,22 @@
         <div class="field">
           <label for="c-length">Internal length (m)</label>
           <input id="c-length" type="number" min="0.1" step="0.001" inputmode="decimal" value="12">
+          <p class="cc-err" id="c-length-err" role="alert" hidden></p>
         </div>
         <div class="field">
           <label for="c-width">Internal width (m)</label>
           <input id="c-width" type="number" min="0.1" step="0.001" inputmode="decimal" value="2.4">
+          <p class="cc-err" id="c-width-err" role="alert" hidden></p>
         </div>
         <div class="field">
           <label for="c-height">Internal height (m)</label>
           <input id="c-height" type="number" min="0.1" step="0.001" inputmode="decimal" value="3.3">
+          <p class="cc-err" id="c-height-err" role="alert" hidden></p>
         </div>
         <div class="field">
           <label for="c-payload">Max payload (kg)</label>
           <input id="c-payload" type="number" min="1" step="1" inputmode="numeric" value="24000">
+          <p class="cc-err" id="c-payload-err" role="alert" hidden></p>
         </div>
       </div>
 
@@ -84,8 +95,10 @@
           <span>Cargo is palletised<em>Puts every item on a pallet before packing</em></span>
         </label>
         <div class="field">
-          <label for="opt-gap">Clearance per item (mm)</label>
-          <input id="opt-gap" type="number" min="0" max="500" step="5" inputmode="numeric" value="100">
+          <label for="opt-gap">Clearance between items (mm)</label>
+          <input id="opt-gap" type="number" min="0" max="500" step="5" inputmode="numeric" value="100" aria-describedby="opt-gap-hint opt-gap-err">
+          <p class="hint" id="opt-gap-hint">Gap kept between items, 0 to 500 mm. Items may touch the walls.</p>
+          <p class="cc-err" id="opt-gap-err" role="alert" hidden></p>
         </div>
       </fieldset>
 
@@ -140,8 +153,9 @@
 
       <div class="toolbar" role="group" aria-label="Cargo list actions">
         <button type="button" class="btn btn--primary" id="add-row">Add row</button>
-        <button type="button" class="btn btn--ghost" id="upload-btn">Upload filled sheet</button>
+        <button type="button" class="btn btn--ghost" id="upload-btn">Open filled sheet</button>
         <button type="button" class="btn btn--ghost" id="template-btn">Download input sheet</button>
+        <button type="button" class="btn btn--ghost" id="cargo-xlsx-btn" disabled>Download cargo list</button>
         <button type="button" class="btn btn--ghost" id="sample-btn">Load example</button>
         <button type="button" class="btn btn--quiet" id="clear-btn">Clear all</button>
         <input type="file" id="file-input" accept=".xlsx,.csv,.tsv,.txt" hidden>
@@ -198,7 +212,7 @@
       </div>
 
       <p class="empty" id="empty-state">
-        Add a row, load the example, or upload a sheet with columns
+        Add a row, load the example, or open a sheet with columns
         <strong>Tag, Length, Width, Height, Gross Weight</strong>.
       </p>
 
@@ -214,6 +228,7 @@
           <button type="button" class="btn btn--primary" id="pdf-btn" disabled>Download PDF report</button>
         </div>
       </div>
+      <p class="hint cc-download-note" id="download-note" role="status" hidden></p>
       <div id="results" aria-live="polite">
         <p class="empty">Add cargo, then press Calculate.</p>
       </div>
@@ -226,8 +241,11 @@
         <li>Enter <strong>packed</strong> sizes — crate, skid and protection included, not the bare equipment.</li>
         <li>Vehicle figures are <strong>internal usable</strong> dimensions. Door openings are smaller than the box, so check the tallest item against the door height before you book.</li>
         <li>The packer places large items first and fills from the nose backwards. It is a fast heuristic, not a proof of the theoretical minimum — treat the answer as a solid working estimate to confirm with your forwarder.</li>
-        <li>Centre of gravity is reported as a percentage of the vehicle length from the nose. Aim for 45–55%; outside that band, axle loads and lashing need a second look.</li>
-        <li>Everything runs in your browser. Files you upload are read locally and never sent anywhere.</li>
+        <li>Clearance is the gap kept between neighbouring items along the length and width. It is not kept to the walls, and not between stacked tiers. Sizes in the piece list are the sizes you entered; positions include the clearance.</li>
+        <li>Centre of gravity is reported as a percentage of the vehicle length from the nose. The 45–55% band is a rule of thumb for an evenly loaded vehicle, not a figure from a standard; outside it, check axle loads and lashing with your forwarder.</li>
+        <li>The PDF report prints Latin letters only. Other scripts in a project name or tag print as “[non-Latin text]” there; the Excel files keep them as typed.</li>
+        <li>A list of more than 5,000 pieces is not calculated: split it into shipments first.</li>
+        <li>Everything runs in your browser. Files you open are read locally and never sent anywhere.</li>
       </ul>
     </section>
 

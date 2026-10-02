@@ -20,6 +20,12 @@
    humidity every 10 %, specific volume every 0.01 m3/kg, and the sensible
    heat ratio protractor in the blank corner.
 
+   Units: the engine and the plot geometry are SI throughout. For an IP chart
+   only what is written and where the lines fall changes: the frame, the ticks
+   and the line families are stepped in round IP figures (10 °F, gr/lb,
+   Btu/lb, ft3/lb) and each one is converted back to SI to be placed. There is
+   no second equation set.
+
    Depends on TN.psychro. No other dependency.
    ========================================================================== */
 
@@ -54,6 +60,44 @@
      narrow enough to keep them apart; every 2 °C on a wide frame. */
   function wbStep(range) {
     return (range.tMax - range.tMin) <= 60 ? 1 : 2;
+  }
+
+  function same(v) { return v; }
+
+  /* What the chart is written in. `t`, `w`, `h`, `v` turn an SI figure into
+     the displayed one and the `...Inv` functions turn it back, so a line can
+     be chosen at a round displayed value and placed with its SI value. */
+  var SI_UNITS = {
+    ip: false,
+    t: same, tInv: same, w: same, wInv: same, h: same, hInv: same, v: same, vInv: same,
+    tUnit: '&#176;C', wUnit: 'g/kg', hUnit: 'kJ/kg', wDigits: 1,
+    tRound: 5, tSpanMin: 20, wRound: 2, wFloor: 8,
+    wbStep: wbStep, wbLabelEvery: function (step) { return step === 1 ? WB_LABEL_EVERY : WB_LABEL_EVERY * 2; },
+    hStep: H_STEP, hScaleStep: H_STEP * 2, vStep: V_STEP, vDigits: 2,
+    pressure: function (kPa) { return kPa.toFixed(3) + ' kPa'; },
+    empty: { tMin: 0, tMax: 50, wMin: 0, wMax: 30 }
+  };
+  var IP_UNITS = {
+    ip: true,
+    t: P.ip.tempToF, tInv: P.ip.tempToC,
+    w: function (gkg) { return gkg * 7; }, wInv: function (grlb) { return grlb / 7; },
+    h: P.ip.enthalpyToIP, hInv: P.ip.enthalpyToSI,
+    v: P.ip.volumeToIP, vInv: function (ft3lb) { return ft3lb / P.ip.volumeToIP(1); },
+    tUnit: '&#176;F', wUnit: 'gr/lb', hUnit: 'Btu/lb', wDigits: 0,
+    tRound: 10, tSpanMin: 40, wRound: 20, wFloor: 60,
+    /* Every 2 °F, or every 5 °F on a wide frame; labelled every 10 °F. */
+    wbStep: function (range) { return (range.tMax - range.tMin) * 1.8 <= 110 ? 2 : 5; },
+    wbLabelEvery: function (step) { return step === 2 ? 10 : 20; },
+    hStep: 2.5, hScaleStep: 5, vStep: 0.5, vDigits: 1,
+    pressure: function (kPa) { return P.ip.pressureToIP(kPa).toFixed(3) + ' in.Hg'; },
+    empty: { tMin: P.ip.tempToC(30), tMax: P.ip.tempToC(120), wMin: 0, wMax: 210 / 7 }
+  };
+  var U = SI_UNITS;                     /* set by render() for each drawing */
+
+  /* First multiple of `step` at or above `from`, forgiving the rounding that
+     a conversion there and back leaves behind. */
+  function firstStep(from, step) {
+    return Math.ceil((from - 1e-6) / step) * step;
   }
 
   /* ------------------------------------------------------------- helpers */
@@ -116,14 +160,16 @@
       if (isFinite(s.dp)) { tLo = Math.min(tLo, s.dp - 2); }
     });
 
-    if (!any) { return { tMin: 0, tMax: 50, wMin: 0, wMax: 30 }; }
+    if (!any) { return U.empty; }
 
     /* Padding is a share of the span with a floor and a ceiling. A share
        alone leaves a single point with no frame at all; a fixed margin alone
        swamps a narrow process and pinches a wide one. */
+    /* The frame ends on round figures of the unit on show (5 °C or 10 °F),
+       so the axis numbers are round in either system. */
     var pad = Math.min(9, Math.max(3, (tHi - tLo) * 0.14));
-    var tMin = Math.floor((tLo - pad) / 5) * 5;
-    var tMax = Math.ceil((tHi + pad) / 5) * 5;
+    var tMin = Math.floor(U.t(tLo - pad) / U.tRound) * U.tRound;
+    var tMax = Math.ceil(U.t(tHi + pad) / U.tRound) * U.tRound;
 
     /* Humidity ratio is rounded to a multiple of two, which keeps the grid
        labels whole without throwing away half the height. An earlier version
@@ -131,13 +177,13 @@
        end, which pushed a 24 g/kg process onto a 40 g/kg chart and left every
        plotted point squashed into the lower third. The curve looks after
        itself: it is drawn wherever it falls and clipped where it does not. */
-    var wMax = Math.ceil((wHi * 1.15 + 1) / 2) * 2;
+    var wMax = Math.ceil(U.w(wHi * 1.15 + 1) / U.wRound) * U.wRound;
 
     return {
-      tMin: tMin,
-      tMax: Math.max(tMax, tMin + 20),
+      tMin: U.tInv(tMin),
+      tMax: U.tInv(Math.max(tMax, tMin + U.tSpanMin)),
       wMin: 0,
-      wMax: Math.max(wMax, 8)
+      wMax: U.wInv(Math.max(wMax, U.wFloor))
     };
   }
 
@@ -147,6 +193,24 @@
     low: { tMin: -30, tMax: 20, wMin: 0, wMax: 12, label: 'Low temperature (-30 to 20 °C)' },
     wide: { tMin: -10, tMax: 60, wMin: 0, wMax: 40, label: 'Wide (-10 to 60 °C)' }
   };
+
+  /* The same four frames in round IP figures (°F and gr/lb). */
+  function ipPreset(tMinF, tMaxF, wMaxGr, label) {
+    return { tMin: P.ip.tempToC(tMinF), tMax: P.ip.tempToC(tMaxF), wMin: 0, wMax: wMaxGr / 7, label: label };
+  }
+  var PRESETS_IP = {
+    normal: ipPreset(30, 120, 210, 'Normal temperature (30 to 120 °F)'),
+    gulf: ipPreset(50, 130, 240, 'High ambient (50 to 130 °F)'),
+    low: ipPreset(-20, 70, 80, 'Low temperature (-20 to 70 °F)'),
+    wide: ipPreset(0, 140, 280, 'Wide (0 to 140 °F)')
+  };
+
+  function presetLabels(ip) {
+    var set = ip ? PRESETS_IP : PRESETS;
+    var out = {};
+    Object.keys(set).forEach(function (k) { out[k] = set[k].label; });
+    return out;
+  }
 
   /* ------------------------------------------------------- path builders */
 
@@ -199,8 +263,13 @@
     var r = view.range;
     var out = [];
     var ticks = [];
-    var tStep = niceStep(r.tMax - r.tMin, 10);
-    var wStep = niceStep(r.wMax - r.wMin, 8);
+    /* Lines are stepped in the unit on show and placed with the SI value. */
+    var tLo = U.t(r.tMin);
+    var tHi = U.t(r.tMax);
+    var wLo = U.w(r.wMin);
+    var wHi = U.w(r.wMax);
+    var tStep = niceStep(tHi - tLo, 10);
+    var wStep = niceStep(wHi - wLo, 8);
     var t, w, x, y;
 
     /* Fine grid, as on the printed chart: 1 °C and 1 g/kg (or 0.5 g/kg on a
@@ -208,38 +277,38 @@
        frame is so wide that the minor lines would crowd into a grey wash. */
     var tMinor = tStep >= 5 ? tStep / 5 : 0;
     var wMinor = wStep >= 5 ? wStep / 5 : (wStep >= 2 ? wStep / 2 : 0);
-    if (tMinor && (r.tMax - r.tMin) / tMinor <= 80) {
-      for (t = Math.ceil(r.tMin / tMinor) * tMinor; t <= r.tMax + 1e-9; t += tMinor) {
+    if (tMinor && (tHi - tLo) / tMinor <= 80) {
+      for (t = firstStep(tLo, tMinor); t <= tHi + 1e-6; t += tMinor) {
         if (Math.abs(t / tStep - Math.round(t / tStep)) < 1e-6) { continue; }
-        x = view.x(t);
+        x = view.x(U.tInv(t));
         out.push('<line class="psy-grid psy-grid--minor" x1="' + x.toFixed(1) + '" y1="' + PLOT.y0 +
                  '" x2="' + x.toFixed(1) + '" y2="' + PLOT.y1 + '"/>');
       }
     }
-    if (wMinor && (r.wMax - r.wMin) / wMinor <= 60) {
-      for (w = Math.ceil(r.wMin / wMinor) * wMinor; w <= r.wMax + 1e-9; w += wMinor) {
+    if (wMinor && (wHi - wLo) / wMinor <= 60) {
+      for (w = firstStep(wLo, wMinor); w <= wHi + 1e-6; w += wMinor) {
         if (Math.abs(w / wStep - Math.round(w / wStep)) < 1e-6) { continue; }
-        y = view.y(w);
+        y = view.y(U.wInv(w));
         out.push('<line class="psy-grid psy-grid--minor" x1="' + PLOT.x0 + '" y1="' + y.toFixed(1) +
                  '" x2="' + PLOT.x1 + '" y2="' + y.toFixed(1) + '"/>');
       }
     }
 
-    for (t = Math.ceil(r.tMin / tStep) * tStep; t <= r.tMax + 1e-9; t += tStep) {
-      x = view.x(t);
+    for (t = firstStep(tLo, tStep); t <= tHi + 1e-6; t += tStep) {
+      x = view.x(U.tInv(t));
       out.push('<line class="psy-grid" x1="' + x.toFixed(1) + '" y1="' + PLOT.y0 +
                '" x2="' + x.toFixed(1) + '" y2="' + PLOT.y1 + '"/>');
       ticks.push('<text class="psy-axis-tick" x="' + x.toFixed(1) + '" y="' + (PLOT.y1 + 18) +
-                 '" text-anchor="middle">' + (+t.toFixed(6)) + '</text>');
+                 '" text-anchor="middle">' + (+t.toFixed(4)) + '</text>');
     }
 
-    for (w = Math.ceil(r.wMin / wStep) * wStep; w <= r.wMax + 1e-9; w += wStep) {
-      y = view.y(w);
+    for (w = firstStep(wLo, wStep); w <= wHi + 1e-6; w += wStep) {
+      y = view.y(U.wInv(w));
       out.push('<line class="psy-grid" x1="' + PLOT.x0 + '" y1="' + y.toFixed(1) +
                '" x2="' + PLOT.x1 + '" y2="' + y.toFixed(1) + '"/>');
       /* Humidity ratio is read off the right-hand edge, as on a printed chart. */
       ticks.push('<text class="psy-axis-tick" x="' + (PLOT.x1 + 8) + '" y="' + (y + 4).toFixed(1) +
-                 '" text-anchor="start">' + (+w.toFixed(6)) + '</text>');
+                 '" text-anchor="start">' + (+w.toFixed(4)) + '</text>');
     }
     return { lines: out.join(''), ticks: ticks.join('') };
   }
@@ -280,9 +349,10 @@
     var r = view.range;
     var lines = [];
     var labels = [];
-    var step = wbStep(r);
-    var start = Math.ceil(r.tMin / step) * step;
-    for (var wb = start; wb <= r.tMax; wb += step) {
+    var step = U.wbStep(r);
+    var every = U.wbLabelEvery(step);
+    for (var shown = firstStep(U.t(r.tMin), step); shown <= U.t(r.tMax) + 1e-6; shown += step) {
+      var wb = U.tInv(shown);
       /* A wet-bulb line starts on the saturation curve at its own temperature
          and runs down and to the right from there. */
       var wSat = P.satHumRatio(wb, view.p) * 1000;
@@ -292,8 +362,7 @@
       });
       var d = polyline(pts);
       if (!d) { continue; }
-      var every = step === 1 ? WB_LABEL_EVERY : WB_LABEL_EVERY * 2;
-      var major = Math.abs(wb / every - Math.round(wb / every)) < 1e-6;
+      var major = Math.abs(shown / every - Math.round(shown / every)) < 1e-6;
       lines.push('<path class="psy-line psy-line--wb' + (major ? ' psy-line--wb-major' : '') + '" d="' + d + '"/>');
       if (major && wSat >= r.wMin) {
         /* Just outside the saturation curve, up and to the left of the point
@@ -308,7 +377,7 @@
         var ly = ys + ny * 9;
         if (lx > PLOT.x0 - 30 && ly > PLOT.y0 - 14 && lx < PLOT.x1) {
           labels.push('<text class="psy-label psy-label--wb" x="' + lx.toFixed(1) + '" y="' +
-                      (ly + 3).toFixed(1) + '" text-anchor="middle">' + wb + '</text>');
+                      (ly + 3).toFixed(1) + '" text-anchor="middle">' + Math.round(shown) + '</text>');
         }
       }
     }
@@ -320,12 +389,13 @@
     var out = [];
     /* Range of enthalpy actually present on this chart, so the loop does not
        walk hundreds of lines that all fall outside the frame. */
-    var hLo = P.enthalpy(r.tMin, r.wMin / 1000);
-    var hHi = P.enthalpy(r.tMax, r.wMax / 1000);
-    var step = H_STEP;
+    var hLo = U.h(P.enthalpy(r.tMin, r.wMin / 1000));
+    var hHi = U.h(P.enthalpy(r.tMax, r.wMax / 1000));
+    var step = U.hStep;
     while ((hHi - hLo) / step > 40) { step *= 2; }
 
-    for (var h = Math.ceil(hLo / step) * step; h <= hHi; h += step) {
+    for (var shown = firstStep(hLo, step); shown <= hHi; shown += step) {
+      var h = U.hInv(shown);
       /* Solve Eq 30 for t at each humidity ratio: the line is very nearly
          straight, so a handful of samples is plenty. */
       var pts = [];
@@ -348,12 +418,13 @@
   function drawEnthalpyScale(view) {
     var r = view.range;
     var out = [];
-    var hLo = P.enthalpy(r.tMin, 0);
-    var hHi = P.enthalpy(r.tMax, r.wMax / 1000);
-    var step = H_STEP * 2;
+    var hLo = U.h(P.enthalpy(r.tMin, 0));
+    var hHi = U.h(P.enthalpy(r.tMax, r.wMax / 1000));
+    var step = U.hScaleStep;
     while ((hHi - hLo) / step > 16) { step *= 2; }
 
-    for (var h = Math.ceil(hLo / step) * step; h <= hHi; h += step) {
+    for (var shown = firstStep(hLo, step); shown <= hHi; shown += step) {
+      var h = U.hInv(shown);
       /* Find where this enthalpy line meets the saturation curve. */
       var lo = r.tMin - 20;
       var hi = r.tMax + 5;
@@ -394,7 +465,7 @@
       out.push('<line class="psy-hscale-tick" x1="' + xa2.toFixed(1) + '" y1="' + ya2.toFixed(1) +
                '" x2="' + xb.toFixed(1) + '" y2="' + yb.toFixed(1) + '"/>');
       out.push('<text class="psy-label psy-label--hscale" x="' + (xb - 3).toFixed(1) +
-               '" y="' + (yb - 3).toFixed(1) + '" text-anchor="end">' + h + '</text>');
+               '" y="' + (yb - 3).toFixed(1) + '" text-anchor="end">' + (+shown.toFixed(1)) + '</text>');
     }
     return out.join('');
   }
@@ -402,12 +473,13 @@
   function drawVolume(view) {
     var r = view.range;
     var out = [];
-    var vLo = P.specificVolume(r.tMin, r.wMin / 1000, view.p);
-    var vHi = P.specificVolume(r.tMax, r.wMax / 1000, view.p);
-    var step = V_STEP;
+    var vLo = U.v(P.specificVolume(r.tMin, r.wMin / 1000, view.p));
+    var vHi = U.v(P.specificVolume(r.tMax, r.wMax / 1000, view.p));
+    var step = U.vStep;
     while ((vHi - vLo) / step > 14) { step *= 2; }
 
-    for (var v = Math.ceil(vLo / step) * step; v <= vHi; v += step) {
+    for (var shown = firstStep(vLo, step); shown <= vHi; shown += step) {
+      var v = U.vInv(shown);
       var pts = [];
       for (var w = r.wMin; w <= r.wMax + 1e-9; w += (r.wMax - r.wMin) / 20) {
         /* Eq 26 solved for temperature. */
@@ -423,7 +495,7 @@
       var tBase = v * view.p / 0.287042 - 273.15;
       if (tBase > r.tMin && tBase < r.tMax) {
         out.push('<text class="psy-label psy-label--v" x="' + (view.x(tBase) + 3).toFixed(1) +
-                 '" y="' + (PLOT.y1 - 5) + '">' + v.toFixed(2) + '</text>');
+                 '" y="' + (PLOT.y1 - 5) + '">' + shown.toFixed(U.vDigits) + '</text>');
       }
     }
     return out.join('');
@@ -472,8 +544,16 @@
 
   /* --------------------------------------------------- process and points */
 
+  /* A step into a mixed state is two airstreams meeting, not a coil: it is
+     drawn dashed, from each of the two sources, with no sensible and latent
+     legs and no apparatus dew point. */
   function drawSegments(view, points, opts) {
     var out = [];
+    function line(a, b, markerIndex, cls) {
+      return '<line class="psy-process' + cls + '" style="stroke:var(' + b.colour + ')" marker-end="url(#psy-arrow-' +
+             (markerIndex % 8) + ')" x1="' + view.x(a.state.db).toFixed(1) + '" y1="' + view.y(a.state.W * 1000).toFixed(1) +
+             '" x2="' + view.x(b.state.db).toFixed(1) + '" y2="' + view.y(b.state.W * 1000).toFixed(1) + '"/>';
+    }
     for (var i = 0; i < points.length - 1; i++) {
       var a = points[i];
       var b = points[i + 1];
@@ -482,8 +562,12 @@
       var y1 = view.y(a.state.W * 1000);
       var x2 = view.x(b.state.db);
       var y2 = view.y(b.state.W * 1000);
-      var colour = 'var(' + b.colour + ')';
       var active = opts.activeSegment === i;
+
+      if (b.mixed) {
+        out.push(line(a, b, i, ' psy-process--mix' + (active ? ' is-active' : '')));
+        continue;
+      }
 
       /* The sensible and latent legs of the change, as a right-angled
          construction under the process line. This is how the split is read off
@@ -496,21 +580,73 @@
                  'L' + x2.toFixed(1) + ',' + y2.toFixed(1) + '"/>');
       }
 
-      out.push('<line class="psy-process' + (active ? ' is-active' : '') +
-               '" style="stroke:' + colour + '" marker-end="url(#psy-arrow-' + (i % 8) + ')" x1="' +
-               x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) +
-               '" y2="' + y2.toFixed(1) + '"/>');
+      out.push(line(a, b, i, active ? ' is-active' : ''));
     }
+
+    /* The other airstream of each mix, which is not the row just above it. */
+    points.forEach(function (b, k) {
+      if (!b.mixed || !b.state || !b.state.ok) { return; }
+      (b.mixFrom || []).forEach(function (j) {
+        var a = points[j];
+        if (j === k - 1 || !a || !a.state || !a.state.ok) { return; }
+        out.push(line(a, b, Math.max(0, k - 1), ' psy-process--mix'));
+      });
+    });
     return out.join('');
   }
 
-  function drawAdp(view, points, opts) {
-    if (!opts.showAdp) { return ''; }
+  /* Every straight line between plotted states, for the label placement. */
+  function processLines(view, points) {
     var out = [];
+    function add(a, b) {
+      if (!a || !b || !a.state || !a.state.ok || !b.state || !b.state.ok) { return; }
+      out.push([view.x(a.state.db), view.y(a.state.W * 1000), view.x(b.state.db), view.y(b.state.W * 1000)]);
+    }
+    for (var i = 0; i < points.length - 1; i++) { add(points[i], points[i + 1]); }
+    points.forEach(function (b, k) {
+      if (!b.mixed) { return; }
+      (b.mixFrom || []).forEach(function (j) { if (j !== k - 1) { add(points[j], b); } });
+    });
+    return out;
+  }
+
+  function overlap(a, b) {
+    return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  }
+
+  /* True when a line runs through the box: sampled along its length, which is
+     plenty for boxes the size of a label. */
+  function lineCrosses(seg, box) {
+    for (var k = 0; k <= 40; k++) {
+      var x = seg[0] + (seg[2] - seg[0]) * k / 40;
+      var y = seg[1] + (seg[3] - seg[1]) * k / 40;
+      if (x > box.x0 && x < box.x1 && y > box.y0 && y < box.y1) { return true; }
+    }
+    return false;
+  }
+
+  function markerBoxes(view, points) {
+    var out = [];
+    points.forEach(function (pt) {
+      if (!pt.state || !pt.state.ok) { return; }
+      var x = view.x(pt.state.db);
+      var y = view.y(pt.state.W * 1000);
+      out.push({ x0: x - 9, y0: y - 9, x1: x + 9, y1: y + 9 });
+    });
+    return out;
+  }
+
+  /* Returns the apparatus dew point construction and the boxes its labels
+     take up, so the point captions can keep clear of them. */
+  function drawAdp(view, points, opts) {
+    var out = [];
+    var boxes = [];
+    if (!opts.showAdp) { return { svg: '', boxes: boxes }; }
+    var markers = markerBoxes(view, points);
     for (var i = 0; i < points.length - 1; i++) {
       var a = points[i];
       var b = points[i + 1];
-      if (!a.state || !a.state.ok || !b.state || !b.state.ok) { continue; }
+      if (b.mixed || !a.state || !a.state.ok || !b.state || !b.state.ok) { continue; }
       var adp = P.apparatusDewPoint(a.state, b.state);
       if (!adp) { continue; }
       var x2 = view.x(b.state.db);
@@ -520,13 +656,27 @@
       out.push('<line class="psy-adp-line" x1="' + x2.toFixed(1) + '" y1="' + y2.toFixed(1) +
                '" x2="' + xa.toFixed(1) + '" y2="' + ya.toFixed(1) + '"/>');
       out.push('<circle class="psy-adp-dot" cx="' + xa.toFixed(1) + '" cy="' + ya.toFixed(1) + '" r="4"/>');
+      boxes.push({ x0: xa - 5, y0: ya - 5, x1: xa + 5, y1: ya + 5 });
+
       /* Down and to the right of the marker: up and to the left is outside
-         the saturation curve, and therefore outside the clip. */
+         the saturation curve, and therefore outside the clip. Stepped further
+         down while it would sit on a state marker or another ADP label. */
+      var text = 'ADP ' + U.t(adp.t).toFixed(1) + U.tUnit;
+      var width = (text.length - 5) * 6.2 + 4;
+      var box = null;
+      for (var row = 0; row < 6; row++) {
+        var ty = ya + 15 + row * 13;
+        var cand = { x0: xa + 6, y0: ty - 10, x1: xa + 8 + width, y1: ty + 3, ty: ty };
+        if (cand.y1 > PLOT.y1 - 2) { break; }
+        var hit = markers.concat(boxes).some(function (m) { return overlap(cand, m); });
+        if (!hit) { box = cand; break; }
+        if (!box) { box = cand; }
+      }
+      boxes.push(box);
       out.push('<text class="psy-label psy-label--adp" x="' + (xa + 8).toFixed(1) +
-               '" y="' + (ya + 15).toFixed(1) + '" text-anchor="start">ADP ' +
-               adp.t.toFixed(1) + '&#176;C</text>');
+               '" y="' + box.ty.toFixed(1) + '" text-anchor="start">' + text + '</text>');
     }
-    return out.join('');
+    return { svg: out.join(''), boxes: boxes };
   }
 
   /* Text with a knocked-out backdrop — see the note in drawPoints. */
@@ -539,29 +689,46 @@
            common + content + '</text>';
   }
 
-  function drawPoints(view, points) {
+  function drawPoints(view, points, taken) {
     var out = [];
     var placed = [];
+    var markers = markerBoxes(view, points);
+    var lines = processLines(view, points);
 
     /* Each label is two lines of text, so a cluster of states a few degrees
        apart — an off-coil, a supply and a room condition, which is the normal
        case — piles four or six lines on the same spot and none of them can be
-       read. Positions are therefore chosen against the ones already placed:
-       first the preferred side, then the other side, then progressively
-       further above and below. A leader line is drawn whenever the label ends
-       up far enough from its marker that the pairing stops being obvious. */
-    var LW = 128;      /* width to reserve for a label block, px             */
+       read. Each label is therefore given a box sized to its own text and
+       tried in turn on the preferred side, the other side, then further above
+       and below, until it is clear of the labels already placed, of every
+       state marker, of the apparatus dew point labels and of the process
+       lines. A leader line is drawn whenever the label ends up far enough from
+       its marker that the pairing stops being obvious. */
     var LH = 30;       /* height of the two lines, px                        */
 
-    function clashes(box) {
-      return placed.some(function (b) {
-        return Math.abs(b.x - box.x) < LW && Math.abs(b.y - box.y) < LH;
-      });
+    function boxAt(cand, width) {
+      return {
+        x0: cand.anchor === 'start' ? cand.x - 2 : cand.x - width - 2,
+        x1: cand.anchor === 'start' ? cand.x + width + 2 : cand.x + 2,
+        y0: cand.y - 11,
+        y1: cand.y + 17
+      };
     }
 
+    function trouble(box, own) {
+      var n = 0;
+      placed.forEach(function (b) { if (overlap(box, b)) { n += 4; } });
+      (taken || []).forEach(function (b) { if (overlap(box, b)) { n += 3; } });
+      markers.forEach(function (b, k) { if (k !== own && overlap(box, b)) { n += 3; } });
+      lines.forEach(function (seg) { if (lineCrosses(seg, box)) { n += 1; } });
+      return n;
+    }
+
+    var shown = -1;
     points.forEach(function (pt, i) {
       var s = pt.state;
       if (!s || !s.ok) { return; }
+      shown += 1;
       var x = view.x(s.db);
       var y = view.y(s.W * 1000);
       var colour = 'var(' + pt.colour + ')';
@@ -571,27 +738,34 @@
       out.push('<circle class="psy-pt" style="fill:' + colour + '" cx="' + x.toFixed(1) +
                '" cy="' + y.toFixed(1) + '" r="5.5"/>');
 
+      var rawName = String(pt.label || ('Point ' + (i + 1)));
+      var name = esc(rawName);
+      var subText = U.t(s.db).toFixed(1) + ' ' + U.tUnit + ' &#183; ' + s.rh.toFixed(0) + '% &#183; ' +
+                    U.w(s.W * 1000).toFixed(U.wDigits) + ' ' + U.wUnit;
+      var subLength = subText.replace(/&#\d+;/g, 'x').length;
+      var width = Math.max(rawName.length * 7.2, subLength * 6.1);
+
       /* Near the right edge the label has to open leftwards or it is clipped. */
-      var preferRight = x < PLOT.x1 - 150;
-      var candidates = [];
-      [0, -1, 1, -2, 2, -3, 3].forEach(function (row) {
-        [preferRight, !preferRight].forEach(function (toRight) {
-          candidates.push({
+      var preferRight = x + 13 + width < PLOT.x1 + M.right - 6;
+      var best = null;
+      var bestScore = Infinity;
+      [0, -1, 1, -2, 2, -3, 3, -4, 4].forEach(function (row, order) {
+        [preferRight, !preferRight].forEach(function (toRight, side) {
+          var cand = {
             x: toRight ? x + 13 : x - 13,
             y: y - 12 + row * LH,
             anchor: toRight ? 'start' : 'end'
-          });
+          };
+          if (cand.y < PLOT.y0 + 16 || cand.y > PLOT.y1 - 18) { return; }
+          var box = boxAt(cand, width);
+          if (box.x0 < 2 || box.x1 > VB.w - 2) { return; }
+          /* Clear spots win; among those, the nearest to the marker. */
+          var score = trouble(box, shown) * 100 + order * 2 + side;
+          if (score < bestScore) { bestScore = score; best = cand; best.box = box; }
         });
       });
-
-      var spot = null;
-      for (var c = 0; c < candidates.length; c++) {
-        var cand = candidates[c];
-        if (cand.y < PLOT.y0 + 16 || cand.y > PLOT.y1 - 18) { continue; }
-        if (!clashes(cand)) { spot = cand; break; }
-      }
-      if (!spot) { spot = candidates[0]; }
-      placed.push(spot);
+      var spot = best || { x: x + 13, y: y - 12, anchor: 'start', box: boxAt({ x: x + 13, y: y - 12, anchor: 'start' }, width) };
+      placed.push(spot.box);
 
       /* Once a label has been pushed clear of its marker, say which marker it
          belongs to rather than leaving the reader to guess. */
@@ -600,10 +774,6 @@
                  '" x2="' + spot.x.toFixed(1) + '" y2="' + (spot.y - 4).toFixed(1) + '"/>');
       }
 
-      var name = esc(pt.label || ('Point ' + (i + 1)));
-      var sub = s.db.toFixed(1) + '&#176;C &#183; ' + s.rh.toFixed(0) + '% &#183; ' +
-                (s.W * 1000).toFixed(1) + ' g/kg';
-
       /* Each label is drawn twice: once as a thick stroke in the surface
          colour to knock a hole in the property lines underneath, then again
          as the text itself. `paint-order: stroke` would do the same in one
@@ -611,7 +781,7 @@
          including some SVG-to-image paths — and where it is missed the label
          becomes a solid white blob. Two elements always work. */
       out.push(haloText('psy-pt-label', spot, 0, name, colour));
-      out.push(haloText('psy-pt-sub', spot, 13, sub, null));
+      out.push(haloText('psy-pt-sub', spot, 13, subText, null));
     });
     return out.join('');
   }
@@ -693,13 +863,13 @@
     return '<rect class="psy-frame" x="' + PLOT.x0 + '" y="' + PLOT.y0 +
       '" width="' + (PLOT.x1 - PLOT.x0) + '" height="' + (PLOT.y1 - PLOT.y0) + '"/>' +
       '<text class="psy-axis-title" x="' + ((PLOT.x0 + PLOT.x1) / 2) + '" y="' + (VB.h - 14) +
-      '" text-anchor="middle">Dry-bulb temperature (&#176;C)</text>' +
+      '" text-anchor="middle">Dry-bulb temperature (' + U.tUnit + ')</text>' +
       '<text class="psy-axis-title" x="' + (VB.w - 16) + '" y="' + ((PLOT.y0 + PLOT.y1) / 2) +
       '" text-anchor="middle" transform="rotate(90,' + (VB.w - 16) + ',' + ((PLOT.y0 + PLOT.y1) / 2) +
-      ')">Humidity ratio (g/kg dry air)</text>' +
+      ')">Humidity ratio (' + U.wUnit + ' dry air)</text>' +
       '<text class="psy-axis-title psy-axis-title--h" x="' + (PLOT.x0 - 52) + '" y="' + (PLOT.y0 + 190) +
       '" text-anchor="middle" transform="rotate(-90,' + (PLOT.x0 - 52) + ',' + (PLOT.y0 + 190) +
-      ')">Enthalpy (kJ/kg dry air)</text>';
+      ')">Enthalpy (' + U.hUnit + ' dry air)</text>';
   }
 
   /* The chart's own caption, as printed on ASHRAE Chart No. 1: which pressure
@@ -710,7 +880,7 @@
     /* One line in the top margin, right-aligned to the frame, clear of every
        property line and of the enthalpy scale in the top-left corner. */
     var y = PLOT.y0 - 10;
-    var parts = ['Barometric pressure ' + view.p.toFixed(3) + ' kPa'];
+    var parts = ['Barometric pressure ' + U.pressure(view.p)];
     if (opts.captionAltitude) { parts.push(opts.captionAltitude); }
     return '<text class="psy-caption psy-caption--title" x="' + PLOT.x0 + '" y="' + y +
            '" text-anchor="start">ASHRAE-style psychrometric chart</text>' +
@@ -737,12 +907,15 @@
   /* --------------------------------------------------------------- render */
 
   /* points: [{ label, colour, state }]  — colour is a --chart-N token name.
-     opts:   { rangeMode, pressure, layers:{}, activeSegment, showAdp, showLegs } */
+             a point may also carry mixed (true) and mixFrom ([index, index]).
+     opts:   { rangeMode, pressure, layers:{}, activeSegment, showAdp, showLegs, ip } */
   function render(points, opts) {
     var pressure = opts.pressure;
+    U = opts.ip ? IP_UNITS : SI_UNITS;
+    var presets = opts.ip ? PRESETS_IP : PRESETS;
     var range = opts.rangeMode === 'auto'
       ? autoRange(points.map(function (p) { return p.state; }), pressure)
-      : PRESETS[opts.rangeMode] || PRESETS.normal;
+      : presets[opts.rangeMode] || presets.normal;
     var view = makeView(range, pressure);
     var L = opts.layers || {};
 
@@ -773,11 +946,12 @@
     out.push(drawFrame(view));
     out.push(drawCaption(view, opts));
 
+    var adp = drawAdp(view, points, opts);
     out.push('<g clip-path="url(#psy-body)">');
-    out.push(drawAdp(view, points, opts));
+    out.push(adp.svg);
     out.push(drawSegments(view, points, opts));
     out.push('</g>');
-    out.push(drawPoints(view, points));
+    out.push(drawPoints(view, points, adp.boxes));
 
     if (L.protractor) { out.push(drawProtractor(view, opts.shr)); }
 
@@ -792,6 +966,7 @@
     makeView: makeView,
     autoRange: autoRange,
     PRESETS: PRESETS,
+    presetLabels: presetLabels,
     PLOT: PLOT,
     VB: VB
   };

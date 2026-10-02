@@ -26,7 +26,22 @@
                            : 'Choose both to continue. Answers are kept separately for each factory.';
   }
   // A result belongs to the product/factory it was converted for: changing either clears it.
-  function resetResult() { var clear = $('btn-clear'); if (clear) clear.click(); }
+  // The chosen PDF and the pasted text stay, ready to convert for the new choice.
+  function resetResult() {
+    if (window.CMMaker) window.CMMaker.dropResult();
+    var status = $('status'); if (status) { status.textContent = ''; status.className = 'status'; }
+  }
+  // The choice is kept for this browser tab (sessionStorage), so a reload or a visit to the library does not lose it.
+  var KEEP = 'cm.scope';
+  function remember() { try { sessionStorage.setItem(KEEP, JSON.stringify({ who: String(window.Hub.token() || ''), p: productSel.value, f: factorySel.value })); } catch (e) { /* not kept */ } }
+  function restore() {
+    var k = null;
+    try { k = JSON.parse(sessionStorage.getItem(KEEP)); } catch (e) { k = null; }
+    if (!k || !k.p || k.who !== String(window.Hub.token() || '')) return;
+    productSel.value = k.p; if (productSel.value !== k.p) { productSel.value = ''; return; }
+    fillFactories();
+    factorySel.value = k.f || ''; if (factorySel.value !== (k.f || '')) factorySel.value = '';
+  }
 
   function fillFactories() {
     var p = products.filter(function (x) { return x.id === productSel.value; })[0];
@@ -36,8 +51,8 @@
     factorySel.disabled = !p;
   }
 
-  productSel.addEventListener('change', function () { fillFactories(); resetResult(); applyGate(); });
-  factorySel.addEventListener('change', function () { resetResult(); applyGate(); });
+  productSel.addEventListener('change', function () { fillFactories(); resetResult(); applyGate(); remember(); });
+  factorySel.addEventListener('change', function () { resetResult(); applyGate(); remember(); });
 
   (window.hubReady || Promise.reject(new Error('Not signed in'))).then(function (profile) {
     if (window.Hub.canEdit(profile, 'compliance-maker')) $('lib-manage').hidden = false;
@@ -48,7 +63,7 @@
     productSel.appendChild(option('', 'Choose a product'));
     products.forEach(function (p) { productSel.appendChild(option(p.id, p.name)); });
     productSel.disabled = false;
-    fillFactories(); applyGate();
+    fillFactories(); restore(); applyGate();
   }, function (err) {
     productSel.textContent = ''; productSel.appendChild(option('', 'Could not load'));
     hint.textContent = 'Could not load the product list: ' + (err && err.message ? err.message : err) + ' Refresh the page to try again.';

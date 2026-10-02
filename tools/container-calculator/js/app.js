@@ -5,8 +5,8 @@
 
 import { packItems, compareFleet, VEHICLE_PRESETS, PALLET_PRESETS, DEFAULT_PALLET_CLEARANCE } from './packer.js';
 import { isoScene, planScene, elevationScene, sceneToSvg, tokenFor } from './draw.js';
-import { readWorkbook, parseCsv, rowsToItems, templateWorkbook, buildWorkbook } from './xlsx-io.js';
-import { PdfDoc } from './pdf.js';
+import { readWorkbook, parseCsv, rowsToItems, templateWorkbook, cargoWorkbook, buildWorkbook } from './xlsx-io.js';
+import { PdfDoc, pdfCanPrint, PDF_MARKER } from './pdf.js';
 
 const STORAGE_KEY = 'tn.container-calculator.v1';
 
@@ -14,8 +14,9 @@ const state = {
   project: '',
   vehicleId: 'tr12',
   custom: { length: 12, width: 2.4, height: 3.3, payload: 24000 },
-  cost: 0,
-  costTouched: false,   // true once the user edits the cost, so the sample never overwrites them
+  cost: 0,              // empty unless the user types one; never pre-filled
+  costTouched: false,   // true once the user edits the cost
+  currency: '',         // free text, shown with the freight estimate
   unit: 'm',
   options: { allowStacking: true, allowTilt: false, gap: 0.1 },
   pallet: { on: false,
@@ -47,6 +48,72 @@ const fmt = (n, d = 2) => Number(n).toLocaleString(undefined, { minimumFractionD
 const pct = (n) => `${Math.round(n * 100)}%`;
 const toDisplay = (metres) => (state.unit === 'mm' ? Math.round(metres * 1000) : Number(metres.toFixed(3)));
 const fromDisplay = (value) => (state.unit === 'mm' ? Number(value) / 1000 : Number(value));
+const piecesWord = (n) => `${n} piece${n === 1 ? '' : 's'}`;
+
+/* The item itself, as entered. A placement's l and w also carry the
+   clearance to the next item, which belongs in the positions, not in the
+   size printed on a packing list. A loaded pallet reports its deck. */
+function enteredSize(p) {
+  if (p.pallet) return { l: p.pallet.deckL, w: p.pallet.deckW, h: p.rawH };
+  return { l: p.rawL, w: p.rawW, h: p.rawH };
+}
+
+function clearanceLine() {
+  const mm = Math.round(state.options.gap * 1000);
+  return mm > 0
+    ? `Clearance ${mm} mm is kept between items. Sizes are as entered; positions include the clearance.`
+    : 'No clearance between items.';
+}
+
+function freightText(vehicles) {
+  return `${state.currency.trim()} ${(state.cost * vehicles).toLocaleString()}`.trim();
+}
+
+/* ------------------------------------------------------------------ *
+ * Input checks
+ *
+ * Nothing is corrected behind the user's back: a bad value gets a message
+ * next to it and Calculate stays off until it is fixed.
+ * ------------------------------------------------------------------ */
+
+/* Messages for the setup fields, keyed by selector. */
+const fieldErrors = {};
+
+function setFieldError(selector, message) {
+  if (message) fieldErrors[selector] = message; else delete fieldErrors[selector];
+  const box = $(`${selector}-err`);
+  if (box) { box.textContent = message || ''; box.hidden = !message; }
+  const input = $(selector);
+  if (input) { if (message) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid'); }
+}
+
+const CUSTOM_FIELDS = ['#c-length', '#c-width', '#c-height', '#c-payload'];
+
+/* Setup problems that stop a calculation. A custom-vehicle field only
+   counts while the custom vehicle is the one selected. */
+function setupBlocked() {
+  if (fieldErrors['#opt-gap']) return true;
+  return state.vehicleId === 'custom' && CUSTOM_FIELDS.some((f) => fieldErrors[f]);
+}
+
+/* Problems in one cargo row, keyed by field. A row with no dimensions at
+   all is an unfinished row, not an error: it is left out as before. */
+function rowErrors(item) {
+  const out = {};
+  const dims = ['length', 'width', 'height'];
+  const started = dims.some((k) => Number.isNaN(item[k]) || item[k] !== 0);
+  for (const k of dims) {
+    if (Number.isNaN(item[k])) out[k] = 'Enter a number.';
+    else if (item[k] < 0) out[k] = 'Must be above 0.';
+    else if (started && item[k] === 0) out[k] = 'Needed.';
+  }
+  if (Number.isNaN(item.weight)) out.weight = 'Enter a number.';
+  else if (item.weight < 0) out.weight = 'Cannot be negative.';
+  if (!(Number.isInteger(item.qty) && item.qty >= 1)) out.qty = 'Whole number, 1 or more.';
+  return out;
+}
+
+const hasRowErrors = () => state.items.some((i) => Object.keys(rowErrors(i)).length > 0);
 
 function blankItem() {
   return { tag: '', length: 0, width: 0, height: 0, weight: 0, qty: 1, stackable: true };
@@ -90,7 +157,7 @@ function save() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       project: state.project, vehicleId: state.vehicleId, custom: state.custom,
-      cost: state.cost, costTouched: state.costTouched, unit: state.unit,
+      cost: state.cost, costTouched: state.costTouched, currency: state.currency, unit: state.unit,
       options: state.options, pallet: state.pallet, items: state.items,
     }));
   } catch { /* storage unavailable — the tool still works */ }
@@ -122,6 +189,17 @@ function restore() {
     }
     if (!state.pallet.types.length && !state.pallet.useCustom) state.pallet.types = ['eur1'];
     delete state.pallet.type;
+
+    /* A cost the user never typed was the old pre-filled sample: drop it. */
+    if (!state.costTouched) state.cost = 0;
+    if (typeof state.currency !== 'string') state.currency = '';
+    if (!(state.options.gap >= 0 && state.options.gap <= 0.5)) state.options.gap = 0.1;
+    if (!Array.isArray(state.items)) state.items = [];
+    /* JSON has no NaN, so a field that held unreadable text comes back null. */
+    for (const item of state.items) {
+      for (const k of ['length', 'width', 'height', 'weight']) if (typeof item[k] !== 'number') item[k] = 0;
+      if (typeof item.qty !== 'number') item.qty = NaN;
+    }
   } catch { /* ignore corrupt state */ }
 }
 
@@ -155,6 +233,9 @@ function buildVehicleSelect() {
 /** Write a value into a control, unless the user is mid-keystroke in it. */
 function setValue(selector, value) {
   const node = $(selector);
+  /* A field showing an error keeps what the user typed, so the message
+     still sits next to the value it is about. */
+  if (fieldErrors[selector]) return;
   if (node && node !== document.activeElement) node.value = value;
 }
 
@@ -275,6 +356,7 @@ function syncSetupPanel() {
   setValue('#project', state.project);
   setValue('#vehicle', state.vehicleId);
   setValue('#cost', state.cost || '');
+  setValue('#currency', state.currency);
   $('#opt-stack').checked = state.options.allowStacking;
   $('#opt-tilt').checked = state.options.allowTilt;
   $('#opt-pallet').checked = state.pallet.on;
@@ -293,9 +375,7 @@ function syncSetupPanel() {
   const v = activeVehicle();
   $('#vehicle-hint').textContent =
     `Internal ${fmt(v.length)} × ${fmt(v.width)} × ${fmt(v.height)} m · payload ${Math.round(v.payload).toLocaleString()} kg`;
-  $('#cost-hint').textContent = state.costTouched
-    ? 'Any currency. Drives the freight estimate.'
-    : 'Indicative USD sample — edit it for a real quote.';
+  $('#cost').placeholder = v.cost ? `e.g. ${v.cost}` : 'e.g. 2800';
 }
 
 /* ------------------------------------------------------------------ *
@@ -312,6 +392,22 @@ function renderCargo() {
 
   state.items.forEach((item, i) => {
     const tr = el('tr');
+
+    /* One message slot under each input; showErrors fills them in place so a
+       keystroke never rebuilds the row and loses the caret. */
+    const slots = {};
+    const slot = (td, key) => { slots[key] = el('span', 'cc-err'); slots[key].hidden = true; td.appendChild(slots[key]); };
+    const inputs = {};
+    const showErrors = () => {
+      const errs = rowErrors(item);
+      for (const key of Object.keys(slots)) {
+        slots[key].textContent = errs[key] || '';
+        slots[key].hidden = !errs[key];
+        if (errs[key]) inputs[key].setAttribute('aria-invalid', 'true'); else inputs[key].removeAttribute('aria-invalid');
+      }
+    };
+    /* '' is "not filled in"; text a number field cannot read is NaN. */
+    const readNumber = (input, blank) => (input.validity.badInput ? NaN : input.value === '' ? blank : Number(input.value));
 
     const tagCell = el('td', 'col-tag');
     const swatch = el('span', 'cc-swatch');
@@ -334,8 +430,15 @@ function renderCargo() {
       input.inputMode = 'decimal';
       input.value = item[key] ? toDisplay(item[key]) : '';
       input.setAttribute('aria-label', `${key} for row ${i + 1} in ${unitLabel}`);
-      input.addEventListener('input', () => { item[key] = fromDisplay(input.value) || 0; markStale(); });
+      input.addEventListener('input', () => {
+        const n = readNumber(input, 0);
+        item[key] = state.unit === 'mm' ? n / 1000 : n;
+        showErrors();
+        markStale();
+      });
+      inputs[key] = input;
       td.appendChild(input);
+      slot(td, key);
       tr.appendChild(td);
     }
 
@@ -347,8 +450,10 @@ function renderCargo() {
     wInput.inputMode = 'decimal';
     wInput.value = item.weight || '';
     wInput.setAttribute('aria-label', `Gross weight for row ${i + 1} in kilograms`);
-    wInput.addEventListener('input', () => { item.weight = Number(wInput.value) || 0; markStale(); });
+    wInput.addEventListener('input', () => { item.weight = readNumber(wInput, 0); showErrors(); markStale(); });
+    inputs.weight = wInput;
     wTd.appendChild(wInput);
+    slot(wTd, 'weight');
     tr.appendChild(wTd);
 
     const qTd = el('td', 'num');
@@ -357,23 +462,27 @@ function renderCargo() {
     qInput.min = '1';
     qInput.step = '1';
     qInput.inputMode = 'numeric';
-    qInput.value = item.qty;
+    qInput.value = Number.isNaN(item.qty) ? '' : item.qty;
     qInput.setAttribute('aria-label', `Quantity for row ${i + 1}`);
-    qInput.addEventListener('input', () => { item.qty = Math.max(1, Math.round(Number(qInput.value) || 1)); markStale(); });
+    qInput.addEventListener('input', () => { item.qty = readNumber(qInput, NaN); showErrors(); markStale(); });
+    inputs.qty = qInput;
     qTd.appendChild(qInput);
+    slot(qTd, 'qty');
     tr.appendChild(qTd);
 
-    const sTd = el('td');
+    const sTd = el('td', 'cc-stack');
+    const sLabel = el('label', 'cc-tick');
     const sInput = el('input');
     sInput.type = 'checkbox';
     sInput.checked = item.stackable;
     sInput.setAttribute('aria-label', `Other items may be stacked on row ${i + 1}`);
     sInput.addEventListener('change', () => { item.stackable = sInput.checked; markStale(); });
-    sTd.appendChild(sInput);
+    sLabel.appendChild(sInput);
+    sTd.appendChild(sLabel);
     tr.appendChild(sTd);
 
     const rTd = el('td');
-    const remove = el('button', 'btn btn--quiet btn--sm');
+    const remove = el('button', 'btn btn--quiet btn--sm cc-remove');
     remove.type = 'button';
     remove.innerHTML = window.TN ? window.TN.icon('trash', 18) : '&times;';
     remove.setAttribute('aria-label', `Remove row ${i + 1}${item.tag ? `, ${item.tag}` : ''}`);
@@ -385,6 +494,14 @@ function renderCargo() {
     rTd.appendChild(remove);
     tr.appendChild(rTd);
 
+    /* Enter in any cell of the row starts the calculation, as it would in a form. */
+    tr.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+      e.preventDefault();
+      if (!$('#run-btn').disabled && !$('#run-btn').hidden) run();
+    });
+
+    showErrors();
     body.appendChild(tr);
   });
 
@@ -392,10 +509,11 @@ function renderCargo() {
 }
 
 function updateCounts() {
-  const pieces = state.items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
+  const pieces = state.items.reduce((s, i) => s + (Number.isInteger(i.qty) && i.qty >= 1 ? i.qty : 0), 0);
   $('#cargo-count').textContent = state.items.length
-    ? `${state.items.length} row${state.items.length === 1 ? '' : 's'} · ${pieces} piece${pieces === 1 ? '' : 's'}`
+    ? `${state.items.length} row${state.items.length === 1 ? '' : 's'} · ${piecesWord(pieces)}`
     : 'No items yet';
+  $('#cargo-xlsx-btn').disabled = usableItems().length === 0 || hasRowErrors();
   $('#empty-state').hidden = state.items.length > 0;
   $('#cargo-table-wrap').hidden = state.items.length === 0;
 }
@@ -423,28 +541,73 @@ function markStale() {
   syncRunButton();
 }
 
-/* The button states the work it is about to do, so a 12,000-piece list
-   announces itself before it is run rather than after. */
+/* The button states the work it is about to do, so a large list announces
+   itself before it is run rather than after. */
 function syncRunButton() {
   const items = usableItems();
   const pieces = items.reduce((sum, i) => sum + Math.max(1, Math.round(Number(i.qty) || 1)), 0);
   const btn = $('#run-btn');
   const note = $('#run-note');
-  btn.disabled = pieces === 0;
-  btn.textContent = pieces ? `Calculate ${pieces} piece${pieces === 1 ? '' : 's'}` : 'Calculate';
-  if (!pieces) note.textContent = 'Add at least one row with length, width and height.';
-  else if (stale && plan) note.textContent = 'Cargo changed — results below are out of date.';
-  else if (stale) note.textContent = pieces > HEAVY_PIECES
-    ? 'Large list — this may take a while and cannot be interrupted once started.'
-    : '';
-  else note.textContent = '';
+  const rowsBad = hasRowErrors();
+  const setupBad = setupBlocked();
+  const tooMany = pieces > MAX_PIECES;
+  const blocked = pieces === 0 || rowsBad || setupBad || tooMany;
+  btn.disabled = blocked;
+  btn.textContent = blocked ? 'Calculate' : `Calculate ${piecesWord(pieces)}`;
+  if (setupBad) note.textContent = 'Fix the fields marked above first.';
+  else if (rowsBad) note.textContent = 'Fix the values marked in the cargo list first.';
+  else if (!pieces) note.textContent = 'Add at least one row with length, width and height.';
+  else if (tooMany) note.textContent = `${pieces.toLocaleString()} pieces is over the limit of ${MAX_PIECES.toLocaleString()}. Split the list into shipments.`;
+  else {
+    const bits = [];
+    if (stale && plan) bits.push('Cargo or settings changed — results below are out of date.');
+    if (stale && pieces > HEAVY_PIECES) bits.push(`Large list — expect roughly ${roughDuration(pieces)}. Cancel stops it at any time.`);
+    note.textContent = bits.join(' ');
+  }
   $('#results').classList.toggle('is-stale', stale && !!plan);
+  syncDownloads();
 }
 
-/* Above this, the run is slow enough to warn about. It is a rough threshold,
-   not a limit — nothing is blocked. */
+/* Above this, the run is slow enough to say so first. */
 const HEAVY_PIECES = 400;
 
+/* The search time grows with the square of the piece count: measured at about
+   6 s for 1,000 pieces, 22 s for 2,000, 45 s for 3,000 and 2 minutes for
+   5,000. Past that the wait is long enough that a list is better split into
+   shipments, so 5,000 is the limit. */
+const MAX_PIECES = 5000;
+
+function roughDuration(pieces) {
+  const secs = 6 * (pieces / 1000) ** 2;
+  if (secs < 10) return 'a few seconds';
+  if (secs < 50) return `${Math.round(secs / 10) * 10} seconds`;
+  const mins = Math.max(1, Math.round(secs / 60));
+  return `${mins} minute${mins === 1 ? '' : 's'}`;
+}
+
+/* The downloads carry the plan on screen. While that plan is out of date they
+   are switched off, with the reason next to them, so an old plan cannot go
+   out under new cargo. The same line says what the PDF cannot print. */
+function syncDownloads() {
+  const off = !plan || stale;
+  $('#pdf-btn').disabled = off;
+  $('#xlsx-btn').disabled = off;
+  const bits = [];
+  if (plan && stale) bits.push('Downloads are off: the results are out of date. Press Calculate first.');
+  const tags = state.items.filter((i) => !pdfCanPrint(i.tag || '')).length;
+  if (tags) bits.push(`${tags} tag${tags === 1 ? ' has' : 's have'} characters the PDF cannot print; they show as ${PDF_MARKER} there. The Excel files keep them as typed.`);
+  const note = $('#download-note');
+  note.textContent = bits.join(' ');
+  note.hidden = bits.length === 0;
+
+  const warn = $('#project-warn');
+  const projectOk = pdfCanPrint(state.project);
+  warn.textContent = projectOk ? '' : `The PDF prints Latin letters only; the other characters show as ${PDF_MARKER} there.`;
+  warn.hidden = projectOk;
+}
+
+/* Rows with a full set of dimensions. Rows with a bad value never get this
+   far: Calculate is off while any row shows a message. */
 function usableItems() {
   return state.items.filter((i) => i.length > 0 && i.width > 0 && i.height > 0);
 }
@@ -620,8 +783,20 @@ function setProgress(fraction, label) {
   $('#progress-bar').setAttribute('aria-valuenow', String(pct));
   $('#progress-pct').textContent = `${pct}%`;
   if (label) {
-    const secs = Math.round((Date.now() - startedAt) / 1000);
-    $('#progress-text').textContent = secs > 3 ? `${label} — ${secs}s` : label;
+    const elapsed = (Date.now() - startedAt) / 1000;
+    const secs = Math.round(elapsed);
+    /* Time left is the elapsed time scaled by the work still to do. It is an
+       estimate, so it is rounded and says "about". */
+    let text = label;
+    if (secs > 3) {
+      text += ` — ${secs} s so far`;
+      if (fraction > 0.05 && fraction < 1) {
+        const left = elapsed * (1 - fraction) / fraction;
+        text += left >= 90 ? `, about ${Math.round(left / 60)} min left`
+          : left >= 5 ? `, about ${Math.round(left / 5) * 5} s left` : ', nearly done';
+      }
+    }
+    $('#progress-text').textContent = text;
   }
 }
 
@@ -638,9 +813,8 @@ function applyResult(nextPlan, nextFleet) {
   numberPieces(plan);
   fleet = nextFleet;
   renderResults();
-  $('#pdf-btn').disabled = false;
-  $('#xlsx-btn').disabled = false;
   stale = false;
+  syncDownloads();
 }
 
 function run() {
@@ -652,8 +826,6 @@ function run() {
     plan = null;
     fleet = [];
     $('#results').innerHTML = '<p class="empty">Add cargo, then press Calculate.</p>';
-    $('#pdf-btn').disabled = true;
-    $('#xlsx-btn').disabled = true;
     stale = false;
     stopWorker();
     return;
@@ -753,9 +925,7 @@ function renderResults() {
     [`${Math.round(s.totalWeight).toLocaleString()} kg`, 'Total gross weight'],
     [pct(s.avgVolumeUse), 'Average space used'],
   ];
-  if (state.cost > 0) {
-    cards[3] = [`${(state.cost * s.vehicles).toLocaleString()}`, 'Estimated freight cost'];
-  }
+  if (state.cost > 0) cards.push([freightText(s.vehicles), 'Estimated freight cost']);
   for (const [value, label, accent] of cards) {
     const card = el('div', 'stat');
     const val = el('div', accent ? 'stat__value cc-headline' : 'stat__value', value);
@@ -770,6 +940,7 @@ function renderResults() {
     note.textContent = s.strategiesTried > 1
       ? `Best of ${s.strategiesTried} loading orders tried — ${s.strategyLabel} won.`
       : `Loading order: ${s.strategyLabel}.`;
+    note.textContent += ` ${clearanceLine()}`;
     box.appendChild(note);
   }
 
@@ -798,7 +969,7 @@ function renderResults() {
     const body = el('div');
     body.appendChild(el('h3', null, `Centre of gravity to review on ${unbalanced.length} vehicle${unbalanced.length === 1 ? '' : 's'}`));
     body.appendChild(el('p', null,
-      `Vehicle ${unbalanced.map((l) => l.index).join(', ')} — the load sits outside the 45–55% band. Redistribute pieces or add lashing before dispatch.`));
+      `Vehicle ${unbalanced.map((l) => l.index).join(', ')} — the load sits outside the 45–55% band (a rule of thumb, not a standard). Redistribute pieces or add lashing before dispatch.`));
     alert.appendChild(body);
     box.appendChild(alert);
   }
@@ -849,14 +1020,26 @@ function renderResults() {
   box.appendChild(legend);
 }
 
+/* Drawing sizes. Label sizes are in drawing units, so a drawing made 520
+   wide and shown 280 wide on a phone would halve them. On a narrow screen
+   the drawing is made narrow instead, and labels get a larger minimum. */
+const narrowScreen = window.matchMedia('(max-width: 560px)');
+
+function viewOptions() {
+  return narrowScreen.matches
+    ? { iso: { width: 320, height: 230, pad: 12 }, flat: { width: 320, height: 150, pad: 30 }, minFont: 10 }
+    : { iso: {}, flat: {}, minFont: 8 };
+}
+
 function loadCard(load, v) {
   const card = el('article', 'cc-load');
+  const view = viewOptions();
 
   const head = el('header');
   head.appendChild(el('h4', null, `Vehicle ${load.index} — ${v.name}`));
   const stats = el('div', 'cc-load-stats');
   stats.append(
-    el('span', null, `${load.pieces} pieces`),
+    el('span', null, piecesWord(load.pieces)),
     el('span', null, `${fmt(load.cbm)} m³`),
     el('span', null, `${Math.round(load.weight).toLocaleString()} kg`),
     el('span', null, `${fmt(load.usedLength)} m of ${fmt(v.length)} m used`),
@@ -869,14 +1052,14 @@ function loadCard(load, v) {
 
   const isoFig = el('figure');
   isoFig.appendChild(el('figcaption', null, '3D view'));
-  isoFig.innerHTML += sceneToSvg(isoScene(load, v), `Isometric stowage view of vehicle ${load.index}`);
+  isoFig.innerHTML += sceneToSvg(isoScene(load, v, view.iso), `Isometric stowage view of vehicle ${load.index}`, view.minFont);
   const isoWrap = el('div', stacked ? 'cc-view' : 'cc-view cc-view--full');
   isoWrap.appendChild(isoFig);
   views.appendChild(isoWrap);
 
   const planFig = el('figure');
   planFig.appendChild(el('figcaption', null, 'Plan view'));
-  planFig.innerHTML += sceneToSvg(planScene(load, v), `Plan view of vehicle ${load.index}`);
+  planFig.innerHTML += sceneToSvg(planScene(load, v, view.flat), `Plan view of vehicle ${load.index}`, view.minFont);
   const planWrap = el('div', 'cc-view');
   planWrap.appendChild(planFig);
   views.appendChild(planWrap);
@@ -884,7 +1067,7 @@ function loadCard(load, v) {
   if (stacked) {
     const elevFig = el('figure');
     elevFig.appendChild(el('figcaption', null, 'Side elevation'));
-    elevFig.innerHTML += sceneToSvg(elevationScene(load, v), `Side elevation of vehicle ${load.index}`);
+    elevFig.innerHTML += sceneToSvg(elevationScene(load, v, view.flat), `Side elevation of vehicle ${load.index}`, view.minFont);
     const elevWrap = el('div', 'cc-view cc-view--full');
     elevWrap.appendChild(elevFig);
     views.appendChild(elevWrap);
@@ -904,8 +1087,8 @@ function loadCard(load, v) {
   details.appendChild(el('summary', null, `Piece list for vehicle ${load.index}`));
   const table = el('table', 'data');
   table.innerHTML =
-    '<thead><tr><th class="num">#</th><th>Tag</th><th class="num">L×W×H (m)</th><th class="num">Weight</th>' +
-    '<th class="num">Position x, y, z</th><th>Notes</th></tr></thead>';
+    '<thead><tr><th class="num">#</th><th>Tag</th><th class="num">L×W×H (m)</th><th class="num">Weight (kg)</th>' +
+    '<th class="num">Position x, y, z (m)</th><th>Notes</th></tr></thead>';
   const tbody = el('tbody');
   for (const p of load.placements) {
     const notes = [];
@@ -913,10 +1096,12 @@ function loadCard(load, v) {
     if (p.z > 1e-6) notes.push(`stacked at ${fmt(p.z)} m`);
     if (!p.stackable) notes.push('do not stack on top');
     const tr = el('tr');
+    const size = enteredSize(p);
+    if (Math.abs(p.il - p.rawL) > 1e-6 && !p.tilted) notes.unshift('turned 90°');
     tr.innerHTML =
       `<td class="num">${p.no}</td><td>${escapeHtml(p.tag)}</td>` +
-      `<td class="num">${fmt(p.l)} × ${fmt(p.w)} × ${fmt(p.h)}</td>` +
-      `<td class="num">${Math.round(p.weight).toLocaleString()} kg</td>` +
+      `<td class="num">${fmt(size.l)} × ${fmt(size.w)} × ${fmt(size.h)}</td>` +
+      `<td class="num">${Math.round(p.weight).toLocaleString()}</td>` +
       `<td class="num">${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)}</td>` +
       `<td>${notes.join(' · ') || '—'}</td>`;
     tbody.appendChild(tr);
@@ -925,6 +1110,7 @@ function loadCard(load, v) {
   const scroll = el('div', 'table-wrap');
   scroll.appendChild(table);
   details.appendChild(scroll);
+  details.appendChild(el('p', 'hint', `${clearanceLine()} Position is the corner nearest the nose, measured from the nose, the near side and the floor.`));
   card.appendChild(details);
 
   return card;
@@ -948,15 +1134,23 @@ async function handleFile(file) {
       rows = parseCsv(await file.text());
     }
     const result = rowsToItems(rows);
-    if (!result.items.length) throw new Error('No usable rows were found below the header.');
+    const shown = result.bad.slice(0, 5).map((b) => `row ${b.row}${b.tag ? ` (${b.tag})` : ''}: ${b.why}`);
+    if (result.bad.length > 5) shown.push(`and ${result.bad.length - 5} more`);
+    const badText = result.bad.length
+      ? `${result.bad.length} row(s) left out — ${shown.join('; ')}.`
+      : '';
+    if (!result.items.length) throw new Error(`No usable rows were found below the header. ${badText}`.trim());
+    const have = state.items.length;
+    if (have && !confirm(`Replace the ${have} row${have === 1 ? '' : 's'} in the cargo list with ${file.name}?`)) return;
     state.items = result.items;
     state.unit = 'm';
     renderCargo();
     syncSetupPanel();
     markStale();
-    const bits = [`Loaded ${result.items.length} rows from ${file.name}.`];
+    const bits = [`Loaded ${result.items.length} row${result.items.length === 1 ? '' : 's'} from ${file.name}.`];
     if (result.unit === 'mm') bits.push('Dimensions looked like millimetres, so they were converted to metres.');
     if (result.skipped) bits.push(`${result.skipped} row(s) without a full set of dimensions were skipped.`);
+    if (badText) bits.push(badText);
     bits.push('Press Calculate to pack it.');
     notify(bits.join(' '));
   } catch (err) {
@@ -993,11 +1187,19 @@ function parseColor(value, fallbackHex) {
 }
 
 function printPalette() {
-  const cs = getComputedStyle(document.documentElement);
+  /* Paper is white, so the report always takes the day colours: the night
+     palette is pale and its white piece numbers could not be read on it. The
+     theme is switched and put back within this one call, before the browser
+     paints, so nothing shows on screen. */
+  const root = document.documentElement;
+  const theme = root.getAttribute('data-theme');
+  root.setAttribute('data-theme', 'light');
+  const cs = getComputedStyle(root);
   const colors = {};
   for (const [token, fallback] of Object.entries(PRINT_FALLBACK)) {
     colors[token] = parseColor(cs.getPropertyValue(`--color-${token}`), fallback);
   }
+  if (theme === null) root.removeAttribute('data-theme'); else root.setAttribute('data-theme', theme);
   // Keep paper white and ink dark whatever the on-screen theme is.
   const luminance = colors.surface.reduce((a, b) => a + b, 0) / 3;
   if (luminance < 0.5) {
@@ -1037,23 +1239,23 @@ function buildPdf() {
   y = doc.paragraph(
     `${v.name} · internal ${fmt(v.length)} × ${fmt(v.width)} × ${fmt(v.height)} m · max payload ` +
     `${Math.round(v.payload).toLocaleString()} kg. Stacking ${state.options.allowStacking ? 'allowed' : 'not allowed'}; ` +
-    `turning on side ${state.options.allowTilt ? 'allowed' : 'not allowed'}; clearance ${Math.round(state.options.gap * 1000)} mm per item. ` +
+    `turning on side ${state.options.allowTilt ? 'allowed' : 'not allowed'}. ${clearanceLine()} ` +
     `Loading order: ${s.strategyLabel}${s.strategiesTried > 1 ? `, the best of ${s.strategiesTried} tried` : ''}.`,
     M, y, W, { size: 9, leading: 12 });
   y += 10;
 
-  const boxW = (W - 30) / 4;
   const kpi = [
     [String(s.vehicles), 'vehicles required'],
     [`${fmt(s.totalCbm)} m3`, 'total cargo volume'],
     [`${Math.round(s.totalWeight).toLocaleString()} kg`, 'total gross weight'],
     [pct(s.avgVolumeUse), 'average space used'],
   ];
-  if (state.cost > 0) kpi[3] = [(state.cost * s.vehicles).toLocaleString(), 'estimated freight cost'];
+  if (state.cost > 0) kpi.push([freightText(s.vehicles), 'estimated freight cost']);
+  const boxW = (W - 10 * (kpi.length - 1)) / kpi.length;
   kpi.forEach(([value, label], i) => {
     const x = M + i * (boxW + 10);
     doc.rect(x, y, boxW, 54, { fill: 'bg', stroke: 'border' });
-    doc.text(value, x + 10, y + 26, { size: 17, bold: true, color: i === 0 ? 'primary' : 'text' });
+    doc.text(value, x + 10, y + 26, { size: kpi.length > 4 ? 14 : 17, bold: true, color: i === 0 ? 'primary' : 'text' });
     doc.text(label, x + 10, y + 42, { size: 8, color: 'text-muted' });
   });
   y += 74;
@@ -1067,9 +1269,19 @@ function buildPdf() {
   }
   const widths = [70, 60, 90, 95, 105, 95, 105, 65];
   const align = ['left', 'right', 'right', 'right', 'right', 'right', 'right', 'right'];
-  y = doc.table(rows.slice(0, 22), M, y, widths, { align });
+  /* Every vehicle is listed: the table runs on over as many pages as it needs. */
+  const head = rows[0];
+  let next = 1;
+  while (next < rows.length) {
+    const room = Math.max(1, Math.floor((doc.pageHeight - 50 - y) / 15) - 1);
+    y = doc.table([head].concat(rows.slice(next, next + room)), M, y, widths, { align });
+    next += room;
+    if (next < rows.length) { startPage('Loading summary, continued'); y = 70; }
+  }
+  const roomFor = (height) => { if (y + height > doc.pageHeight - 40) { startPage('Loading summary, continued'); y = 60; } };
 
   if (plan.rejected.length) {
+    roomFor(16 + 14 + Math.min(8, plan.rejected.length) * 11 + 11);
     y += 16;
     doc.text('Pieces that cannot ship on this vehicle', M, y, { size: 10, bold: true, color: 'danger' });
     y += 14;
@@ -1081,11 +1293,13 @@ function buildPdf() {
     for (const [key, n] of [...grouped].slice(0, 8)) {
       y = doc.paragraph(n > 1 ? `${key} ×${n}` : key, M, y, W, { size: 8.5, leading: 11, color: 'text' });
     }
+    if (grouped.size > 8) y = doc.paragraph(`…and ${grouped.size - 8} more lines; the packing list has them all.`, M, y, W, { size: 8.5, leading: 11, color: 'text' });
   }
 
   if (fleet.length) {
+    roomFor(16 + 12 + 6 * 15);
     y += 16;
-    if (y < doc.pageHeight - 140) {
+    {
       doc.text('Alternative vehicles', M, y, { size: 10, bold: true });
       y += 12;
       const cmp = [['Vehicle', 'Required', 'Space used', 'Payload used', 'Cannot ship']];
@@ -1103,7 +1317,7 @@ function buildPdf() {
     doc.text(`Vehicle ${load.index} — ${v.name}`, M, py, { size: 12, bold: true });
     py += 16;
     doc.text(
-      `${load.pieces} pieces · ${fmt(load.cbm)} m3 · ${Math.round(load.weight).toLocaleString()} kg · ` +
+      `${piecesWord(load.pieces)} · ${fmt(load.cbm)} m3 · ${Math.round(load.weight).toLocaleString()} kg · ` +
       `${pct(load.volumeUse)} space · ${pct(load.weightUse)} payload · CG ${load.cgPercent}%`,
       M, py, { size: 9, color: 'text-muted' });
     py += 16;
@@ -1119,14 +1333,16 @@ function buildPdf() {
     doc.scene(elevationScene(load, v), rightX, planBottom + 22, rightW);
 
     let ty = Math.max(isoBottom, planBottom) + 40;
-    const pieceRows = [['#', 'Tag', 'L m', 'W m', 'H m', 'kg', 'x', 'y', 'z', 'Notes']];
+    const pieceRows = [['#', 'Tag', 'L m', 'W m', 'H m', 'kg', 'x m', 'y m', 'z m', 'Notes']];
     for (const p of load.placements) {
       const notes = [];
+      const size = enteredSize(p);
       if (p.tilted) notes.push('turned on side');
+      else if (Math.abs(p.il - p.rawL) > 1e-6) notes.push('turned 90°');
       if (p.z > 1e-6) notes.push('stacked');
       if (!p.stackable) notes.push('no stacking on top');
       pieceRows.push([
-        String(p.no), p.tag, fmt(p.l), fmt(p.w), fmt(p.h), String(Math.round(p.weight)),
+        String(p.no), p.tag, fmt(size.l), fmt(size.w), fmt(size.h), String(Math.round(p.weight)),
         fmt(p.x), fmt(p.y), fmt(p.z), notes.join(', ') || '',
       ]);
     }
@@ -1151,6 +1367,8 @@ function buildPdf() {
   return doc.build();
 }
 
+const r3 = (n) => Math.round(n * 1000) / 1000;
+
 function buildPackingList() {
   const v = plan.vehicle;
   const rows = [
@@ -1159,16 +1377,20 @@ function buildPackingList() {
     ['Internal size (m)', v.length, v.width, v.height],
     ['Max payload (kg)', v.payload],
     ['Vehicles required', plan.summary.vehicles],
+    ['Clearance between items (mm)', Math.round(state.options.gap * 1000)],
+    ['Sizes are as entered. Positions x, y, z include the clearance.'],
     [],
     ['Vehicle', 'Piece', 'Tag', 'Length m', 'Width m', 'Height m', 'Gross kg', 'x m', 'y m', 'z m', 'Notes'],
   ];
   for (const load of plan.loads) {
     for (const p of load.placements) {
       const notes = [];
+      const size = enteredSize(p);
       if (p.tilted) notes.push('turned on side');
+      else if (Math.abs(p.il - p.rawL) > 1e-6) notes.push('turned 90°');
       if (p.z > 1e-6) notes.push('stacked');
       if (!p.stackable) notes.push('no stacking on top');
-      rows.push([load.index, p.no, p.tag, p.l, p.w, p.h, p.weight, p.x, p.y, p.z, notes.join(', ')]);
+      rows.push([load.index, p.no, p.tag, size.l, size.w, size.h, p.weight, r3(p.x), r3(p.y), r3(p.z), notes.join(', ')]);
     }
   }
   if (plan.rejected.length) {
@@ -1211,23 +1433,14 @@ function init() {
   restore();
   buildVehicleSelect();
   buildPalletSelect();
-  /* First visit: show the sample rate for whatever vehicle is selected. */
-  if (!state.costTouched && !state.cost) state.cost = activeVehicle().cost || 0;
   syncSetupPanel();
   renderCargo();
 
-  $('#project').addEventListener('input', (e) => { state.project = e.target.value; save(); });
+  $('#project').addEventListener('input', (e) => { state.project = e.target.value; save(); syncDownloads(); });
 
   $('#vehicle').addEventListener('change', (e) => {
     state.vehicleId = e.target.value;
     $('#custom-dims').hidden = state.vehicleId !== 'custom';
-    /* Drop in the sample rate for the newly chosen vehicle — but never over
-       a figure the user has typed. Once they have entered a real number it
-       is theirs, and switching vehicle must not quietly discard it. */
-    if (!state.costTouched) {
-      const v = activeVehicle();
-      state.cost = v.cost || 0;
-    }
     syncSetupPanel();
     markStale();
   });
@@ -1235,19 +1448,33 @@ function init() {
   for (const [id, key] of [['#c-length', 'length'], ['#c-width', 'width'], ['#c-height', 'height'], ['#c-payload', 'payload']]) {
     $(id).addEventListener('input', (e) => {
       const value = Number(e.target.value);
-      if (value > 0) { state.custom[key] = value; markStale(); }
+      const ok = e.target.value !== '' && value > 0;
+      if (ok) state.custom[key] = value;
+      setFieldError(id, ok ? '' : `Enter a number above 0 (${key === 'payload' ? 'kg' : 'm'}).`);
+      syncSetupPanel();
+      markStale();
     });
   }
 
+  /* Cost and currency only label the answer, they do not change the packing,
+     so results on screen are redrawn rather than marked out of date. */
+  const relabel = () => { save(); if (plan && !stale) renderResults(); };
   $('#cost').addEventListener('input', (e) => {
-    state.cost = Number(e.target.value) || 0;
+    const value = Number(e.target.value);
+    const bad = e.target.validity.badInput || value < 0;
+    state.cost = bad ? 0 : value || 0;
     state.costTouched = true;
-    markStale();
+    setFieldError('#cost', bad ? 'Enter 0 or more. A negative cost is not used.' : '');
+    relabel();
   });
+  $('#currency').addEventListener('input', (e) => { state.currency = e.target.value; relabel(); });
   $('#opt-stack').addEventListener('change', (e) => { state.options.allowStacking = e.target.checked; markStale(); });
   $('#opt-tilt').addEventListener('change', (e) => { state.options.allowTilt = e.target.checked; markStale(); });
   $('#opt-gap').addEventListener('input', (e) => {
-    state.options.gap = Math.max(0, Number(e.target.value) || 0) / 1000;
+    const value = Number(e.target.value);
+    const ok = e.target.value !== '' && value >= 0 && value <= 500;
+    if (ok) state.options.gap = value / 1000;
+    setFieldError('#opt-gap', ok ? '' : 'Enter 0 to 500 mm.');
     markStale();
   });
 
@@ -1323,6 +1550,10 @@ function init() {
     notify(`Loaded the example AHU shipment — ${pieces} pieces across ${state.items.length} rows. Press Calculate to pack it.`);
   });
 
+  $('#cargo-xlsx-btn').addEventListener('click', () => {
+    download(cargoWorkbook(usableItems()), safeFileName(state.project.trim() ? `${state.project} - cargo list` : 'Cargo list', 'Cargo list', 'xlsx'));
+  });
+
   $('#template-btn').addEventListener('click', () => {
     download(templateWorkbook(), 'Container calculator - input sheet.xlsx');
   });
@@ -1359,6 +1590,10 @@ function init() {
   });
 
   $('#run-btn').addEventListener('click', run);
+
+  /* Drawings are sized for the screen they were made on; remake them when
+     the page crosses the phone width. */
+  narrowScreen.addEventListener('change', () => { if (plan) renderResults(); });
 
   $('#cancel-btn').addEventListener('click', () => {
     stopWorker();

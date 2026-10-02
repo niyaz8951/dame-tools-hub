@@ -35,6 +35,14 @@
     grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
     chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
     wrench: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0 5 5L11 20a2.1 2.1 0 0 1-3-3z"/><path d="M14.7 6.3 17 4a5 5 0 0 0-6.6 6.6"/></svg>',
+    checklist: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17M11 6h10M11 12h10M11 18h10"/></svg>',
+    table: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></svg>',
+    tree: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/></svg>',
+    coil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7c3-3 6 3 9 0s6 3 9 0M3 12c3-3 6 3 9 0s6 3 9 0M3 17c3-3 6 3 9 0s6 3 9 0"/></svg>',
+    box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>',
+    target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1.5"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/></svg>',
+    curve: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 17c6-1 10-4 12-11"/></svg>',
+    book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
     doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>'
   };
 
@@ -118,22 +126,26 @@
        Hub.requireLogin({ tool: "tool-id" })   - only users whose team has this tool
        Hub.requireLogin({ edit: "tool-id" })   - only users who may edit this tool's data
      Resolves with the profile { user, categories } and draws the top bar. */
+  // No access to this page: back to the dashboard, which says so once.
+  var NO_ACCESS_KEY = "dame_hub_no_access";
+  function noAccess() { sset(sessionStorage, NO_ACCESS_KEY, "1"); go("dashboard.html"); return new Promise(function () {}); }
   function requireLogin(opts) {
     opts = opts || {};
     var t = token();
     if (!t) { go("index.html"); return new Promise(function () {}); }
     return window.Api.me(t).then(function (profile) {
-      if (opts.admin && !isAdmin(profile.user)) { go("dashboard.html"); return new Promise(function () {}); }
-      if (opts["super"] && !isSuper(profile.user)) { go("dashboard.html"); return new Promise(function () {}); }
-      if (opts.edit && !canEdit(profile, opts.edit)) { go("dashboard.html"); return new Promise(function () {}); }
+      if (opts.admin && !isAdmin(profile.user)) return noAccess();
+      if (opts["super"] && !isSuper(profile.user)) return noAccess();
+      if (opts.edit && !canEdit(profile, opts.edit)) return noAccess();
       if (opts.tool) {
         var ok = profile.categories.some(function (c) {
           return c.allowed && c.tools.some(function (x) { return x.id === opts.tool; });
         });
-        if (!ok) { go("dashboard.html"); return new Promise(function () {}); }
+        if (!ok) return noAccess();
       }
       renderTopbar(profile);
       document.documentElement.removeAttribute("data-loading");
+      if (sget(sessionStorage, NO_ACCESS_KEY)) { sset(sessionStorage, NO_ACCESS_KEY, null); toast("That page is not available for your account."); }
       return profile;
     }, function (err) {
       // Leaving the page cancels the check. That is not a sign-out.

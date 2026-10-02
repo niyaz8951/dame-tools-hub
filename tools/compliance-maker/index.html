@@ -41,7 +41,9 @@
     .file-tag button:hover { color: var(--color-danger); }
 
     .toggle-row { display: flex; align-items: flex-start; gap: var(--space-2); margin-bottom: var(--space-2); font-size: 0.9375rem; }
-    .toggle-row input { margin-top: 4px; flex: none; }
+    .toggle-row input { margin-top: 3px; flex: none; width: 18px; height: 18px; }
+    #trim-note { margin-bottom: var(--space-3); color: var(--color-warning); font-weight: 600; }
+    #step-result:focus { outline: none; }
     .toggle-row label { margin: 0; font-weight: 400; }
 
     details.dict > summary {
@@ -149,7 +151,7 @@
         </div>
       </div>
       <p class="hint" id="cm-scope-hint">Choose both to continue. Answers are kept separately for each factory.</p>
-      <p class="hint">Each conversion is saved to the company compliance library: the clause text, the product and factory, your name and the time. The PDF file itself is read in your browser and is not uploaded.</p>
+      <p class="hint">Each conversion is saved to the company compliance library: the clause text, the product and factory, the name of the PDF file, your name and the time. The PDF file itself is read in your browser and is not uploaded.</p>
     </section>
 
     <!-- 1 — Specification -->
@@ -160,7 +162,7 @@
 
       <div class="segmented" role="tablist" aria-label="Input source" style="margin-bottom:var(--space-3)">
         <button type="button" id="tab-pdf" role="tab" aria-selected="true" aria-pressed="true" aria-controls="pane-pdf">Upload PDF</button>
-        <button type="button" id="tab-text" role="tab" aria-selected="false" aria-pressed="false" aria-controls="pane-text">Paste text</button>
+        <button type="button" id="tab-text" role="tab" aria-selected="false" aria-pressed="false" aria-controls="pane-text" tabindex="-1">Paste text</button>
       </div>
 
       <div class="source-pane" id="pane-pdf" role="tabpanel" aria-labelledby="tab-pdf">
@@ -207,7 +209,7 @@
             repeated page headers and page numbers, straighten quotes and dashes
             <span class="hint" style="display:block">
               Safe for specifications: it never joins clauses or rewords anything.
-              Whatever it removes is reported beside the Convert button.
+              Whatever it removes is reported in the status line below.
             </span>
           </label>
         </div>
@@ -221,7 +223,7 @@
           <span class="hint" style="display:block">
             Everything before the real "PART 1" heading is left out: cover sheet,
             revision table and table of contents. What was skipped is reported
-            beside the Convert button. Untick it if the start of your
+            in the status line below. Untick it if the start of your
             specification goes missing.
           </span>
         </label>
@@ -278,13 +280,14 @@ starters</textarea>
     <!-- 3 — Preview and export -->
     <section class="panel" id="result-panel" aria-labelledby="step-result" hidden>
       <div class="panel__head">
-        <h2 id="step-result">Preview &amp; export</h2>
+        <h2 id="step-result" tabindex="-1">Preview &amp; export</h2>
         <div class="row">
           <button id="btn-download" class="btn btn--primary" disabled>Download Excel</button>
           <button id="btn-clear" class="btn btn--ghost">Clear</button>
         </div>
       </div>
 
+      <div id="trim-note" class="notice notice--warning" role="alert" hidden></div>
       <p id="lib-note" class="status" role="status" aria-live="polite" style="margin-bottom:var(--space-2)"></p>
       <div class="table-wrap">
         <table class="preview" id="preview">

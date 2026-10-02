@@ -20,6 +20,9 @@
   var P = TN.psychro;
   var CHART = TN.psychroChart;
   var STORAGE_KEY = 'dame.psychro.v1';
+  /* States are kept per signed-in user: the key gets the user name added
+     once the sign-in check has answered (see boot). */
+  var storageKey = STORAGE_KEY;
 
   /* legacy-tools.js supplies TN.esc and TN.toast; these fallbacks only exist
      so the tool still works if the page is opened outside the hub shell. */
@@ -67,7 +70,15 @@
   function els(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
   function esc(s) { return global.TN.esc(s); }
   function num(v) { var n = parseFloat(v); return isFinite(n) ? n : NaN; }
-  function fix(v, d) { return isFinite(v) ? v.toFixed(d) : '\u2014'; }
+  function fix(v, d) {
+    if (!isFinite(v)) { return '\u2014'; }
+    var t = v.toFixed(d);
+    return +t === 0 ? t.replace('-', '') : t;        /* never "-0.0" */
+  }
+  /* What goes in an input box: the stored figure, rounded for reading. The
+     stored figure itself keeps full precision, so a change of unit and back
+     returns exactly what was there. */
+  function shown(v, d) { return isFinite(v) ? String(+v.toFixed(d)) : ''; }
 
   function isIP() { return model.units === 'ip'; }
 
@@ -144,26 +155,79 @@
     };
   }
 
-  function pressureKPa() {
+  /* Limits for the site pressure. The standard atmosphere equation (eq. 3)
+     holds from 500 m below sea level to 11 000 m. */
+  var ALT_MIN = -500;
+  var ALT_MAX = 11000;
+  var P_MIN = 20;
+  var P_MAX = 110;
+
+  function altitudeM() {
+    var alt = isIP() ? P.ip.lengthToM(model.altitude) : model.altitude;
+    return isFinite(alt) ? alt : 0;
+  }
+
+  function rawPressureKPa() {
     if (model.pressureMode === 'absolute') {
       var v = model.pressure;
       return isIP() ? v / 0.295299830714 : v;
     }
-    var alt = isIP() ? P.ip.lengthToM(model.altitude) : model.altitude;
-    return P.pressureAtAltitude(isFinite(alt) ? alt : 0);
+    return P.pressureAtAltitude(altitudeM());
+  }
+
+  /* Empty when the altitude or pressure can be used; otherwise the message,
+     in the units on show. */
+  function pressureProblem() {
+    function whole(v) { return Math.round(v).toLocaleString('en-GB'); }
+    if (model.pressureMode === 'absolute') {
+      var p = rawPressureKPa();
+      if (!isFinite(p) || p < P_MIN || p > P_MAX) {
+        return 'Pressure must be between ' + fix(pressFrom(P_MIN), isIP() ? 1 : 0) + ' and ' +
+          fix(pressFrom(P_MAX), isIP() ? 1 : 0) + ' ' + pressUnit() + '.';
+      }
+      return '';
+    }
+    var alt = altitudeM();
+    if (alt < ALT_MIN - 1e-6 || alt > ALT_MAX + 1e-6) {
+      return isIP()
+        ? 'Altitude must be between ' + whole(Math.ceil(P.ip.lengthToFt(ALT_MIN))) + ' and ' + whole(Math.floor(P.ip.lengthToFt(ALT_MAX))) + ' ft.'
+        : 'Altitude must be between ' + whole(ALT_MIN) + ' and ' + whole(ALT_MAX) + ' m.';
+    }
+    return '';
+  }
+
+  /* The pressure every figure is worked out at. With an altitude or pressure
+     outside the limits the chart is drawn at sea level and no state is solved. */
+  function pressureKPa() {
+    return pressureProblem() ? P.P_STD : rawPressureKPa();
   }
 
   function save() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(model)); } catch (e) { /* private mode */ }
+    try { localStorage.setItem(storageKey, JSON.stringify(model)); } catch (e) { /* private mode */ }
   }
 
   function load() {
     try {
-      var raw = localStorage.getItem(STORAGE_KEY);
+      var raw = localStorage.getItem(storageKey);
+      if (!raw && storageKey !== STORAGE_KEY) {
+        /* States saved before they were kept per user go to whoever opens the
+           page first. */
+        raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          localStorage.setItem(storageKey, raw);
+          localStorage.removeItem(STORAGE_KEY);
+        }
+      }
       if (!raw) { return null; }
       var m = JSON.parse(raw);
       if (!m || !Array.isArray(m.points)) { return null; }
-      m.points.forEach(function (pt) { pt.id = nextId++; });
+      /* Rows get fresh ids on every load, so the two source ids a mixed row
+         remembers are carried over to the new ones. */
+      var renamed = {};
+      m.points.forEach(function (pt) { var was = pt.id; pt.id = nextId++; renamed[was] = pt.id; });
+      m.points.forEach(function (pt) {
+        if (pt.mix) { pt.mix = { a: renamed[pt.mix.a], b: renamed[pt.mix.b] }; }
+      });
       var base = defaultModel();
       Object.keys(base).forEach(function (k) { if (!(k in m)) { m[k] = base[k]; } });
       m.layers = Object.assign({}, base.layers, m.layers || {});
@@ -175,39 +239,44 @@
 
   /* Deliberately weighted to the region DAME designs in: high ambient, high
      altitude and the two-coil sequences those force. */
+  /* A row can be given as typed figures, or worked out when the example is
+     loaded so that it cannot drift from the rows it depends on:
+       mixOf: [i, j]  the adiabatic mix of rows i and j at their airflows
+                      (eq. 45/46), the same figure "Mix two states" gives;
+       sameW: i       the humidity ratio of row i, for a step that adds or
+                      removes heat only (fan and duct gain, reheat, a heating
+                      coil). */
   var EXAMPLES = {
     'ahu-mix': {
-      name: 'AHU with mixed air \u2014 Dubai summer',
-      note: 'Outdoor air at the ASHRAE 0.4% design condition mixed with room return, cooled at the coil, then picking up fan and duct heat on the way to the room.',
+      name: 'AHU with mixed air — Dubai summer',
+      note: 'Outdoor air at the ASHRAE 0.4% design condition mixes with room return, is cooled at the coil, then picks up fan and duct heat at constant moisture on the way to the room.',
       units: 'si', altitude: 0, flowUnit: 'm3h', rangeMode: 'auto',
       points: [
         { label: 'Outdoor air', mode: 'wb', db: 46, value: 30, flow: 4000 },
-        /* 4000 m3/h outdoor + 12000 m3/h room, mass-weighted (eq. 45/46):
-           the same figure the "Mix two states" button gives. */
-        { label: 'Mixed', mode: 'w', db: 29.2, value: 11.9, flow: 16000 },
+        { label: 'Mixed', mixOf: [0, 4] },
         { label: 'Off coil', mode: 'rh', db: 13, value: 95, flow: 16000 },
-        { label: 'Supply', mode: 'w', db: 14.6, value: 8.6, flow: 16000 },
+        { label: 'Supply', db: 14.6, sameW: 2, flow: 16000 },
         { label: 'Room', mode: 'rh', db: 24, value: 50, flow: 12000 }
       ]
     },
     'fresh-air': {
-      name: '100% fresh air unit \u2014 Riyadh',
-      note: 'A once-through outdoor air unit at 612 m, where the lower barometric pressure lifts the humidity ratio for the same relative humidity. Cooled deep, then reheated to avoid overcooling the space.',
+      name: '100% fresh air unit — Riyadh',
+      note: 'A once-through outdoor air unit at 612 m, where the lower barometric pressure lifts the humidity ratio for the same relative humidity. Cooled deep, then reheated at constant moisture to avoid overcooling the space.',
       units: 'si', altitude: 612, flowUnit: 'm3h', rangeMode: 'auto',
       points: [
         { label: 'Outdoor air', mode: 'wb', db: 44, value: 22, flow: 6000 },
         { label: 'Off cooling coil', mode: 'rh', db: 11, value: 95, flow: 6000 },
-        { label: 'Off reheat', mode: 'w', db: 18, value: 7.8, flow: 6000 }
+        { label: 'Off reheat', db: 18, sameW: 1, flow: 6000 }
       ]
     },
     'winter': {
       name: 'Winter heating and humidification',
-      note: 'Cold dry outdoor air warmed by a heating coil at constant moisture, then brought up to room humidity by steam injection at near-constant dry bulb.',
+      note: 'Cold dry outdoor air warmed by a heating coil at constant moisture, then brought up to room humidity by steam injection at constant dry bulb.',
       units: 'si', altitude: 0, flowUnit: 'm3h', rangeMode: 'normal',
       points: [
         { label: 'Outdoor air', mode: 'rh', db: 2, value: 70, flow: 8000 },
-        { label: 'Off heating coil', mode: 'w', db: 26, value: 3.0, flow: 8000 },
-        { label: 'Off humidifier', mode: 'rh', db: 25.4, value: 40, flow: 8000 }
+        { label: 'Off heating coil', db: 26, sameW: 0, flow: 8000 },
+        { label: 'Off humidifier', mode: 'rh', db: 26, value: 40, flow: 8000 }
       ]
     },
     'evap': {
@@ -234,6 +303,7 @@
   function loadExample(key) {
     var ex = EXAMPLES[key];
     if (!ex) { return; }
+    var wasIP = model && model.units === 'ip';
     var m = defaultModel();
     m.units = ex.units;
     m.altitude = ex.altitude;
@@ -244,13 +314,45 @@
         id: nextId++,
         label: p.label,
         colour: COLOURS[i % COLOURS.length],
-        db: p.db,
-        mode: p.mode,
-        value: p.value,
-        flow: p.flow
+        db: isFinite(p.db) ? p.db : NaN,
+        mode: p.mode || 'w',
+        value: isFinite(p.value) ? p.value : NaN,
+        flow: isFinite(p.flow) ? p.flow : NaN
       };
     });
+
+    /* Worked-out rows, in an order that has each row's sources ready first. */
+    var pressure = P.pressureAtAltitude(ex.altitude);
+    var toM3s = FLOW_UNITS[ex.flowUnit].toM3s;
+    var fromM3s = FLOW_UNITS[ex.flowUnit].fromM3s;
+    function solved(i) {
+      var pt = m.points[i];
+      return P.state(pt.db, pt.mode, pt.value, pressure);
+    }
+    ex.points.forEach(function (p, i) {
+      if (isFinite(p.sameW) && !ex.points[p.sameW].mixOf) {
+        m.points[i].value = +(solved(p.sameW).W * 1000).toFixed(3);
+      }
+    });
+    ex.points.forEach(function (p, i) {
+      if (!p.mixOf) { return; }
+      var a = m.points[p.mixOf[0]];
+      var b = m.points[p.mixOf[1]];
+      var mixed = P.mix(solved(p.mixOf[0]), toM3s(a.flow), solved(p.mixOf[1]), toM3s(b.flow));
+      m.points[i].db = +mixed.db.toFixed(2);
+      m.points[i].value = +(mixed.W * 1000).toFixed(3);
+      m.points[i].flow = +fromM3s(mixed.massFlowDryAir * mixed.v).toFixed(0);
+      m.points[i].mix = { a: a.id, b: b.id };
+    });
+    ex.points.forEach(function (p, i) {
+      if (isFinite(p.sameW) && ex.points[p.sameW].mixOf) {
+        m.points[i].value = +(solved(p.sameW).W * 1000).toFixed(3);
+      }
+    });
+
     model = m;
+    /* An example is written in SI; someone working in IP keeps IP. */
+    if (wasIP) { convertUnits('ip'); }
     el('#example-note').textContent = ex.note;
     el('#example-note').hidden = false;
     renderAll();
@@ -261,12 +363,42 @@
 
   function solve() {
     var p = pressureKPa();
+    var blocked = !!pressureProblem();
     return model.points.map(function (pt) {
       var db = tempToC(num(pt.db));
       var v = humidityToSI(num(pt.value), pt.mode);
-      var s = P.state(db, pt.mode, v, p);
-      return { label: pt.label, colour: pt.colour, state: s, point: pt };
+      /* With no usable pressure nothing is solved; the one message about the
+         pressure is shown instead of the same message for every row. */
+      var s = blocked ? { ok: false, error: '', blocked: true } : P.state(db, pt.mode, v, p);
+      var out = { label: pt.label, colour: pt.colour, state: s, point: pt };
+      if (pt.mix) {
+        out.mixed = true;
+        out.mixFrom = [findPoint(pt.mix.a), findPoint(pt.mix.b)].filter(function (i) { return i >= 0; });
+      }
+      return out;
     });
+  }
+
+  /* A step into a mixed state: two airstreams meeting. No coil is involved,
+     so it carries no load, no sensible heat ratio and no apparatus dew point. */
+  var MIXING = {
+    key: 'mix',
+    name: 'Mixing',
+    note: 'Two airstreams meet here. The mixed state lies on the straight line between them, in proportion to their dry-air mass flows. No coil is involved, so there is no coil load on this step.'
+  };
+
+  /* The message for a state that could not be solved, in the units on show. */
+  function stateError(s) {
+    if (s.code === 'db-range') {
+      return 'Dry bulb must be between ' + fix(tempFromC(s.data.min), 0) + ' and ' +
+        fix(tempFromC(s.data.max), 0) + ' ' + tempUnit() + '.';
+    }
+    if (s.code === 'above-saturation') {
+      return 'Above saturation: at ' + fix(tempFromC(s.data.t), 1) + ' ' + tempUnit() + ' and ' +
+        fix(pressFrom(s.data.p), isIP() ? 2 : 1) + ' ' + pressUnit() + ' the air holds at most ' +
+        fix(wFrom(s.data.wMax), isIP() ? 1 : 2) + ' ' + wUnit() + '.';
+    }
+    return s.error;
   }
 
   function segmentsOf(solved) {
@@ -277,7 +409,15 @@
       if (!a.state.ok || !b.state.ok) { out.push(null); continue; }
       var flowRaw = num(a.point.flow);
       var flowM3s = isFinite(flowRaw) ? FLOW_UNITS[model.flowUnit].toM3s(flowRaw) : NaN;
-      out.push({
+      out.push(b.mixed ? {
+        index: i,
+        from: a,
+        to: b,
+        mixing: true,
+        process: MIXING,
+        loads: null,
+        adp: null
+      } : {
         index: i,
         from: a,
         to: b,
@@ -295,7 +435,9 @@
     var body = el('#points-body');
     var tUnit = tempUnit();
     /* The row skeleton carries only fixed markup; the user's own text (the
-       state name) is written afterwards with value / textContent. */
+       state name) is written afterwards with value / textContent. Each box is
+       named with aria-label: a positioned screen-reader label inside this
+       wide, scrolling table widened the whole page on a phone. */
     var rows = model.points.map(function (pt, i) {
       var mode = MODES[pt.mode];
       var unit = isIP() ? mode.ipUnit : mode.unit;
@@ -303,31 +445,26 @@
       var n = 'state ' + (i + 1);
       return '<tr data-id="' + pt.id + '">' +
         '<td>' + swatch +
-          '<label class="sr-only" for="lab-' + pt.id + '">Name of ' + n + '</label>' +
-          '<input class="psy-name" id="lab-' + pt.id + '" type="text" data-f="label">' +
+          '<input class="psy-name" id="lab-' + pt.id + '" type="text" data-f="label" aria-label="Name of ' + n + '">' +
         '</td>' +
         '<td class="num">' +
-          '<label class="sr-only" for="db-' + pt.id + '">Dry bulb for ' + n + ' in ' + tUnit + '</label>' +
-          '<input id="db-' + pt.id + '" type="number" step="any" inputmode="decimal" data-f="db" value="' +
-            (isFinite(pt.db) ? pt.db : '') + '" placeholder="' + tUnit + '">' +
+          '<input id="db-' + pt.id + '" type="number" step="any" inputmode="decimal" data-f="db" aria-label="Dry bulb for ' + n + ' in ' + tUnit + '" value="' +
+            shown(pt.db, 2) + '" placeholder="' + tUnit + '">' +
         '</td>' +
         '<td>' +
-          '<label class="sr-only" for="mode-' + pt.id + '">Humidity measure for ' + n + '</label>' +
-          '<select id="mode-' + pt.id + '" data-f="mode">' +
+          '<select id="mode-' + pt.id + '" data-f="mode" aria-label="Humidity measure for ' + n + '">' +
             Object.keys(MODES).map(function (k) {
               return '<option value="' + k + '"' + (k === pt.mode ? ' selected' : '') + '>' + MODES[k].label + '</option>';
             }).join('') +
           '</select>' +
         '</td>' +
         '<td class="num">' +
-          '<label class="sr-only" for="val-' + pt.id + '">' + mode.label + ' for ' + n + ' in ' + unit + '</label>' +
-          '<input id="val-' + pt.id + '" type="number" step="any" inputmode="decimal" data-f="value" value="' +
-            (isFinite(pt.value) ? pt.value : '') + '" placeholder="' + unit + '">' +
+          '<input id="val-' + pt.id + '" type="number" step="any" inputmode="decimal" data-f="value" aria-label="' + mode.label + ' for ' + n + ' in ' + unit + '" value="' +
+            shown(pt.value, 3) + '" placeholder="' + unit + '">' +
         '</td>' +
         '<td class="num">' +
-          '<label class="sr-only" for="flow-' + pt.id + '">Airflow leaving ' + n + '</label>' +
-          '<input id="flow-' + pt.id + '" type="number" step="any" min="0" inputmode="decimal" data-f="flow" value="' +
-            (isFinite(pt.flow) ? pt.flow : '') + '" placeholder="optional">' +
+          '<input id="flow-' + pt.id + '" type="number" step="any" min="0" inputmode="decimal" data-f="flow" aria-label="Airflow leaving ' + n + ' in ' + FLOW_UNITS[model.flowUnit].label + '" value="' +
+            shown(pt.flow, 1) + '" placeholder="optional">' +
         '</td>' +
         '<td class="psy-row-actions">' +
           '<button type="button" class="btn btn--quiet btn--sm" data-act="up"' + (i === 0 ? ' disabled' : '') +
@@ -465,14 +602,20 @@
     stats.push(['Process', sg.process.name, '']);
     stats.push(['\u0394 Dry bulb', fix(dTFromK(s2.db - s1.db), 1), tempUnit()]);
     stats.push(['\u0394 Humidity ratio', fix(wFrom(s2.W - s1.W), isIP() ? 1 : 2), wUnit()]);
-    stats.push(['\u0394 Enthalpy', fix(hFrom(s2.h) - hFrom(s1.h), 2), hUnit()]);
+    if (!sg.mixing) { stats.push(['\u0394 Enthalpy', fix(hFrom(s2.h) - hFrom(s1.h), 2), hUnit()]); }
+    if (sg.mixing) {
+      stats.push(['Coil load', 'None', '']);
+      if (isFinite(num(sg.to.point.flow))) {
+        stats.push(['Mixed airflow', fix(num(sg.to.point.flow), 0), FLOW_UNITS[model.flowUnit].label]);
+      }
+    }
     if (L) {
       stats.push(['Total load', fix(powerFrom(Math.abs(L.total)), 1), powerUnit()]);
       stats.push(['Sensible', fix(powerFrom(Math.abs(L.sensible)), 1), powerUnit()]);
       stats.push(['Latent', fix(powerFrom(Math.abs(L.latent)), 1), powerUnit()]);
       stats.push(['Sensible heat ratio', isFinite(L.shr) ? fix(L.shr, 3) : '\u2014', '']);
       stats.push(['Moisture', fix(isIP() ? L.moisture * 2.20462 : L.moisture, 2), isIP() ? 'lb/h' : 'kg/h']);
-      stats.push(['Dry air mass flow', fix(isIP() ? P.ip.massFlowToLbh(L.massFlowDryAir) : L.massFlowDryAir, 3),
+      stats.push(['Dry air mass flow', fix(isIP() ? P.ip.massFlowToLbh(L.massFlowDryAir) : L.massFlowDryAir, isIP() ? 0 : 3),
                   isIP() ? 'lb/h' : 'kg/s']);
     }
     if (sg.adp) {
@@ -505,9 +648,12 @@
       notes.push('An apparatus dew point of ' + fix(tempFromC(sg.adp.t), 1) + ' ' + tempUnit() +
         ' is close to freezing. Check the chilled water or refrigerant temperature this implies.');
     }
-    if (s2.rh > 95) {
+    if (s2.rh > 95 && !sg.mixing) {
       notes.push('Leaving air at ' + s2.rh.toFixed(0) + '% relative humidity is close to saturation. ' +
         'Any further cooling downstream — duct losses, a cold plenum — will condense.');
+    }
+    if (L && !isFinite(L.shr) && sg.process.key !== 'none') {
+      notes.push('Sensible and latent heat all but cancel on this step, so the total load is close to zero and a sensible heat ratio would mean nothing. It is left blank.');
     }
     if (sg.process.key === 'evap') {
       notes.push('Wet bulb moved by ' + fix(dTFromK(s2.wb - s1.wb), 2) + ' ' + tempUnit() +
@@ -525,10 +671,20 @@
 
   function renderErrors(solved) {
     var bad = [];
+    var problem = pressureProblem();
+    if (problem) { bad.push(problem + ' Nothing is worked out until it is corrected.'); }
     solved.forEach(function (r, i) {
-      if (!r.state.ok && (isFinite(num(r.point.db)) || isFinite(num(r.point.value)))) {
-        bad.push(r.label + ': ' + r.state.error);
+      var name = r.label || ('State ' + (i + 1));
+      if (!r.state.ok && !r.state.blocked && (isFinite(num(r.point.db)) || isFinite(num(r.point.value)))) {
+        bad.push(name + ': ' + stateError(r.state));
       }
+      if (num(r.point.flow) < 0) {
+        bad.push(name + ': airflow cannot be negative. No load is worked out for the step leaving this state.');
+      }
+      /* A mixed row is a stored figure. If its sources have been changed
+         since, say so rather than let it pass as their mix. */
+      var stale = staleMix(solved, i);
+      if (stale) { bad.push(name + ': ' + stale); }
     });
     var box = el('#input-errors');
     box.hidden = bad.length === 0;
@@ -547,6 +703,37 @@
       wrap.appendChild(ul);
       box.appendChild(wrap);
     }
+
+    /* The same pressure message beside the box it is about. */
+    var altMsg = el('#altitude-msg');
+    var pressMsg = el('#pressure-msg');
+    altMsg.textContent = model.pressureMode === 'altitude' ? problem : '';
+    altMsg.hidden = !altMsg.textContent;
+    pressMsg.textContent = model.pressureMode === 'absolute' ? problem : '';
+    pressMsg.hidden = !pressMsg.textContent;
+    el('#altitude').setAttribute('aria-invalid', altMsg.textContent ? 'true' : 'false');
+    el('#pressure').setAttribute('aria-invalid', pressMsg.textContent ? 'true' : 'false');
+  }
+
+  function staleMix(solved, i) {
+    var r = solved[i];
+    var mix = r.point.mix;
+    if (!mix || !r.state.ok) { return ''; }
+    var ia = findPoint(mix.a);
+    var ib = findPoint(mix.b);
+    if (ia < 0 || ib < 0) { return ''; }
+    var a = solved[ia];
+    var b = solved[ib];
+    var fa = num(a.point.flow);
+    var fb = num(b.point.flow);
+    if (!a.state.ok || !b.state.ok || !(fa > 0) || !(fb > 0)) { return ''; }
+    var unit = FLOW_UNITS[model.flowUnit];
+    var now = P.mix(a.state, unit.toM3s(fa), b.state, unit.toM3s(fb));
+    if (!now.ok) { return ''; }
+    if (Math.abs(now.db - r.state.db) <= 0.06 && Math.abs(now.W - r.state.W) <= 0.06 / 1000) { return ''; }
+    return 'no longer the mix of ' + (a.label || 'its first source') + ' and ' + (b.label || 'its second source') +
+      ', which now gives ' + fix(tempFromC(now.db), 1) + ' ' + tempUnit() + ' and ' +
+      fix(wFrom(now.W), isIP() ? 1 : 2) + ' ' + wUnit() + '. Remove this row and mix the two again to update it.';
   }
 
   /* ------------------------------------------------------------- mixing */
@@ -605,6 +792,9 @@
     pt.value = +wFrom(mixed.W).toFixed(3);
     /* Volume flow at the mixed state, from the total dry-air mass flow. */
     pt.flow = +unit.fromM3s(mixed.massFlowDryAir * mixed.v).toFixed(1);
+    /* Remembered as a mix of these two rows, so the step into it is described
+       as mixing and not costed as a coil. */
+    pt.mix = { a: a.point.id, b: b.point.id };
     /* Insert straight after the later of the two sources so the process
        order still reads top to bottom. */
     model.points.splice(Math.max(ia, ib) + 1, 0, pt);
@@ -620,20 +810,18 @@
     var sg = segments[model.activeSegment];
     var shr = sg && sg.loads && isFinite(sg.loads.shr) ? sg.loads.shr : NaN;
     /* With no airflow entered there is no load, but the ratio is still fixed
-       by the two states, so the protractor can still be driven. */
-    if (!isFinite(shr) && sg) {
-      var s1 = sg.from.state;
-      var s2 = sg.to.state;
-      var dh = s2.h - s1.h;
-      if (Math.abs(dh) > 1e-9) {
-        shr = P.specificHeat((s1.W + s2.W) / 2) * (s2.db - s1.db) / dh;
-      }
+       by the two states, so the protractor can still be driven: the ratio is
+       the same at any airflow. */
+    if (!isFinite(shr) && sg && !sg.mixing && !sg.loads) {
+      shr = P.loads(sg.from.state, sg.to.state, 1).shr;
     }
 
     var caption;
-    if (model.pressureMode === 'altitude') {
-      var altM = isIP() ? P.ip.lengthToM(model.altitude) : model.altitude;
-      caption = 'Altitude ' + Math.round(isFinite(altM) ? altM : 0) + ' m (standard atmosphere)';
+    if (pressureProblem()) {
+      caption = 'Sea level (altitude or pressure entered is out of range)';
+    } else if (model.pressureMode === 'altitude') {
+      caption = 'Altitude ' + Math.round(isIP() ? P.ip.lengthToFt(altitudeM()) : altitudeM()).toLocaleString('en-GB') +
+        (isIP() ? ' ft' : ' m') + ' (standard atmosphere)';
     } else {
       caption = 'Measured barometric pressure';
     }
@@ -646,7 +834,8 @@
       showAdp: model.showAdp,
       showLegs: model.showLegs,
       shr: shr,
-      captionAltitude: caption
+      captionAltitude: caption,
+      ip: isIP()
     });
 
     var svg = el('#psy-svg');
@@ -660,7 +849,7 @@
     var ok = solved.filter(function (r) { return r.state.ok; });
     if (!ok.length) { return 'Psychrometric chart with no points plotted yet.'; }
     var parts = ok.map(function (r) {
-      return r.label + ' at ' + r.state.db.toFixed(1) + ' degrees dry bulb and ' +
+      return r.label + ' at ' + tempFromC(r.state.db).toFixed(1) + ' degrees ' + (isIP() ? 'Fahrenheit' : 'Celsius') + ' dry bulb and ' +
         r.state.rh.toFixed(0) + ' percent relative humidity';
     });
     var procs = segments.filter(Boolean).map(function (s) { return s.process.name.toLowerCase(); });
@@ -726,7 +915,11 @@
     svg.addEventListener('click', function (ev) {
       if (!pickArmed) { return; }
       var hit = fromEvent(ev);
-      if (!hit || !hit.state.ok) { return; }
+      if (!hit) { TN.toast('Click inside the chart frame to add a state there.', 'error'); return; }
+      if (!hit.state.ok) {
+        TN.toast('That spot is above the saturation curve, where air cannot be. Click below the curve.', 'error');
+        return;
+      }
       var i = model.points.length;
       var pt = blankPoint(i);
       pt.db = +tempFromC(hit.state.db).toFixed(1);
@@ -744,7 +937,7 @@
     pickArmed = on;
     var btn = el('#btn-pick');
     btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    btn.textContent = on ? 'Click the chart\u2026' : 'Pick from chart';
+    btn.textContent = on ? 'Click the chart\u2026 (Esc cancels)' : 'Pick from chart';
     el('#psy-svg').classList.toggle('is-picking', on);
   }
 
@@ -752,37 +945,49 @@
 
   function toCSV(solved, segments) {
     var rows = [];
+    var flowLabel = FLOW_UNITS[model.flowUnit].label;
     rows.push(['DAME Tools Hub — psychrometric chart (ASHRAE Fundamentals Ch. 1, with enhancement factor)']);
-    rows.push(['Barometric pressure', fix(pressFrom(pressureKPa()), 3), pressUnit()]);
+    rows.push(['Barometric pressure (' + pressUnit() + ')', +pressFrom(pressureKPa()).toFixed(3)]);
+    if (model.pressureMode === 'altitude') {
+      rows.push(['Altitude (' + (isIP() ? 'ft' : 'm') + ')', Math.round(isIP() ? P.ip.lengthToFt(altitudeM()) : altitudeM())]);
+    }
     rows.push([]);
-    rows.push(['State'].concat(PROPS.map(function (p) { return p[0] + ' (' + p[2]() + ')'; })));
+    rows.push(['State'].concat(PROPS.map(function (p) { return p[0] + ' (' + p[2]() + ')'; }))
+      .concat(['Airflow out (' + flowLabel + ')']));
     solved.forEach(function (r) {
       if (!r.state.ok) { return; }
-      rows.push([r.label].concat(PROPS.map(function (p) { return p[1](r.state); })));
+      rows.push([r.label].concat(PROPS.map(function (p) { return +p[1](r.state); }))
+        .concat([isFinite(num(r.point.flow)) ? +num(r.point.flow).toFixed(1) : '']));
     });
     rows.push([]);
-    rows.push(['From', 'To', 'Process', '\u0394t (' + tempUnit() + ')', '\u0394W (' + wUnit() + ')',
+    rows.push(['From', 'To', 'Process', 'Δt (' + tempUnit() + ')', 'ΔW (' + wUnit() + ')',
                'Total (' + powerUnit() + ')', 'Sensible (' + powerUnit() + ')',
-               'Latent (' + powerUnit() + ')', 'SHR', 'ADP (' + tempUnit() + ')', 'Bypass factor']);
+               'Latent (' + powerUnit() + ')', 'SHR (ratio)', 'ADP (' + tempUnit() + ')', 'Bypass factor (ratio)']);
     segments.filter(Boolean).forEach(function (sg) {
       var L = sg.loads;
       rows.push([
         sg.from.label, sg.to.label, sg.process.name,
-        fix(dTFromK(sg.to.state.db - sg.from.state.db), 1),
-        fix(wFrom(sg.to.state.W - sg.from.state.W), 2),
-        L ? fix(powerFrom(L.total), 2) : '',
-        L ? fix(powerFrom(L.sensible), 2) : '',
-        L ? fix(powerFrom(L.latent), 2) : '',
-        L && isFinite(L.shr) ? fix(L.shr, 3) : '',
-        sg.adp ? fix(tempFromC(sg.adp.t), 2) : '',
-        sg.adp ? fix(sg.adp.bypassFactor, 3) : ''
+        +dTFromK(sg.to.state.db - sg.from.state.db).toFixed(1),
+        +wFrom(sg.to.state.W - sg.from.state.W).toFixed(isIP() ? 1 : 2),
+        L ? +powerFrom(L.total).toFixed(2) : '',
+        L ? +powerFrom(L.sensible).toFixed(2) : '',
+        L ? +powerFrom(L.latent).toFixed(2) : '',
+        L && isFinite(L.shr) ? +L.shr.toFixed(3) : '',
+        sg.adp ? +tempFromC(sg.adp.t).toFixed(2) : '',
+        sg.adp ? +sg.adp.bypassFactor.toFixed(3) : ''
       ]);
     });
 
-    return rows.map(function (r) {
+    /* Text that starts like a formula gets an apostrophe so a spreadsheet
+       shows it as text. Figures are passed as numbers and are left alone, so
+       a negative load stays a number. The byte order mark makes Excel read
+       the degree signs and superscripts as UTF-8. */
+    return '﻿' + rows.map(function (r) {
       return r.map(function (c) {
+        if (typeof c === 'number') { return isFinite(c) ? String(c) : ''; }
         var s = String(c == null ? '' : c);
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        if (/^[=+\-@\t\r]/.test(s)) { s = "'" + s; }
+        return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
       }).join(',');
     }).join('\r\n');
   }
@@ -878,18 +1083,69 @@
     renderDetail(segments);
   }
 
+  function showPressure() {
+    el('#derived-pressure').textContent = fix(pressFrom(pressureKPa()), 2) + ' ' + pressUnit() +
+      (pressureProblem() ? ' (sea level)' : '');
+  }
+
+  /* Everything that depends on the inputs, without rebuilding the input
+     table (which would take the cursor out of the box being typed in). */
+  function refresh() {
+    var solved = solve();
+    var segments = segmentsOf(solved);
+    showPressure();
+    renderErrors(solved);
+    renderChart(solved, segments);
+    renderStateTable(solved);
+    renderSegmentTable(segments);
+    renderDetail(segments);
+  }
+
+  /* Change of unit system. The stored figures are converted at full
+     precision and only rounded where they are shown, so SI to IP and back
+     returns the same figures. Airflow follows: cfm in IP, m3/h in SI. */
+  function convertUnits(to) {
+    if (to === model.units) { return; }
+    var toIP = to === 'ip';
+    model.points.forEach(function (pt) {
+      if (isFinite(pt.db)) { pt.db = toIP ? P.ip.tempToF(pt.db) : P.ip.tempToC(pt.db); }
+      if (isFinite(pt.value)) { pt.value = convertHumidityValue(pt.value, pt.mode, toIP); }
+    });
+    if (isFinite(model.altitude)) {
+      model.altitude = toIP ? P.ip.lengthToFt(model.altitude) : P.ip.lengthToM(model.altitude);
+    }
+    if (isFinite(model.pressure)) {
+      model.pressure = toIP ? P.ip.pressureToIP(model.pressure) : model.pressure / 0.295299830714;
+    }
+    model.units = to;
+    if (toIP && model.flowUnit !== 'cfm') { setFlowUnit('cfm'); }
+    if (!toIP && model.flowUnit === 'cfm') { setFlowUnit('m3h'); }
+  }
+
+  function setFlowUnit(to) {
+    var from = FLOW_UNITS[model.flowUnit];
+    var next = FLOW_UNITS[to];
+    model.points.forEach(function (pt) {
+      if (isFinite(pt.flow)) { pt.flow = next.fromM3s(from.toM3s(pt.flow)); }
+    });
+    model.flowUnit = to;
+  }
+
   function syncControls() {
     el('#pressure-mode').value = model.pressureMode;
-    el('#altitude').value = isFinite(model.altitude) ? model.altitude : '';
-    el('#pressure').value = isFinite(model.pressure) ? model.pressure : '';
+    el('#altitude').value = shown(model.altitude, isIP() ? 0 : 1);
+    el('#pressure').value = shown(model.pressure, 3);
     el('#alt-field').hidden = model.pressureMode !== 'altitude';
     el('#press-field').hidden = model.pressureMode !== 'absolute';
     el('#alt-unit').textContent = isIP() ? 'ft' : 'm';
     el('#press-unit').textContent = pressUnit();
+    var rangeLabels = CHART.presetLabels(isIP());
+    els('#range-mode option').forEach(function (o) {
+      if (rangeLabels[o.value]) { o.textContent = rangeLabels[o.value]; }
+    });
     el('#range-mode').value = model.rangeMode;
     el('#flow-unit').value = model.flowUnit;
-    el('#derived-pressure').textContent =
-      fix(pressFrom(pressureKPa()), 2) + ' ' + pressUnit();
+    showPressure();
 
     els('[data-unit-btn]').forEach(function (b) {
       b.setAttribute('aria-pressed', b.getAttribute('data-unit-btn') === model.units ? 'true' : 'false');
@@ -925,15 +1181,13 @@
       } else {
         pt[field] = ev.target.value === '' ? NaN : num(ev.target.value);
       }
+      /* A mixed row whose own condition is typed over is an ordinary state
+         from then on. */
+      if (field === 'db' || field === 'value' || field === 'mode') { delete pt.mix; }
       /* A name change need not redraw the whole table and steal focus, but it
          does have to reach the chart and the results. */
-      var solved = solve();
-      var segments = segmentsOf(solved);
-      renderErrors(solved);
-      renderChart(solved, segments);
-      renderStateTable(solved);
-      renderSegmentTable(segments);
-      renderDetail(segments);
+      refresh();
+      if (field === 'label') { renderMixOptions(); }
       save();
     });
 
@@ -965,7 +1219,11 @@
     });
 
     el('#btn-clear').addEventListener('click', function () {
+      var units = model.units;
       model = defaultModel();
+      /* Starting again clears the states, not the unit system in use. */
+      if (units === 'ip') { model.units = 'ip'; model.flowUnit = 'cfm'; model.pressure = P.ip.pressureToIP(model.pressure); }
+      el('#example').value = '';
       el('#example-note').hidden = true;
       renderAll();
       save();
@@ -981,19 +1239,7 @@
       btn.addEventListener('click', function () {
         var to = btn.getAttribute('data-unit-btn');
         if (to === model.units) { return; }
-        var toIP = to === 'ip';
-        /* Convert what was typed so the physical states do not move. */
-        model.points.forEach(function (pt) {
-          if (isFinite(pt.db)) { pt.db = +(toIP ? P.ip.tempToF(pt.db) : P.ip.tempToC(pt.db)).toFixed(2); }
-          if (isFinite(pt.value)) { pt.value = +convertHumidityValue(pt.value, pt.mode, toIP).toFixed(2); }
-        });
-        if (isFinite(model.altitude)) {
-          model.altitude = Math.round(toIP ? P.ip.lengthToFt(model.altitude) : P.ip.lengthToM(model.altitude));
-        }
-        if (isFinite(model.pressure)) {
-          model.pressure = +(toIP ? P.ip.pressureToIP(model.pressure) : model.pressure / 0.295299830714).toFixed(3);
-        }
-        model.units = to;
+        convertUnits(to);
         renderAll();
         save();
       });
@@ -1004,17 +1250,16 @@
       renderAll();
       save();
     });
+    /* Pressure feeds every figure on the page, loads included, so both boxes
+       refresh everything. */
     el('#altitude').addEventListener('input', function () {
       model.altitude = this.value === '' ? 0 : num(this.value);
-      el('#derived-pressure').textContent = fix(pressFrom(pressureKPa()), 2) + ' ' + pressUnit();
-      var solved = solve();
-      renderChart(solved, segmentsOf(solved));
-      renderStateTable(solved);
+      refresh();
       save();
     });
     el('#pressure').addEventListener('input', function () {
-      model.pressure = this.value === '' ? P.P_STD : num(this.value);
-      renderAll();
+      model.pressure = this.value === '' ? (isIP() ? P.ip.pressureToIP(P.P_STD) : P.P_STD) : num(this.value);
+      refresh();
       save();
     });
     el('#range-mode').addEventListener('change', function () {
@@ -1024,12 +1269,7 @@
       save();
     });
     el('#flow-unit').addEventListener('change', function () {
-      var from = FLOW_UNITS[model.flowUnit];
-      var to = FLOW_UNITS[this.value];
-      model.points.forEach(function (pt) {
-        if (isFinite(pt.flow)) { pt.flow = +to.fromM3s(from.toM3s(pt.flow)).toFixed(1); }
-      });
-      model.flowUnit = this.value;
+      setFlowUnit(this.value);
       renderAll();
       save();
     });
@@ -1073,6 +1313,9 @@
     el('#btn-png').addEventListener('click', exportPNG);
     el('#btn-print').addEventListener('click', function () { global.print(); });
     el('#btn-mix').addEventListener('click', mixStates);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && pickArmed) { setPick(false); }
+    });
 
     wireChartPointer();
   }
@@ -1084,7 +1327,9 @@
     if (booted) { return; }
     booted = true;
     model = load();
-    if (!model || !model.points.length) {
+    /* Nothing saved yet: open on the first worked example. A saved page with
+       no states (after "Start again") stays empty. */
+    if (!model) {
       model = defaultModel();
       wire();
       loadExample('ahu-mix');
@@ -1095,15 +1340,27 @@
     renderAll();
   }
 
-  /* The hub guard (Hub.requireLogin) decides whether the page is shown at
-     all; drawing can start as soon as the DOM is there, whichever event the
-     shell fires first. */
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
+  /* The page keeps the sign-in check in window.psyProfile. Drawing waits for
+     it, so the saved states can be kept under the signed-in user's name. */
+  function begin() {
+    var who = global.psyProfile;
+    if (who && typeof who.then === 'function') {
+      who.then(function (profile) {
+        if (profile && profile.user && profile.user.username) {
+          storageKey = STORAGE_KEY + ':' + String(profile.user.username).toLowerCase();
+        }
+        boot();
+      });
+    } else {
+      boot();
+    }
   }
-  document.addEventListener('tn:ready', boot);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', begin);
+  } else {
+    begin();
+  }
 
   /* Exposed for the test harness and for anyone wanting the numbers from a
      console without going through the UI. */

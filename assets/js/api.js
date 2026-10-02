@@ -70,7 +70,7 @@
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v6", mem = null;
+  var KEY = "dame_hub_demo_db_v7", mem = null;
   function seed() {
     return {
       users: [
@@ -90,7 +90,9 @@
         { id: "product-options", category_id: "general", name: "Product Options", description: "See the sections, options and notes each factory offers, built from the datasheets run so far.", path: "tools/product-options/", status: "live", sort: 17, editable: true },
         { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
-        { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 }
+        { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 },
+        { id: "psychrometric-chart", category_id: "general", name: "Psychrometric Chart", description: "Plot air states on an ASHRAE-style chart and read coil loads, SHR and mixing.", path: "tools/psychrometric-chart/", status: "live", sort: 50 },
+        { id: "standards", category_id: "general", name: "Standards", description: "Short summaries of the standards named in AHU, FCU and chiller specifications.", path: "tools/standards/", status: "live", sort: 60 }
       ],
       sessions: {},
       cm: {
@@ -208,7 +210,10 @@
     if (/\|options\|option$/.test(key)) v = v.replace(/^\d+\s*x\s+/i, "");
     return v.trim().slice(0, 300);
   }
-  function checkPw(p) { if (!p || p.length < 8) fail("Password must be at least 8 characters."); }
+  function checkPw(p) {
+    if (!p || p.length < 8) fail("Password must be at least 8 characters.");
+    if (!/\S/.test(p)) fail("Password cannot be only spaces.");
+  }
   function demo(fn) {
     return function () {
       var args = arguments;

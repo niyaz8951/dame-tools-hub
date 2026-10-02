@@ -24,13 +24,38 @@ const ASCII_FOLD = {
   '≥': '>=', '≤': '<=', '·': '-', '→': '->', '…': '...', '™': 'TM', '½': '1/2',
 };
 
+/* The report uses the PDF's built-in Helvetica, which has Latin letters
+   only. Anything else (Arabic, Chinese, …) cannot be printed, so each run of
+   such characters becomes one clear marker instead of a row of question
+   marks. The page warns about it before the download. */
+export const PDF_MARKER = '[non-Latin text]';
+
+function printable(ch) {
+  if (ASCII_FOLD[ch]) return true;
+  const code = ch.codePointAt(0);
+  return (code >= 32 && code <= 126) || (code >= 160 && code <= 255);
+}
+
+/** True when every character of `s` can be printed in the PDF. */
+export function pdfCanPrint(s) {
+  for (const ch of String(s)) if (!printable(ch)) return false;
+  return true;
+}
+
 function sanitise(s) {
   let out = '';
+  let inRun = false;
   for (const ch of String(s)) {
-    if (ASCII_FOLD[ch]) { out += ASCII_FOLD[ch]; continue; }
-    const code = ch.charCodeAt(0);
-    out += code >= 32 && code <= 255 ? ch : '?';
+    if (!printable(ch)) {
+      if (!inRun) out += PDF_MARKER;
+      inRun = true;
+      continue;
+    }
+    inRun = false;
+    out += ASCII_FOLD[ch] || ch;
   }
+  // Several words in a row print one marker, not one per word.
+  while (out.includes(`${PDF_MARKER} ${PDF_MARKER}`)) out = out.replace(`${PDF_MARKER} ${PDF_MARKER}`, PDF_MARKER);
   return out;
 }
 

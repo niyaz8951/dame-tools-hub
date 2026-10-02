@@ -71,15 +71,27 @@
   function haystack(s) {
     return [s.code, s.title, s.body, s.covers, s.spec, (s.keys || []).join(" "), (s.points || []).join(" "), Std.groupName[s.group]].join(" ").toLowerCase();
   }
-  var index = STD.ITEMS.map(function (s) { return { s: s, text: haystack(s), flat: haystack(s).replace(/[\s\-\/.]/g, "") }; });
+  // "en1886" and "ahri410" are matched against the names only, each on its own, so "90a" cannot
+  // be made up from the end of one word and the start of the next.
+  function flatNames(s) {
+    return [s.code].concat(s.keys || []).map(function (k) { return k.toLowerCase().replace(/[\s\-\/.]/g, ""); }).join("|");
+  }
+  var index = STD.ITEMS.map(function (s) { return { s: s, text: haystack(s), flat: flatNames(s) }; });
 
+  function hasWord(row, w) {
+    return row.text.indexOf(w) >= 0 || row.flat.indexOf(w.replace(/[\-\/.]/g, "")) >= 0;
+  }
   function matches(row) {
     var s = row.s;
     if (state.spec && state.spec.indexOf(s.id) < 0) return false;
     if (state.group && s.group !== state.group) return false;
     if (state.product && (s.products || []).indexOf(state.product) < 0) return false;
     var words = state.q.toLowerCase().split(/\s+/).filter(Boolean);
-    return words.every(function (w) { return row.text.indexOf(w) >= 0 || row.flat.indexOf(w.replace(/[\-\/.]/g, "")) >= 0; });
+    return words.every(function (w) {
+      if (hasWord(row, w)) return true;
+      var part = /^(.*\d)[\-\/:]\d{1,4}$/.exec(w);              // "16890-1", "1886:2007": try the number without the part or year
+      return !!part && hasWord(row, part[1]);
+    });
   }
 
   function render() {
@@ -124,7 +136,7 @@
     state.spec = out.found.map(function (s) { return s.id; });
     res.textContent = "";
     res.appendChild(el("p", {}, [el("strong", { text: out.found.length + (out.found.length === 1 ? " standard" : " standards") + " from the library found in the text." }),
-      out.found.length ? " They are listed below." : " Nothing in the text matches the library."]));
+      out.found.length ? (out.found.length === 1 ? " It is listed below." : " They are listed below.") : " Nothing in the text matches the library."]));
     if (out.missing.length) {
       res.appendChild(el("p", { style: "margin-top:8px", text: out.missing.length + " more named in the text that the library does not have yet:" }));
       res.appendChild(el("ul", { "class": "st-miss" }, out.missing.map(function (m) { return el("li", { text: m }); })));

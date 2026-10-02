@@ -23,6 +23,13 @@ export function tokenFor(rowIndex) {
   return PALETTE[rowIndex % PALETTE.length];
 }
 
+/* The box to draw for a placement: the item itself. A placement's l and w
+   include the clearance kept to the next item, so drawing those would show
+   the cargo bigger than it is and hide the gaps. */
+function shown(p) {
+  return { x: p.x, y: p.y, z: p.z, l: p.il ?? p.l, w: p.iw ?? p.w, h: p.h };
+}
+
 function newScene(width, height) {
   const scene = { width, height, items: [] };
   scene.poly = (pts, opts = {}) => { scene.items.push({ type: 'poly', pts, ...opts }); return scene; };
@@ -169,11 +176,12 @@ export function isoScene(load, vehicle, { width = 520, height = 330, pad = 20, l
       const near = [...parts.units].sort((a, b) => (a.x + a.y + a.z) - (b.x + b.y + b.z));
       for (const u of near) box(u, c, { strokeWidth: 0.4 });
     } else {
-      box(p, c);
+      box(shown(p), c);
     }
 
     if (labels) {
-      const mid = P(p.x + p.l / 2, p.y + p.w / 2, p.z + p.h);
+      const q = parts ? p : shown(p);
+      const mid = P(q.x + q.l / 2, q.y + q.w / 2, q.z + q.h);
       scene.label(mid[0], mid[1] + 3, String(p.no), { size: 8, color: 'surface', align: 'center', weight: 'bold' });
     }
   }
@@ -224,7 +232,8 @@ export function planScene(load, vehicle, { width = 520, height = 190, pad = 26, 
         });
       }
     } else {
-      scene.poly([P(p.x, p.y), P(p.x + p.l, p.y), P(p.x + p.l, p.y + p.w), P(p.x, p.y + p.w)], {
+      const b = shown(p);
+      scene.poly([P(b.x, b.y), P(b.x + b.l, b.y), P(b.x + b.l, b.y + b.w), P(b.x, b.y + b.w)], {
         fill: c,
         shade: upper ? 1 : 0.9,
         opacity: upper ? 0.45 : 1,
@@ -235,7 +244,8 @@ export function planScene(load, vehicle, { width = 520, height = 190, pad = 26, 
     }
 
     if (labels) {
-      const mid = P(p.x + p.l / 2, p.y + p.w / 2);
+      const q = parts ? p : shown(p);
+      const mid = P(q.x + q.l / 2, q.y + q.w / 2);
       scene.label(mid[0], mid[1] + 3, String(p.no), { size: 8, color: upper || parts ? 'text' : 'surface', align: 'center', weight: 'bold' });
     }
   }
@@ -249,7 +259,7 @@ export function planScene(load, vehicle, { width = 520, height = 190, pad = 26, 
     scene.line([sx, base - 3], [sx, base + 3], { color: 'text-muted', width: 0.5 });
     scene.label(sx, base + 13, `${x}`, { size: 6.5, color: 'text-muted', align: 'center' });
   }
-  scene.label(P(L / 2, 0)[0], base + 24, 'metres from nose', { size: 6.5, color: 'text-muted', align: 'center' });
+  scene.label(P(L / 2, 0)[0], base + 25, 'metres from nose', { size: 6.5, color: 'text-muted', align: 'center' });
 
   // Centre of gravity.
   const cgx = P(load.cg, 0)[0];
@@ -274,11 +284,12 @@ export function elevationScene(load, vehicle, { width = 520, height = 190, pad =
   const sorted = [...load.placements].sort((a, b) => b.y - a.y);
   for (const p of sorted) {
     const c = tokenFor(p.rowIndex);
-    scene.poly([P(p.x, p.z), P(p.x + p.l, p.z), P(p.x + p.l, p.z + p.h), P(p.x, p.z + p.h)], {
+    const b = shown(p);
+    scene.poly([P(b.x, b.z), P(b.x + b.l, b.z), P(b.x + b.l, b.z + b.h), P(b.x, b.z + b.h)], {
       fill: c, shade: 0.9, opacity: 0.85, stroke: 'surface', strokeWidth: 0.6,
     });
     if (labels) {
-      const mid = P(p.x + p.l / 2, p.z + p.h / 2);
+      const mid = P(b.x + b.l / 2, b.z + b.h / 2);
       scene.label(mid[0], mid[1] + 3, String(p.no), { size: 7.5, color: 'surface', align: 'center', weight: 'bold' });
     }
   }
@@ -306,8 +317,10 @@ const anchor = (align) => (align === 'center' ? 'middle' : align === 'right' ? '
 /**
  * Render a scene to an SVG string. Face shading is a flat overlay of
  * --color-text, so every colour on screen still comes from a token.
+ * `minFont` is the smallest label size in drawing units; the page raises it
+ * so the labels stay readable when the drawing is shown small.
  */
-export function sceneToSvg(scene, title = '') {
+export function sceneToSvg(scene, title = '', minFont = 0) {
   const out = [
     `<svg viewBox="0 0 ${scene.width} ${scene.height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${esc(title)}">`,
   ];
@@ -333,7 +346,7 @@ export function sceneToSvg(scene, title = '') {
       );
     } else {
       out.push(
-        `<text x="${it.x.toFixed(2)}" y="${it.y.toFixed(2)}" font-size="${it.size}" fill="var(--color-${it.color})" ` +
+        `<text x="${it.x.toFixed(2)}" y="${it.y.toFixed(2)}" font-size="${Math.max(it.size, minFont)}" fill="var(--color-${it.color})" ` +
         `text-anchor="${anchor(it.align)}" font-family="var(--font-mono)"` +
         (it.weight === 'bold' ? ' font-weight="600"' : '') + `>${esc(it.text)}</text>`
       );

@@ -22,7 +22,7 @@
 
   var $ = function (id) { return document.getElementById(id); };
   var el = window.Hub.el, Api = window.Api;
-  var TOOL = 'product-options', FEW = 8, STORE = 'dame_po_choice';
+  var TOOL = 'product-options', FEW = 8, LONG = 20, STORE = 'dame_po_choice';
 
   var productSel = $('po-product'), factorySel = $('po-factory'), search = $('po-search');
   var hint = $('po-hint'), result = $('po-result'), host = $('po-tree-host');
@@ -93,19 +93,41 @@
     return secs;
   }
 
+  /* "2,500 m3/h" -> { n: 2500, s: "2,500", unit: "m3/h" }; null when the value is not a number with a unit */
+  function number(text) {
+    var m = /^(-?\d[\d.,]*)\s*(.*)$/.exec(text);
+    if (!m) return null;
+    var n = parseFloat(m[1].replace(/,(?=\d{3}(\D|$))/g, '').replace(',', '.'));
+    return isNaN(n) ? null : { n: n, s: m[1], unit: m[2] };
+  }
+
   /* 2,500 m3/h ... 45,000 m3/h -> a range, when every value is a number with the same unit */
   function range(values) {
     var unit = null, min = null, max = null, ok = values.every(function (v) {
-      var m = /^(-?\d[\d.,]*)\s*(.*)$/.exec(v.v);
-      if (!m) return false;
-      var n = parseFloat(m[1].replace(/,(?=\d{3}(\D|$))/g, '').replace(',', '.'));
-      if (isNaN(n) || (unit !== null && unit !== m[2])) return false;
-      unit = m[2];
-      if (min === null || n < min.n) min = { n: n, s: m[1] };
-      if (max === null || n > max.n) max = { n: n, s: m[1] };
+      var x = number(v.v);
+      if (!x || (unit !== null && unit !== x.unit)) return false;
+      unit = x.unit;
+      if (min === null || x.n < min.n) min = x;
+      if (max === null || x.n > max.n) max = x;
       return true;
     });
     return ok && min && min.n !== max.n ? min.s + ' to ' + max.s + (unit ? ' ' + unit : '') : '';
+  }
+
+  function times(n) { return 'seen ' + n + (n === 1 ? ' time' : ' times'); }
+
+  /* The values of one row for an Excel cell: one per line with how often each was seen, numbers in
+     numeric order, the range first when the page shows one. A long list (more than LONG values)
+     is written on one wrapped line without the counts, so the cell stays readable. */
+  function cellText(values) {
+    var list = values.slice(), unit = null;
+    if (list.length > 1 && list.every(function (v) { var x = number(v.v); if (!x || (unit !== null && unit !== x.unit)) return false; unit = x.unit; return true; })) {
+      list.sort(function (a, b) { return number(a.v).n - number(b.v).n; });
+    }
+    var rg = list.length > FEW ? range(list) : '', lines = rg ? [rg] : [];
+    if (list.length > LONG) lines.push(list.length + ' values: ' + list.map(function (v) { return v.v; }).join(', '));
+    else list.forEach(function (v) { lines.push(v.v + ' (' + times(v.n) + ')'); });
+    return lines.join('\n');
   }
 
   function matches(q, s, r) {
@@ -184,7 +206,7 @@
     var rg = shown.length > FEW ? range(shown.filter(function (v) { return !v.hidden; })) : '';
     if (rg) vals.appendChild(el('span', { 'class': 'po-chip range', title: 'Lowest and highest value seen so far', text: rg }));
     (all ? shown : (rg ? [] : shown.slice(0, FEW))).forEach(function (v) {
-      var c = el('span', { 'class': 'po-chip' + (v.hidden ? ' off' : '') }, [el('span', { text: v.v }), el('small', { text: '×' + v.n, title: v.n + (v.n === 1 ? ' unit' : ' units') + ' had this value' })]);
+      var c = el('span', { 'class': 'po-chip' + (v.hidden ? ' off' : '') }, [el('span', { text: v.v }), el('small', { text: times(v.n), title: 'Seen ' + v.n + (v.n === 1 ? ' time' : ' times') + ' on the datasheets run so far. A datasheet run again is counted again.' })]);
       if (edit) c.appendChild(xbtn(v.hidden ? 'Bring back' : 'Take out', function (e) {
         busy(e.currentTarget, Api.poAdminSetHidden(window.Hub.token(), { factoryId: tree.factory.id, key: r.key, valueKey: v.k, model: v.model || '', hidden: !v.hidden }), v.hidden ? 'Value is back in the tree.' : 'Value taken out.');
       }));
@@ -211,15 +233,16 @@
   /* The sections of one group. model = '' : the plain tree (AHU) or, with extrasOnly, the
      special options and notes block of an FCU tree; model = 'FWW600VA' : that model's values only. */
   function drawSections(secs, q, edit, model, extrasOnly) {
-    var wrap = el('div', { 'class': 'po-tree' }), drawn = 0, nRows = 0, nVals = 0;
+    var wrap = el('div', { 'class': 'po-tree' }), drawn = 0, nRows = 0, nVals = 0, keys = {};
     secs.forEach(function (s) {
       var live = s.rows.filter(function (r) { return edit || !r.off; }).map(function (r) {
-        var values = extrasOnly ? [] : r.values.filter(function (v) { return model ? v.model === model : true; });
+        // with Edit off an editor sees what users see: no values that were taken out
+        var values = extrasOnly ? [] : r.values.filter(function (v) { return (edit || !v.hidden) && (model ? v.model === model : true); });
         return { key: r.key, sub: r.sub, name: r.name, off: r.off, values: values, extras: model ? [] : r.extras, model: model };
       }).filter(function (r) {
         return r.values.length || r.extras.length || (!model && !extrasOnly && edit);
       });
-      live.forEach(function (r) { if (!r.off) { nRows++; nVals += r.values.filter(function (v) { return !v.hidden; }).length; } });
+      live.forEach(function (r) { if (!r.off) { nRows++; keys[r.key] = 1; nVals += r.values.filter(function (v) { return !v.hidden; }).length; } });
       var secHit = q && q.split(/\s+/).every(function (w) { return low(s.name).indexOf(w) >= 0; });
       var rows = live.filter(function (r) { return secHit || matches(q, s, r); });
       var extras = model ? [] : s.extras.filter(function (x) { return secHit || !q || matches(q, { name: s.name, extras: [x] }); });
@@ -252,7 +275,7 @@
       });
       wrap.appendChild(d);
     });
-    return { wrap: wrap, drawn: drawn, rows: nRows, values: nVals };
+    return { wrap: wrap, drawn: drawn, rows: nRows, values: nVals, keys: keys };
   }
 
   /* models grouped by series, in the order the database gives (series, then most units first) */
@@ -266,12 +289,12 @@
     return out;
   }
   function modelMode() { return !!(tree && tree.models && tree.models.length); }
-  function units(n) { return n + (n === 1 ? ' unit' : ' units'); }
+  function units(n) { return times(n); }           // a datasheet run again is counted again, so not "units"
 
   function render() {
     if (!tree) return;
     var edit = editing(), q = low(search.value).trim(), secs = build();
-    var nRows = 0, nVals = 0, nExtra = tree.extras.length, drawn = 0;
+    var nRows = 0, nVals = 0, nExtra = tree.extras.length, drawn = 0, distinct = {};
     host.textContent = '';
     $('po-edit-note').hidden = !edit;
 
@@ -287,7 +310,8 @@
         sr.models.forEach(function (m) {
           var mHit = srHit || (q && words.every(function (w) { return low(m.model).indexOf(w) >= 0; }));
           var g = drawSections(secs, mHit ? '' : q, edit, m.model, false);
-          nRows += g.rows; nVals += g.values;
+          nVals += g.values;
+          Object.keys(g.keys).forEach(function (k) { distinct[k] = 1; });   // a component counts once, however many models have it
           if (!g.drawn) return;
           shownModels++; drawn += g.drawn;
           var mk = 'model:' + low(m.model);
@@ -308,6 +332,7 @@
         sd.addEventListener('toggle', function () { if (!q) closed[sk] = !sd.open; });
         parts.push(sd);
       });
+      nRows = Object.keys(distinct).length;
       // special options and notes are per section or row, for every model
       var x = drawSections(secs, q, edit, '', true);
       if (x.drawn) {
@@ -324,7 +349,7 @@
 
     var facts = $('po-facts'); facts.textContent = '';
     [modelMode() ? series.length + (series.length === 1 ? ' series' : ' series') + ', ' + tree.models.length + (tree.models.length === 1 ? ' model' : ' models') : secs.length + (secs.length === 1 ? ' section' : ' sections'),
-     nRows + ' components', nVals + ' values',
+     nRows + (nRows === 1 ? ' component' : ' components'), nVals + (nVals === 1 ? ' value' : ' values'),
      nExtra ? nExtra + ' special options and notes' : '', tree.updated ? 'Last datasheet ' + when(tree.updated) : '']
       .filter(Boolean).forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
 
@@ -332,7 +357,10 @@
     empty.hidden = !!drawn; empty.textContent = '';
     if (!drawn) {
       if (q) empty.textContent = 'Nothing matches "' + search.value.trim() + '".';
-      else {
+      else if (!readable()) {
+        empty.textContent = 'Datasheets for ' + tree.factory.product + (reader() ? ' from the ' + tree.factory.name + ' factory' : '') +
+          ' cannot be read yet. Only special options and notes added by editors will show here.';
+      } else {
         empty.appendChild(document.createTextNode('No datasheet has been run for this factory yet. Run one in '));
         empty.appendChild(el('a', { href: '../datasheet-notes/', text: 'Datasheet Notes' }));
         empty.appendChild(document.createTextNode(' and its mapped rows appear here.'));
@@ -348,6 +376,14 @@
       parts.forEach(function (n) { host.appendChild(n); });
     }
     if (edit && !q) host.appendChild(addSection(secs));
+  }
+
+  /* Can Datasheet Notes read a datasheet of this product, and can a datasheet name this factory?
+     From the readers of Datasheet Notes (ds-parse.js, ds-fcu.js). If they did not load, yes is assumed. */
+  function reader() { return window.DSParse ? window.DSParse.readers[low(tree.factory.product_id)] || null : {}; }
+  function readable() {
+    var r = reader();
+    return !!r && (!r.factories || r.factories.some(function (n) { return low(n) === low(tree.factory.name); }));
   }
 
   /* editors: an entry for a section that has nothing in the tree yet, or a new section */
@@ -394,7 +430,7 @@
     if (!tree) return;
     var byModel = modelMode(), secs = build();
     var rows = [(byModel ? ['Series', 'Model'] : []).concat(['Section', 'Sub-section', 'Component', 'Options seen on datasheets', 'Special options', 'Notes'])];
-    function txt(list, kind) { return list.filter(function (x) { return x.kind === kind; }).map(function (x) { return x.body; }).join(' | '); }
+    function txt(list, kind) { return list.filter(function (x) { return x.kind === kind; }).map(function (x) { return x.body; }).join('\n'); }
     function block(model, series) {
       secs.forEach(function (s) {
         var lead = byModel ? [series, model] : [];
@@ -404,14 +440,14 @@
           var vals = model ? r.values.filter(function (v) { return !v.hidden && v.model === model; }) : (byModel ? [] : r.values.filter(function (v) { return !v.hidden; }));
           var extras = model ? [] : r.extras;
           if (!vals.length && !extras.length) return;
-          rows.push(lead.concat([s.name, r.sub, r.name, vals.map(function (v) { return v.v; }).join(' | '), txt(extras, 'option'), txt(extras, 'note')]));
+          rows.push(lead.concat([s.name, r.sub, r.name, cellText(vals), txt(extras, 'option'), txt(extras, 'note')]));
         });
       });
     }
     if (byModel) { seriesList().forEach(function (sr) { sr.models.forEach(function (m) { block(m.model, sr.name); }); }); block('', 'All models'); }
     else block('', '');
     var name = tree.factory.product + ' ' + tree.factory.name + ' - Product Options.xlsx';
-    var blob = window.HubXlsx.build(rows, 'Product Options', (byModel ? [14, 16] : []).concat([24, 22, 30, 48, 40, 50]));
+    var blob = window.POXlsx.build(rows, 'Product Options', (byModel ? [12, 16] : []).concat([26, 24, 32, 44, 36, 44]));
     var a = el('a', { href: URL.createObjectURL(blob), download: name });
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);

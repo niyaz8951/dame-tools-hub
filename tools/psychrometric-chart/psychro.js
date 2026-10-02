@@ -308,7 +308,10 @@
     if (!isFinite(value)) { return { ok: false, error: 'Enter a humidity value.' }; }
     if (!isFinite(p) || p <= 0) { return { ok: false, error: 'Barometric pressure must be above zero.' }; }
     if (tC < T_MIN || tC > T_MAX) {
-      return { ok: false, error: 'Dry bulb must be between ' + T_MIN + ' and ' + T_MAX + ' °C.' };
+      /* `code` and `data` (SI) let the page word the message in the unit
+         system on show; `error` stays as the SI wording. */
+      return { ok: false, code: 'db-range', data: { min: T_MIN, max: T_MAX },
+               error: 'Dry bulb must be between ' + T_MIN + ' and ' + T_MAX + ' °C.' };
     }
 
     var W;
@@ -344,6 +347,8 @@
     if (W > Ws * (1 + 1e-6)) {
       return {
         ok: false,
+        code: 'above-saturation',
+        data: { t: tC, p: p, wMax: Ws },
         error: 'Above saturation — at ' + tC.toFixed(1) + ' °C and ' + p.toFixed(1) +
                ' kPa the air holds at most ' + (Ws * 1000).toFixed(2) + ' g/kg.'
       };
@@ -444,8 +449,11 @@
       sensible: sensible,
       latent: latent,
       moisture: moisture,
-      /* SHR is only meaningful when there is a total load to divide by. */
-      shr: Math.abs(total) > 1e-9 ? sensible / total : NaN
+      /* SHR is only meaningful when there is a total load to divide by. When
+         sensible and latent all but cancel (evaporative cooling) the ratio is
+         a huge number that says nothing, so it is left blank. */
+      shr: Math.abs(total) > 0.02 * (Math.abs(sensible) + Math.abs(latent)) && Math.abs(total) > 1e-9
+        ? sensible / total : NaN
     };
   }
 

@@ -141,7 +141,7 @@ html[data-loading] body { visibility: hidden; }
 /* ---------- toast ---------- */
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-  max-width: calc(100vw - 32px);
+  width: max-content; max-width: calc(100vw - 32px);
   padding: 10px 16px; border-radius: var(--radius-sm); z-index: 90;
   background: var(--brand-navy); color: #fff; font: 14px/1.5 var(--font); box-shadow: var(--shadow);
 }

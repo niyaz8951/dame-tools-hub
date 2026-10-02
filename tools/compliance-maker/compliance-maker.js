@@ -54,6 +54,9 @@
   var currentRows = null;
   var currentName = 'compliance-matrix';
   var pendingFile = null;          // chosen PDF, not yet processed
+  var currentPartial = '';         // set when only part of the input was converted
+  var trimNote = document.getElementById('trim-note');
+  var resultHead = document.getElementById('step-result');
   var activeSource = 'pdf';        // 'pdf' | 'text'
 
   /* Page ceiling. Nothing enforces this but this line — there is no server to
@@ -210,6 +213,12 @@
   // unlabeled lines into the clause above. Only the paste path passes this;
   // a PDF's line breaks come from the page layout, not the author, so folding
   // them back together is the only way to recover the real clause there.
+  // Control characters a PDF or a Word copy can carry are not text: drop them here so the
+  // preview, the library and the Excel all hold the same clause.
+  function stripInvalid(s) {
+    return window.xlsxWriter && window.xlsxWriter.clean ? window.xlsxWriter.clean(s) : String(s);
+  }
+
   function parseLines(rawLines, opts) {
     var keepBreaks = !!(opts && opts.keepBreaks);
     // Promote bare labels before anything else looks at the lines, so the
@@ -218,7 +227,7 @@
     rawLines = normaliseBareLabels(rawLines);
     var rows = [];
     for (var i = 0; i < rawLines.length; i++) {
-      var line = rawLines[i].replace(/\s+/g, ' ').trim();
+      var line = stripInvalid(rawLines[i]).replace(/\s+/g, ' ').trim();
       if (!line) continue;
 
       var endMatch = line.match(END_OF_SECTION_RE);
@@ -400,6 +409,8 @@
      PREVIEW
      ====================================================================== */
 
+  function rowsText(n) { return n + (n === 1 ? ' row' : ' rows'); }
+
   function renderPreview(rows) {
     var re = buildHighlighter();
     previewBody.innerHTML = '';
@@ -448,13 +459,15 @@
 
       var cTd = document.createElement('td');
       cTd.className = 'comments';
+      // same text as the Comments column of the Excel ("From library (exact match).")
+      if (isBody && window.xlsxWriter && window.xlsxWriter.commentFor) cTd.textContent = window.xlsxWriter.commentFor(r);
       if (r.type === 'part') cTd.style.background = '#000';
       tr.appendChild(cTd);
 
       previewBody.appendChild(tr);
     });
 
-    countNote.textContent = rows.length + ' rows' +
+    countNote.textContent = rowsText(rows.length) +
       (filledRows ? ' · ' + filledRows + ' filled from the library' : '') +
       (blanks ? ' · ' + blanks + ' to fill in' : '') + '.';
     resultPanel.hidden = false;
@@ -542,10 +555,17 @@
      BUILD
      ====================================================================== */
 
-  function finishBuild(rows, baseMsg) {
+  function finishBuild(rows, baseMsg, partial) {
     currentRows = rows;
+    currentPartial = partial || '';
     renderPreview(rows);
     setStatus(baseMsg + '.', 'ok');
+    if (trimNote) {
+      trimNote.textContent = currentPartial ? currentPartial + ' The rest is not in the preview or the Excel. Split the specification and convert the rest separately.' : '';
+      trimNote.hidden = !currentPartial;
+    }
+    // Convert was disabled while working, which drops the keyboard focus: put it on the result.
+    if (resultHead) resultHead.focus();
     saveToLibrary(rows);
     // second table: the datasheet rows with the clause found for each (cm-rows.js)
     var sel = window.CMLibrary && window.CMLibrary.selection();
@@ -577,6 +597,7 @@
           r.auto = { type: 'exact' };
         });
         renderPreview(rows);
+        if (res.unique_lines === 0) { setLibNote('No clause lines were found to add to the compliance library.'); return; }
         setLibNote('Saved to the compliance library. ' +
           (res.matched ? res.matched + ' of ' + rows.length + ' rows filled from earlier answers.'
                        : 'No earlier answers matched these lines yet.'), 'ok');
@@ -587,11 +608,45 @@
       });
   }
 
+  // A file that cannot be used must not leave the earlier one armed behind the message.
+  function dropFile() {
+    pendingFile = null;
+    fileInput.value = '';
+    fileSlot.innerHTML = '';
+    refreshConvertState();
+  }
+
+  /* The result on screen belongs to one conversion. When the next one fails, or the product
+     or factory changes, it goes: preview, Datasheet rows and the saved note. The chosen PDF
+     and the pasted text stay. */
+  function dropResult() {
+    currentRows = null;
+    currentPartial = '';
+    if (window.CMRows) window.CMRows.clear();
+    previewBody.innerHTML = '';
+    resultPanel.hidden = true;
+    btnDownload.disabled = true;
+    if (trimNote) { trimNote.hidden = true; trimNote.textContent = ''; }
+    setLibNote('');
+  }
+  function failed(msg) {
+    dropResult();
+    setStatus(msg, 'error');
+    setConverting(false);
+    if (!btnConvert.disabled) btnConvert.focus();
+  }
+
   // Selecting a file only STORES it. Nothing is parsed until Convert.
   function selectFile(file) {
     if (!file) return;
     if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+      dropFile();
       setStatus('That is not a PDF. Please choose a .pdf file.', 'error');
+      return;
+    }
+    if (file.size === 0) {
+      dropFile();
+      setStatus('That file is empty (0 bytes). Choose another PDF.', 'error');
       return;
     }
     pendingFile = file;
@@ -636,9 +691,7 @@
           pageLines.forEach(function (pl) { allLines = allLines.concat(pl); });
           var joined = allLines.join('').trim();
           if (!joined) {
-            setStatus('No selectable text found. This looks like a scanned PDF — OCR is not supported.', 'error');
-            resultPanel.hidden = true;
-            setConverting(false);
+            failed('No selectable text found. This looks like a scanned PDF — OCR is not supported.');
             return;
           }
           setStatus('Building matrix…');
@@ -647,17 +700,18 @@
           var note = pdf.numPages > MAX_PAGES
             ? ' (first ' + MAX_PAGES + ' of ' + pdf.numPages + ' pages)'
             : '';
-          finishBuild(rows, 'Done — ' + rows.length + ' rows' + note +
-            (dropped ? ' · ' + dropped + ' page header and footer lines removed' : '') + frontNote(front));
+          var partial = note ? 'PARTIAL: only the first ' + MAX_PAGES + ' of ' + pdf.numPages + ' pages were converted.' : '';
+          finishBuild(rows, 'Done — ' + rowsText(rows.length) + note +
+            (dropped ? ' · ' + dropped + ' page header and footer lines removed' : '') + frontNote(front), partial);
           setConverting(false);
         });
       }).catch(function (err) {
-        console.error(err);
-        setStatus('Could not read that PDF. It may be corrupted or password-protected.', 'error');
-        setConverting(false);
+        failed(err && err.name === 'PasswordException'
+          ? 'That PDF is password-protected. Remove the password and try again.'
+          : 'Could not read that PDF. It may be corrupted or not a real PDF file.');
       });
     };
-    reader.onerror = function () { setStatus('Could not read the file.', 'error'); setConverting(false); };
+    reader.onerror = function () { failed('Could not read the file.'); };
     reader.readAsArrayBuffer(file);
   }
 
@@ -683,10 +737,15 @@
       // character budget instead — CHARS_PER_PAGE is a deliberate,
       // conservative stand-in for a spec page of body text.
       var cap = MAX_PAGES * CHARS_PER_PAGE;
-      var trimmed = '';
+      var trimmed = '', partial = '';
       if (raw.length > cap) {
-        raw = raw.slice(0, cap);
+        // cut at the end of a line, never inside a clause
+        var totalLines = raw.split(/\r\n|\r|\n/).length;
+        var cut = Math.max(raw.lastIndexOf('\n', cap), raw.lastIndexOf('\r', cap));
+        raw = raw.slice(0, cut > 0 ? cut : cap);
+        var keptLines = raw.split(/\r\n|\r|\n/).length;
         trimmed = ' (trimmed to the first ~' + MAX_PAGES + ' pages of text)';
+        partial = 'PARTIAL: only the first ' + keptLines + ' of ' + totalLines + ' pasted lines were converted (about ' + MAX_PAGES + ' pages of text).';
       }
       currentName = 'compliance-matrix';
       setConverting(true);
@@ -710,7 +769,7 @@
       var front = skipFront && skipFront.checked ? skipFrontMatter(rawLines) : { lines: rawLines, skipped: 0 };
       var rows = parseLines(front.lines,
                             { keepBreaks: keepBreaks && keepBreaks.checked });
-      finishBuild(rows, 'Done — ' + rows.length + ' rows' + trimmed + tidyNote + frontNote(front));
+      finishBuild(rows, 'Done — ' + rowsText(rows.length) + trimmed + tidyNote + frontNote(front), partial);
       setConverting(false);
     }
   }
@@ -739,16 +798,13 @@
   }
 
   function clearAll() {
-    currentRows = null;
-    if (window.CMRows) window.CMRows.clear();
+    dropResult();
     pendingFile = null;
     fileInput.value = '';
     fileSlot.innerHTML = '';
-    previewBody.innerHTML = '';
-    resultPanel.hidden = true;
-    btnDownload.disabled = true;
+    pasteInput.value = '';
+    remember();
     setStatus('');
-    setLibNote('');
     refreshConvertState();
   }
 
@@ -779,22 +835,54 @@
     tabText.setAttribute('aria-selected', pdf ? 'false' : 'true');
     tabPdf.setAttribute('aria-pressed', pdf ? 'true' : 'false');
     tabText.setAttribute('aria-pressed', pdf ? 'false' : 'true');
+    // one tab stop for the pair; the arrow keys move between them
+    tabPdf.tabIndex = pdf ? 0 : -1;
+    tabText.tabIndex = pdf ? -1 : 0;
     panePdf.hidden = !pdf;
     paneText.hidden = pdf;
-    // Switching source clears any staged input/results.
+    // Switching source clears the staged PDF and the result. Pasted text stays in its box.
     pendingFile = null;
     fileInput.value = '';
     fileSlot.innerHTML = '';
-    currentRows = null;
-    resultPanel.hidden = true;
-    btnDownload.disabled = true;
+    dropResult();
     setStatus('');
-    setLibNote('');
+    remember();
     refreshConvertState();
   }
 
   tabPdf.addEventListener('click', function () { selectSource('pdf'); });
   tabText.addEventListener('click', function () { selectSource('text'); });
+  [tabPdf, tabText].forEach(function (tab) {
+    tab.addEventListener('keydown', function (e) {
+      var to = e.key === 'ArrowRight' || e.key === 'ArrowLeft' ? (tab === tabPdf ? tabText : tabPdf)
+             : e.key === 'Home' ? tabPdf : e.key === 'End' ? tabText : null;
+      if (!to) return;
+      e.preventDefault();
+      if (to !== tab) selectSource(to === tabPdf ? 'pdf' : 'text');
+      to.focus();
+    });
+  });
+
+  /* Pasted text and the chosen tab are kept for this browser tab (sessionStorage), so a
+     reload does not lose them. A PDF cannot be kept: it has to be chosen again. */
+  var KEEP = 'cm.keep';
+  function who() { return window.Hub && window.Hub.token ? String(window.Hub.token() || '') : ''; }
+  function remember() {
+    try { sessionStorage.setItem(KEEP, JSON.stringify({ who: who(), source: activeSource, text: pasteInput.value })); } catch (e) { /* too large or blocked: not kept */ }
+  }
+  function restore() {
+    var k = null;
+    try { k = JSON.parse(sessionStorage.getItem(KEEP)); } catch (e) { k = null; }
+    if (!k || k.who !== who()) return;          // kept by another sign-in: not shown
+    if (k.text) pasteInput.value = k.text;
+    if (k.source === 'text') selectSource('text');
+  }
+
+  // The preview follows the Formatting ticks at once. Nothing is converted or saved again.
+  function reRender() { if (currentRows) renderPreview(currentRows); }
+  [dbRulesOn, hlNumbers, hlCaps].forEach(function (box) { if (box) box.addEventListener('change', reRender); });
+  var dictTimer;
+  dictEl.addEventListener('input', function () { clearTimeout(dictTimer); dictTimer = setTimeout(reRender, 250); });
 
   dropzone.addEventListener('click', function () { fileInput.click(); });
   dropzone.addEventListener('keydown', function (e) {
@@ -811,7 +899,7 @@
   fileInput.addEventListener('change', function () {
     if (fileInput.files && fileInput.files[0]) selectFile(fileInput.files[0]);
   });
-  pasteInput.addEventListener('input', refreshConvertState);
+  pasteInput.addEventListener('input', function () { refreshConvertState(); remember(); });
 
   btnConvert.addEventListener('click', runConvert);
   btnClear.addEventListener('click', clearAll);
@@ -822,7 +910,7 @@
     var sel = window.CMLibrary && window.CMLibrary.selection();
     var band = sel ? 'Product : ' + sel.productName + '     Factory : ' + sel.factoryName : '';
     var blob = window.xlsxWriter.build(currentRows, re, splitRuns,
-      { bandText: band, sheet2: window.CMRows ? window.CMRows.sheet() : null });
+      { bandText: band, partial: currentPartial, sheet2: window.CMRows ? window.CMRows.sheet() : null });
     downloadBlob(blob, currentName + '.xlsx');
   });
 
@@ -837,6 +925,8 @@
 
   /* ---- Initial state ---- */
   pageLimitNote.textContent = 'Specifications up to ' + MAX_PAGES + ' pages.';
+  restore();
   refreshConvertState();
   loadRules();   // warm the highlight rules in the background
+  window.CMMaker = { dropResult: dropResult };
 })();

@@ -26,7 +26,19 @@
   .dn-facts { display: flex; gap: 6px; flex-wrap: wrap; }
   .dn-preview { max-height: 560px; overflow: auto; }
   .dn-preview table { table-layout: fixed; min-width: 640px; }
-  .dn-preview th { position: sticky; top: 0; z-index: 1; }
+  .dn-preview th { position: sticky; top: 0; z-index: 2; }
+  /* Section and Component stay in view when a wide table is scrolled sideways.
+     --dn-c1 = the width of the Section column, set by the page when the table is drawn. */
+  .dn-preview th:nth-child(-n+2), .dn-preview td:nth-child(-n+2) { position: sticky; left: 0; }
+  .dn-preview th:nth-child(2), .dn-preview td:nth-child(2) { left: var(--dn-c1, 170px); box-shadow: inset -1px 0 0 var(--border); }
+  .dn-preview th:nth-child(-n+2) { z-index: 3; }
+  .dn-preview td:nth-child(-n+2) { z-index: 1; background: var(--surface); }
+  @media (max-width: 560px) {
+    .dn-preview th:nth-child(-n+2), .dn-preview td:nth-child(-n+2) { padding-left: 8px; padding-right: 6px; font-size: 12px; }
+    .dn-preview th:nth-child(-n+2) { font-size: 11px; letter-spacing: 0; }
+  }
+  .dn-run { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .dn-run .notice { flex: 1 1 240px; margin: 0; }
   .dn-preview td { vertical-align: top; overflow-wrap: anywhere; padding: 8px 12px; }
   .dn-preview th.unit { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); white-space: normal; overflow-wrap: anywhere; }
   .dn-preview td.sec { font-weight: 650; }
@@ -76,7 +88,10 @@
           A PDF with several units, or several PDFs, gives one column per unit.</span>
       </button>
       <input type="file" id="dn-file" class="dn-file" accept=".pdf,application/pdf" multiple tabindex="-1" aria-hidden="true">
-      <div class="notice" id="dn-status" role="status" aria-live="polite" hidden></div>
+      <div class="dn-run">
+        <div class="notice" id="dn-status" role="status" aria-live="polite" hidden></div>
+        <button type="button" class="btn ghost sm" id="dn-cancel" hidden>Cancel</button>
+      </div>
       <div class="notice warn" id="dn-map-note" hidden></div>
       <p class="hint">The PDF is read on your computer. It is not uploaded or saved. New section and row names go to the admins' mapping list, and the values of the mapped rows go to the Product Options list of the factory. The project name, reference and unit tag are not saved.</p>
     </section>
@@ -93,6 +108,7 @@
           <button type="button" class="btn ghost" id="dn-clear">Clear</button>
         </div>
       </div>
+      <div class="notice warn" id="dn-failed" hidden></div>
       <div class="dn-facts" id="dn-facts"></div>
       <div class="notice dn-diff" id="dn-diff" hidden>
         <p class="small" id="dn-diff-text"></p>

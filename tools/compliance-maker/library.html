@@ -123,6 +123,7 @@
           </div>
           <div class="table-wrap"><table class="table"><thead><tr><th>Specification</th><th>Compliance</th><th>Remarks</th></tr></thead><tbody id="pRowsBody"></tbody></table></div>
           <p class="small muted" id="pMore"></p>
+          <div id="pReplace" class="notice" role="status" hidden></div>
           <div class="row"><button class="btn" type="button" id="btnImport">Add to library</button><button class="btn ghost" type="button" id="btnCancel">Cancel</button></div>
         </div>
         <div id="upResult" class="stack" hidden>
@@ -229,7 +230,7 @@
     if (!factoryId()) return;
     var req = factoryId() + "|" + offset + "|" + $("fPart").value + "|" + $("fTopic").value;
     loadLines.last = req;
-    Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value, limit: PAGE, offset: offset,
+    Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value.replace(/\s+/g, " ").trim(), limit: PAGE, offset: offset,
                                      part: $("fPart").value, topic: $("fTopic").value }).then(function (res) {
       if (loadLines.last !== req) return;
       total = res.total; setCounts(res.counts); fillGroups(res.groups || []);
@@ -348,7 +349,35 @@
       ans.slice(0, 8).forEach(function (r) { body.appendChild(el("tr", {}, [el("td", { text: r.spec }), el("td", { text: r.compliance }), el("td", { text: r.remarks })])); });
       $("pMore").textContent = ans.length > 8 ? "First 8 of " + ans.length + " filled rows shown." : "";
       $("upPreview").hidden = false;
-    }, function (err) { show($("upMsg"), err.message); });
+      countReplaced(pending);
+    })["catch"](function (err) { show($("upMsg"), err && err.message ? err.message : String(err)); });
+  }
+  /* Before Add to library: how many answers already in the library this file will replace.
+     Same rule as the import: one clause is one line (letters and digits only, lower case),
+     the last filled row of the file wins, clauses under 8 characters are skipped. */
+  function norm(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+  function countReplaced(p) {
+    var box = $("pReplace"); box.hidden = true;
+    Api.cmAdminExport(Hub.token(), factoryId()).then(function (res) {
+      if (pending !== p) return;                       // cancelled or another file chosen meanwhile
+      var have = {}, mine = {}, fresh = 0, same = 0, repl = 0;
+      (res.lines || []).forEach(function (l) { if (l.compliance || l.remarks) have[norm(l.spec_text)] = l; });
+      p.rows.forEach(function (r) { var k = norm(r.spec); if (k.length >= 8) mine[k] = r; });
+      Object.keys(mine).forEach(function (k) {
+        var old = have[k], r = mine[k];
+        if (!old) fresh++;
+        else if ((old.compliance || "") === r.compliance && (old.remarks || "") === r.remarks) same++;
+        else repl++;
+      });
+      box.textContent = repl ? repl + (repl === 1 ? " answer already in the library will be replaced" : " answers already in the library will be replaced") +
+                               " by this file. " + fresh + " new answers, " + same + " already the same."
+                             : "No answer already in the library will be replaced. " + fresh + " new answers, " + same + " already the same.";
+      box.className = "notice " + (repl ? "warn" : "ok"); box.hidden = false;
+    }, function (err) {
+      if (pending !== p) return;
+      box.textContent = "Could not check which answers this file replaces: " + (err && err.message ? err.message : err);
+      box.className = "notice warn"; box.hidden = false;
+    });
   }
   $("drop").addEventListener("click", function () { $("file").click(); });
   $("drop").addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });

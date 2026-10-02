@@ -31,6 +31,7 @@
         <input class="input" name="password" type="password" autocomplete="current-password" required></label>
       <button class="btn" type="submit" style="width:100%">Sign in</button>
       <p class="small muted" style="text-align:center">No account yet? <a href="#request" id="toRequest">Request access</a></p>
+      <p class="small muted" style="text-align:center">Forgot your password? Ask your admin to reset it.</p>
     </form>
 
     <!-- request access -->
@@ -89,6 +90,7 @@
   requestForm.addEventListener("submit", function (e) {
     e.preventDefault(); show($("requestMsg"), "");
     if (requestForm.password.value !== requestForm.password2.value) { show($("requestMsg"), "The two passwords do not match."); return; }
+    if (!/\S/.test(requestForm.password.value)) { show($("requestMsg"), "Password cannot be only spaces."); return; }
     busy(requestForm, true);
     Api.register({ username: requestForm.username.value, fullName: requestForm.fullName.value,
                    teamNote: requestForm.teamNote.value, password: requestForm.password.value }).then(function () {

@@ -144,7 +144,8 @@ export const DEFAULT_PALLET_CLEARANCE = 0.100;
 export const DEFAULT_OPTIONS = {
   allowStacking: true,   // may items be placed on top of other items
   allowTilt: false,      // may items be turned onto their side / end (6 rotations vs 2)
-  gap: 0,                // clearance added to each item's length & width, metres
+  gap: 0,                // clearance kept BETWEEN items along length & width, metres.
+                         // Not applied to the walls: an item may touch them.
   supportRatio: 0.8,     // fraction of an item's base that must rest on something solid
   maxVehicles: 400,      // safety stop
   sortBy: null,          // force one strategy by name, or null to search several
@@ -194,7 +195,7 @@ function footprintOverlap(a, b) {
  * Expand the item list into individual physical units and apply the
  * clearance gap. Rows that cannot ever ship are reported, not silently kept.
  */
-function expandUnits(items, gap) {
+function expandUnits(items) {
   const units = [];
   items.forEach((item, i) => {
     const qty = Math.max(1, Math.round(Number(item.qty) || 1));
@@ -209,9 +210,9 @@ function expandUnits(items, gap) {
         rawL: Number(item.length),
         rawW: Number(item.width),
         rawH: Number(item.height),
-        // size used for packing (includes clearance)
-        l: Number(item.length) + gap,
-        w: Number(item.width) + gap,
+        // size used for sorting; the clearance is added at placement
+        l: Number(item.length),
+        w: Number(item.width),
         h: Number(item.height),
         weight: Number(item.weight) || 0,
         stackable: item.stackable !== false,
@@ -225,8 +226,10 @@ function expandUnits(items, gap) {
   return units;
 }
 
+/* The clearance is a gap between items, not to the walls, so whether an item
+   fits the empty vehicle is judged on its real size. */
 function fitsAnywhere(u, vehicle, opt) {
-  for (const o of orientations(u.l, u.w, u.h, opt.allowTilt)) {
+  for (const o of orientations(u.rawL, u.rawW, u.rawH, opt.allowTilt)) {
     if (o.l <= vehicle.length + EPS && o.w <= vehicle.width + EPS && o.h <= vehicle.height + EPS) return true;
   }
   return false;
@@ -264,12 +267,16 @@ function tryPlace(bin, unit, opt) {
   const v = bin.vehicle;
   if (bin.weight + unit.weight > v.payload + EPS) return false;
 
+  /* Each item occupies its real size plus the clearance on its far side in
+     length and width. That keeps the gap between neighbours; the last item
+     in a row may touch the wall, so the wall check uses the real size. */
+  const gap = opt.gap || 0;
   let best = null;
   for (const pt of bin.points) {
-    for (const o of orientations(unit.l, unit.w, unit.h, opt.allowTilt)) {
-      const cand = { x: pt.x, y: pt.y, z: pt.z, l: o.l, w: o.w, h: o.h, stackable: unit.stackable };
-      if (cand.x + cand.l > v.length + EPS) continue;
-      if (cand.y + cand.w > v.width + EPS) continue;
+    for (const o of orientations(unit.rawL, unit.rawW, unit.rawH, opt.allowTilt)) {
+      const cand = { x: pt.x, y: pt.y, z: pt.z, l: o.l + gap, w: o.w + gap, h: o.h, il: o.l, iw: o.w, stackable: unit.stackable };
+      if (cand.x + cand.il > v.length + EPS) continue;
+      if (cand.y + cand.iw > v.width + EPS) continue;
       if (cand.z + cand.h > v.height + EPS) continue;
       let clash = false;
       for (const p of bin.placements) {
@@ -291,13 +298,15 @@ function tryPlace(bin, unit, opt) {
     rowIndex: unit.rowIndex,
     tag: unit.tag,
     copy: unit.copy,
-    x: round(c.x), y: round(c.y), z: round(c.z),
-    l: round(c.l), w: round(c.w), h: round(c.h),
+    x: round(c.x, 6), y: round(c.y, 6), z: round(c.z, 6),
+    // l, w: space taken, clearance included. il, iw: the item itself as placed.
+    l: round(c.l, 6), w: round(c.w, 6), h: round(c.h, 6),
+    il: round(c.il, 6), iw: round(c.iw, 6),
     rawL: unit.rawL, rawW: unit.rawW, rawH: unit.rawH,
     weight: unit.weight,
     stackable: unit.stackable,
     pallet: unit.pallet,
-    tilted: Math.abs(c.h - unit.h) > 1e-6,
+    tilted: Math.abs(c.h - unit.rawH) > 1e-6,
   });
   bin.weight = round(bin.weight + unit.weight, 3);
   bin.volume = round(bin.volume + unit.volume, 4);
@@ -311,8 +320,10 @@ function tryPlace(bin, unit, opt) {
   ];
   for (const p of fresh) {
     if (p.x > v.length - EPS || p.y > v.width - EPS || p.z > v.height - EPS) continue;
+    /* Six decimals, not three: rounding a point to the millimetre moved a
+       1.1965 m tier up to 1.197 m and the piece above it no longer fitted. */
     if (bin.points.some((q) => Math.abs(q.x - p.x) < 1e-4 && Math.abs(q.y - p.y) < 1e-4 && Math.abs(q.z - p.z) < 1e-4)) continue;
-    bin.points.push({ x: round(p.x), y: round(p.y), z: round(p.z) });
+    bin.points.push({ x: round(p.x, 6), y: round(p.y, 6), z: round(p.z, 6) });
   }
   bin.points.sort((a, b) => a.z - b.z || a.x - b.x || a.y - b.y);
   return true;
@@ -330,7 +341,7 @@ function tryPlace(bin, unit, opt) {
    64 units rather than every unit: the callback crosses a postMessage boundary
    in the worker, and reporting 12,000 times would cost more than the packing. */
 function packOnce(items, vehicle, opt, strategy, tick) {
-  const units = expandUnits(items, opt.gap);
+  const units = expandUnits(items);
   const rejected = [];
   const shippable = [];
 
@@ -351,7 +362,9 @@ function packOnce(items, vehicle, opt, strategy, tick) {
   const bins = [];
   for (let idx = 0; idx < shippable.length; idx++) {
     const u = shippable[idx];
-    if (tick && (idx & 63) === 0) tick(idx / shippable.length);
+    /* Squared: each piece is tried against every vehicle opened so far, so
+       the later pieces take longer and a straight count would run ahead. */
+    if (tick && (idx & 63) === 0) tick((idx / shippable.length) ** 2);
     let done = false;
     for (const bin of bins) {
       if (tryPlace(bin, u, opt)) { done = true; break; }
@@ -371,10 +384,10 @@ function packOnce(items, vehicle, opt, strategy, tick) {
 
   const vehicleVolume = vehicle.length * vehicle.width * vehicle.height;
   const loads = bins.map((bin) => {
-    const usedLength = bin.placements.reduce((m, p) => Math.max(m, p.x + p.l), 0);
+    const usedLength = bin.placements.reduce((m, p) => Math.max(m, p.x + p.il), 0);
     const usedHeight = bin.placements.reduce((m, p) => Math.max(m, p.z + p.h), 0);
     let moment = 0;
-    for (const p of bin.placements) moment += p.weight * (p.x + p.l / 2);
+    for (const p of bin.placements) moment += p.weight * (p.x + p.il / 2);
     const cg = bin.weight > 0 ? moment / bin.weight : vehicle.length / 2;
     return {
       index: bin.index,

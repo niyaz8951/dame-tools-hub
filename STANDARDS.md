@@ -47,6 +47,10 @@ Compliance Maker, Coil Data Extractor, Container Calculator, Centre of Gravity a
 - A user sees only the tiles and tools they have access to. Everything else is hidden, not shown as locked: the database does not send it (`app__profile`), and pages must not hint at tools the user cannot open.
 - Tile taglines are neutral and describe the tools, never the access rule (General: "Everyday productivity tools"). No wording like "open to approved users" or "ask your admin".
 - The dashboard shows one view at a time: the team tiles, or the tools of the tile that was clicked (tiles hidden, "All teams" link to go back). The address carries the team (`dashboard.html#general`) so Back and direct links work.
+- A user with exactly one tile sees that tile's tools straight away (no single-tile screen, no back link). Users with several tiles are unchanged.
+- Each tool tile has its own icon, picked by tool id in `dashboard.html` from `Hub.ICON` (`checklist`, `table`, `tree`, `coil`, `box`, `target`, `curve`, `book`; the document icon is the fallback). A new tool gets an icon there.
+- When the guard sends a signed-in user to the dashboard for lack of access, the dashboard shows one toast: "That page is not available for your account." (set in `hub.js`). It names no tool.
+- `404.html` at the repo root is the "Page not found" page for GitHub Pages. It works out the site root itself, so it works at any depth.
 - Every tool page has a "General tools" style back link to its team view.
 - A failed sign-in check never signs the user out unless the database says the session has expired; network problems show a "Try again" screen.
 
@@ -139,7 +143,10 @@ Goal: plot any number of air states on an ASHRAE-style chart, join them into a p
 - `node test-psychro.js` checks the engine against ASHRAE Table 2 (-20 to 50 °C) and Chapter 1 Example 1. Run it after any change to `psychro.js`; humidity ratio must stay within 0.05 % of Table 2.
 - Chart (`chart.js`, inline SVG): dry bulb along the bottom, humidity ratio on the right, saturation curve as the clip boundary, wet-bulb lines every 1 °C with values written on the saturation curve, enthalpy every 5 kJ/kg with the scale outside the curve, RH every 10 %, specific volume every 0.01 m³/kg, SHR protractor, pressure/altitude caption on the chart. Axis numbers and anything in the margins are drawn outside the clip. Colours only through the `--chart-*` tokens defined in `styles.css` from hub tokens.
 - Multiple states are the point of the tool: rows can be added, reordered, removed, picked from the chart, or produced by "Mix two states" (mass-weighted on dry air using each row's airflow; the result is stored as an ordinary row, not a live formula).
-- Worked examples must be internally consistent (a "Mixed" row equals the mix of its sources).
+- Worked examples must be internally consistent (a "Mixed" row equals the mix of its sources). A mixed row remembers its two sources: the step into it is shown as "Mixing" with no coil load. Fan heat, reheat and heating steps keep the humidity ratio. SHR shows "—" when the total load is close to zero.
+- IP mode switches the whole tool: chart axes and captions (°F, gr/lb, Btu/lb, in.Hg, ft) with round IP ticks, airflow in cfm, messages, CSV and PNG. The engine stays SI.
+- Anything that changes the pressure (altitude, measured pressure) redraws the chart, the properties and the loads together.
+- States are kept per user in the browser (`dame.psychro.v1:<username>`).
 - State names are user text: written with `value` / `textContent` in the tables; they pass through `TN.esc` only where they enter the SVG string.
 
 ## 2g. Product Options (tree of what each factory offers)
@@ -159,6 +166,28 @@ Goal: one place to see, per product and factory, the sections, components and th
 - The page must say that a value not listed is not known yet, not that the factory cannot offer it.
 - Database: `po_collect`, `po_get_tree` (any approved user), `po_admin_save_extra`, `po_admin_delete_extra`, `po_admin_set_hidden` (editors of `product-options`). The permissions block opens `po_*` like `app_*`, `cm_*`, `dn_*`. Demo mirror in `api.js` (`poSkip`, `poValue`; change both together).
 - Files: `tools/product-options/index.html`, `product-options.js`; the hook is `collect()` in `tools/datasheet-notes/datasheet-notes.js`.
+
+## 2h. Rules added by the user walk-through (2 Oct 2026)
+
+Found by testing every tool as an ordinary user; list and status in the project doc `UI-Test-Findings-2026-10-02.md`.
+
+- **Excel text is cleaned.** Anything written into an .xlsx passes a cleaner that drops characters XML does not allow (control characters, lone surrogates). Compliance Maker: `clean()` in `xlsx-writer.js`.
+- **Preview and download always agree.** A setting changed after a run updates the preview at once (Compliance Maker formatting ticks) or clears the result (Datasheet Notes product change, Coil Data Extractor file list). Where the result is out of date and cannot be refreshed without a run, the downloads are disabled and the page says why (Container Calculator).
+- **A failed run clears the previous result.**
+- **Cut input is said clearly.** Compliance Maker: PDF 50 pages, paste 150,000 characters cut at a whole line; a warning notice above the preview and a "PARTIAL" line in the Excel band and last row.
+- **Several files:** every error names its file; one bad file does not discard the good ones (Datasheet Notes shows the good units and lists the files not read).
+- **No leave-page prompts** in tools. Light state (product, factory, pasted text) is kept across a reload in `sessionStorage`.
+- **Work kept in the browser is per user**: storage keys end in `:<username>` (Centre of Gravity `tn.cog.v1:<username>`, Psychrometric Chart). Opening a file validates its shape before replacing anything. Replacing a non-empty list or project asks first.
+- **Stored values stay in base units** (mm, kg, m³/h); unit switches convert only for display, so a round trip returns the same figures. Centre of Gravity project files are version 2 (mm and kg, display unit recorded); version 1 files still open.
+- **CSV output**: UTF-8 marker, units in every heading, rounded figures; a text cell starting with `=`, `+`, `-` or `@` gets a leading apostrophe; numbers stay numbers.
+- **Container Calculator.** Clearance is the gap kept between items, not to the walls; an item that fits the vehicle is never refused for clearance. Piece list, PDF and packing list show sizes as entered; positions include the clearance, and the page and PDF say so. Limit 5,000 pieces per calculation. Freight cost is empty by default with a free-text currency. "Download cargo list" gives a file the importer reads back unchanged. CSV import detects `;` and decimal commas. The PDF prints Latin text only (`[non-Latin text]` marker; the page warns; Excel keeps the text). The 45–55 % centre of gravity band is described as a rule of thumb.
+- **Datasheet Notes.** Section and Component columns stay in view when the table scrolls sideways. Excel: fit to one page wide up to 6 unit columns, above that full size with columns A:B repeated; a legend line under the table. Difference colours repeat after 5 values and the page says so without naming a colour. FCU title block: a field name inside a line counts only when followed by a colon (or "Unit No." with its full stop). Cancel while reading.
+- **Row mapping.** New rows collected from users' runs do not count as unsaved changes; Save confirms them.
+- **Product Options.** Counts read "seen n times" (a datasheet run twice counts twice). A product or factory that no reader can supply says so instead of pointing to Datasheet Notes. Excel is styled by `po-xlsx.js`. An editor with Edit off sees exactly what users see.
+- **Standards** (tool id `standards`, General tile, added by the owner). `Std.scan` accepts "Standard", "Std", "Guideline" and ANSI/…, BS EN ISO, ISO/IEC prefixes; a number that is not in the library is listed as "not in the library", never mapped to a neighbour; the bare word "Eurovent" is assigned by nearby product wording or listed as not in the library. `node test-standards.js` must pass after any change to `std.js` or the keys in `standards-data.js`.
+- **Compliance Maker keyword rule is unchanged** (an entry word may be the start of a clause word, so `pre` also finds `pressure`); editors tighten the keyword.
+- **Passwords** cannot be only spaces (`app__check_password`).
+- **Admin > Users**: a row's Save is enabled only when the row differs from the stored values.
 
 ## 3. Theme
 
@@ -200,7 +229,7 @@ A tool is ready to be set Live only when:
 
 | Tile | Who | Tools |
 |---|---|---|
-| General | every approved user | Compliance Maker, Datasheet Notes, Product Options, Coil Data Extractor, Container Calculator, Centre of Gravity (all live), Psychrometric Chart (delivered 2026-10-01, add in Admin > Tools) |
+| General | every approved user | Compliance Maker, Datasheet Notes, Product Options, Coil Data Extractor, Container Calculator, Centre of Gravity, Psychrometric Chart, Standards (all live, all in the seed of `schema.sql` and the demo seed in `api.js`) |
 | Sales | sales team | special sales tools, to be decided per requirement |
 | SBU | SBU team | special SBU tools, to be decided per requirement |
 | more tiles | | added later from Admin > Team tiles |

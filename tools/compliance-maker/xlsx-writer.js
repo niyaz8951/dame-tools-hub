@@ -95,8 +95,16 @@
   }
 
   /* ---------------- XML helpers ---------------- */
+  // Characters XML 1.0 does not allow (control characters other than tab, LF and CR,
+  // U+FFFE, U+FFFF and half surrogate pairs) are dropped: one of them makes Excel
+  // refuse the whole file.
+  function clean(s) {
+    return String(s == null ? '' : s)
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+      .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, function (m) { return m.length === 2 ? m : ''; });
+  }
   function esc(s) {
-    return String(s)
+    return clean(s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
   }
@@ -311,7 +319,7 @@
     merges.push('A4:E4');
     lines.push(
       '<row r="4" ht="24" customHeight="1">' +
-        inlineStrCell('A4', 19, meta.bandText || '') +
+        inlineStrCell('A4', 19, (meta.bandText || '') + (meta.partial ? (meta.bandText ? '     ' : '') + meta.partial : '')) +
         '<c r="B4" s="19"/><c r="C4" s="19"/><c r="D4" s="19"/><c r="E4" s="19"/>' +
         '<c r="F4" s="8"/>' +
       '</row>'
@@ -419,8 +427,22 @@
       rowNum++;
     });
 
+    // Only part of the specification was converted: say so in a last black row too.
+    // It has no answer, so the library upload ignores it when the file is read back.
+    if (meta.partial) {
+      lines.push(
+        '<row r="' + rowNum + '">' +
+          '<c r="A' + rowNum + '" s="1"/><c r="B' + rowNum + '" s="1"/>' +
+          inlineStrCell('C' + rowNum, 1, meta.partial) +
+          '<c r="D' + rowNum + '" s="1"/><c r="E' + rowNum + '" s="1"/><c r="F' + rowNum + '" s="8"/>' +
+        '</row>'
+      );
+      rowNum++;
+    }
+
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
         '<cols>' +
           '<col min="1" max="1" width="3" customWidth="1"/>' +
           '<col min="2" max="2" width="10" customWidth="1"/>' +
@@ -433,6 +455,9 @@
         (merges.length ? '<mergeCells count="' + merges.length + '">' +
           merges.map(function (m) { return '<mergeCell ref="' + m + '"/>'; }).join('') +
           '</mergeCells>' : '') +
+        // Print: landscape, all columns on one page width, the table header (row 6) on every page.
+        '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
+        '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +
       '</worksheet>';
   }
 
@@ -500,6 +525,7 @@
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
         '<sheets><sheet name="Compliance" sheetId="1" r:id="rId1"/>' +
           (sheet2 ? '<sheet name="' + esc(String(sheet2.name || 'Datasheet rows').slice(0, 31)) + '" sheetId="2" r:id="rId3"/>' : '') + '</sheets>' +
+        '<definedNames><definedName name="_xlnm.Print_Titles" localSheetId="0">Compliance!$6:$6</definedName></definedNames>' +
       '</workbook>';
 
     var wbRels =
@@ -581,5 +607,5 @@
     ])], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
 
-  window.xlsxWriter = { build: build, buildLibrary: buildLibrary };
+  window.xlsxWriter = { build: build, buildLibrary: buildLibrary, commentFor: commentFor, clean: clean };
 })();

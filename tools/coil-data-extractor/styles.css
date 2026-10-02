@@ -72,12 +72,18 @@ main > .panel + .panel { margin-top: var(--space-4); }
 
 .cd-log { font-size: 0.8125rem; }
 .cd-log td:nth-child(2) { font-family: var(--font-mono); text-align: right; }
-.cd-log tr.is-bad td { background: color-mix(in srgb, var(--color-danger) 12%, transparent); }
-.cd-log tr.is-warn td { background: color-mix(in srgb, var(--color-warning) 10%, transparent); }
+/* A tint plus a coloured edge on the first cell: the tint alone all but
+   vanishes on the night surface. */
+.cd-log tr.is-bad td { background: color-mix(in srgb, var(--color-danger) 18%, transparent); }
+.cd-log tr.is-warn td { background: color-mix(in srgb, var(--color-warning) 16%, transparent); }
+.cd-log tr.is-bad td:first-child { box-shadow: inset 4px 0 0 var(--color-danger); }
+.cd-log tr.is-warn td:first-child { box-shadow: inset 4px 0 0 var(--color-warning); }
+.cd-log tr.is-bad td:last-child { font-weight: 600; }
 
 /* .panel__head puts the title and its buttons on one row; at 375px the two
    buttons no longer fit beside "Result", so the head stacks. */
 @media (max-width: 560px) {
+  .cd-file .btn--sm { min-height: 40px; }
   .panel__head { flex-direction: column; align-items: stretch; }
   .panel__head .toolbar { margin-bottom: 0; }
 }

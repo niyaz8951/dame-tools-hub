@@ -48,7 +48,7 @@
   }
 
   function render() {
-    var id = decodeURIComponent(location.hash.slice(1)), s = Std.byId[id];
+    var id = Std.idFromAddress(location), s = Std.byId[id];
     var body = $("body"), nav = $("nav"); body.textContent = ""; nav.textContent = ""; $("badges").textContent = "";
     if (!s) {
       document.title = "Standard not found - DAME Tools Hub";

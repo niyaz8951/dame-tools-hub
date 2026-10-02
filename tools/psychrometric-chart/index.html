@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Psychrometric chart — DAME Tools Hub</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="../../assets/favicon.svg">
   <meta name="description" content="Plot as many air states as you need on an ASHRAE psychrometric chart, join them into a process, and get properties, coil loads, sensible heat ratio and apparatus dew point.">
   <link rel="stylesheet" href="../../assets/css/shell.css">
   <link rel="stylesheet" href="../../assets/css/legacy-tools.css">
@@ -15,7 +17,7 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header id="topbar"></header>
-  <script>Hub.requireLogin({ tool: "psychrometric-chart" });</script>
+  <script>window.psyProfile = Hub.requireLogin({ tool: "psychrometric-chart" });</script>
 
   <main id="main" class="wrap" data-tool="psychrometric-chart">
 
@@ -82,7 +84,7 @@
               <th scope="col">Second measure</th>
               <th scope="col" class="num">Value</th>
               <th scope="col" class="num">Airflow out <span id="flow-unit-head">m&#179;/h</span></th>
-              <th scope="col"><span class="sr-only">Row actions</span></th>
+              <th scope="col" aria-label="Row actions"></th>
             </tr>
           </thead>
           <tbody id="points-body"></tbody>
@@ -103,7 +105,8 @@
             <button type="button" class="btn btn--ghost btn--sm" id="btn-mix">Add mixed state</button>
           </div>
           <p class="hint">Adiabatic mixing weighted by dry-air mass flow (ASHRAE eq. 45/46).
-            Uses each state's airflow from the table; the mixed row gets the combined airflow.</p>
+            Uses each state's airflow from the table; the mixed row gets the combined airflow.
+            The step into a mixed row is shown as mixing, with no coil load.</p>
           <p class="hint psy-mix__msg" id="mix-msg" role="status"></p>
         </div>
       </div>
@@ -119,12 +122,14 @@
         </div>
         <div class="field" id="alt-field">
           <label for="altitude">Altitude <span class="muted" id="alt-unit">m</span></label>
-          <input id="altitude" type="number" step="any" inputmode="decimal" value="0">
-          <p class="hint">Riyadh sits at 612&nbsp;m, which is about 7% more moisture at the same relative humidity.</p>
+          <input id="altitude" type="number" step="any" inputmode="decimal" value="0" aria-describedby="altitude-msg">
+          <p class="psy-msg" id="altitude-msg" role="alert" hidden></p>
+          <p class="hint">Riyadh sits at 612&nbsp;m (2,008&nbsp;ft), which is about 7% more moisture at the same relative humidity.</p>
         </div>
         <div class="field" id="press-field" hidden>
           <label for="pressure">Pressure <span class="muted" id="press-unit">kPa</span></label>
-          <input id="pressure" type="number" step="any" inputmode="decimal" value="101.325">
+          <input id="pressure" type="number" step="any" inputmode="decimal" value="101.325" aria-describedby="pressure-msg">
+          <p class="psy-msg" id="pressure-msg" role="alert" hidden></p>
         </div>
         <div class="field">
           <label for="flow-unit">Airflow unit</label>
@@ -165,7 +170,7 @@
         <label class="check"><input type="checkbox" id="layer-rh" checked><span>Relative humidity</span></label>
         <label class="check"><input type="checkbox" id="layer-wetBulb" checked><span>Wet bulb</span></label>
         <label class="check"><input type="checkbox" id="layer-enthalpy" checked><span>Enthalpy</span></label>
-        <label class="check"><input type="checkbox" id="layer-volume" checked><span>Specific volume</span></label>
+        <label class="check"><input type="checkbox" id="layer-volume"><span>Specific volume</span></label>
         <label class="check"><input type="checkbox" id="layer-comfort"><span>Comfort zone</span></label>
         <label class="check"><input type="checkbox" id="layer-protractor" checked><span>SHR protractor</span></label>
         <label class="check"><input type="checkbox" id="opt-adp" checked><span>Apparatus dew point</span></label>
@@ -258,7 +263,14 @@
           <code>1.006&nbsp;+&nbsp;1.86W</code> at the mean humidity ratio, and latent is the
           remainder — so sensible and latent always add up to total.</li>
         <li>Mixing follows equations 45 and 46: humidity ratio and enthalpy are mass-averaged on
-          dry air, and the mixed dry bulb follows from those.</li>
+          dry air, and the mixed dry bulb follows from those. A mixed row is a stored figure:
+          if its two sources are changed afterwards the page says so, and it is mixed again
+          to update it. The step into a mixed row is drawn dashed from both sources and
+          carries no load.</li>
+        <li>The sensible heat ratio is left blank when the total load is close to zero
+          (evaporative cooling), where the ratio would be a very large number with no meaning.</li>
+        <li>In IP the same SI equations are used and the figures are converted for display:
+          °F, gr/lb, Btu/lb (zero at 0&nbsp;°F dry air), ft³/lb, in.Hg, MBH and cfm.</li>
         <li>The apparatus dew point is where the process line, extended past the leaving state,
           meets the saturation curve; the bypass factor is
           <code>(t₂&nbsp;−&nbsp;t_adp)&nbsp;/&nbsp;(t₁&nbsp;−&nbsp;t_adp)</code>. When the line
@@ -268,8 +280,8 @@
         <li>The comfort zone overlay is indicative only. ASHRAE Standard 55 depends on air speed,
           clothing, metabolic rate and radiant temperature, none of which a chart can know, so
           treat the shaded band as orientation rather than a compliance check.</li>
-        <li>Your states are kept in this browser only and are restored the next time you open the
-          page. Nothing from this tool is saved to the hub database.</li>
+        <li>Your states are kept in this browser only, under your user name, and are restored the
+          next time you open the page. Nothing from this tool is saved to the hub database.</li>
       </ul>
     </section>
 

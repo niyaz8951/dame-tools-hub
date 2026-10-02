@@ -7,7 +7,10 @@
      group    one of GROUPS below
      products any of "ahu", "fcu", "chiller"
      edition  latest edition known when this was written (always to be checked)
-     keys     how the standard is written in specifications (used by "Check a specification")
+     keys     how the standard is written in specifications (used by "Check a specification").
+              Only names of this standard: a different number (90.2 for 90.1) is never a key.
+     near     optional { word, words: [] } for a body with several programmes ("Eurovent"):
+              the word counts for this page only when one of the words is close to it
      covers   what the standard is about
      spec     how it shows up in a specification
      points   key points, in our own words
@@ -109,7 +112,8 @@
 
   { id: "eurovent-ahu", code: "Eurovent AHU", title: "Eurovent Certified Performance - Air handling units", body: "Eurovent Certita Certification", group: "unit", products: ["ahu"],
     edition: "Programme rules are revised regularly",
-    keys: ["Eurovent"],
+    near: { word: "Eurovent", words: ["air handling", "AHU", "EN 1886", "EN 13053"] },
+    keys: ["Eurovent AHU", "Eurovent Certified Performance AHU"],
     covers: "Third-party certification of an AHU range and its selection software. Casing classes to EN 1886 and performance to EN 13053 are checked by independent tests, and certified ranges are listed in a public directory.",
     spec: "\"Units shall be Eurovent certified\" or \"manufacturer shall take part in the Eurovent AHU programme; submit the certificate\". Often also \"energy class A or better\".",
     points: [
@@ -239,7 +243,7 @@
 
   { id: "iso-21940", code: "ISO 21940-11", title: "Rotor balancing - Balance tolerances for rigid rotors (formerly ISO 1940-1)", body: "ISO", group: "fans", products: ["ahu", "fcu"],
     edition: "ISO 21940-11:2016, replaced ISO 1940-1:2003",
-    keys: ["ISO 21940", "ISO 1940"],
+    keys: ["ISO 21940-11", "ISO 1940"],
     covers: "Defines balance quality grades (G) for rotating parts such as fan impellers and motors.",
     spec: "\"Fan wheels shall be statically and dynamically balanced to ISO 1940 grade G2.5\" (or G6.3).",
     points: [
@@ -267,7 +271,7 @@
     ],
     related: ["amca-210", "ashrae-90-1"] },
 
-  { id: "amca-230", code: "AMCA 230", title: "Laboratory methods of testing air circulating fans", body: "AMCA", group: "fans", products: [],
+  { id: "amca-230", code: "AMCA 230", title: "Laboratory methods of testing air circulating fans", body: "AMCA", group: "fans", products: ["ahu", "fcu"],
     edition: "ANSI/AMCA 230-15",
     keys: ["AMCA 230"],
     covers: "Test method for air circulating fans: ceiling fans, desk fans and similar fans that move air inside a room.",
@@ -331,7 +335,7 @@
 
   { id: "ashrae-52-2", code: "ASHRAE 52.2", title: "Method of testing general ventilation air-cleaning devices (MERV)", body: "ASHRAE", group: "filters", products: ["ahu", "fcu"],
     edition: "ANSI/ASHRAE 52.2-2017",
-    keys: ["ASHRAE 52.2", "ASHRAE 52.1", "MERV"],
+    keys: ["ASHRAE 52.2", "MERV"],
     covers: "US filter test that gives the MERV rating, from 1 to 16, based on efficiency in three particle size ranges (0.3 to 1, 1 to 3 and 3 to 10 micron).",
     spec: "\"Pre-filter MERV 8, final filter MERV 13 or 14\". ASHRAE 62.1, 90.1, 170 and LEED all quote MERV.",
     points: [
@@ -379,7 +383,7 @@
 
   { id: "iso-10121", code: "ISO 10121 / ASHRAE 145.2", title: "Gas-phase air cleaning media and devices", body: "ISO / ASHRAE", group: "filters", products: ["ahu"],
     edition: "ISO 10121-1 and -2; ANSI/ASHRAE 145.2",
-    keys: ["ISO 10121", "ASHRAE 145"],
+    keys: ["ISO 10121", "ASHRAE 145.2"],
     covers: "Test methods for chemical (gas-phase) filters: activated carbon and impregnated media such as potassium permanganate on alumina. They measure removal efficiency and capacity against a challenge gas.",
     spec: "\"Chemical filter section with activated carbon / KMnO4 media, tested to ISO 10121\", often with a required residence time and target gases.",
     points: [
@@ -395,7 +399,7 @@
 
   { id: "ashrae-185", code: "ASHRAE 185.1 / 185.2", title: "Testing ultraviolet (UV-C) lamps for use in air handling units", body: "ASHRAE", group: "filters", products: ["ahu"],
     edition: "ANSI/ASHRAE 185.1 (air stream) and 185.2 (surfaces)",
-    keys: ["ASHRAE 185"],
+    keys: ["ASHRAE 185.1", "ASHRAE 185.2"],
     covers: "Test methods for UV-C devices in AHUs and ducts: 185.1 for inactivating micro-organisms in the moving air, 185.2 for irradiating surfaces such as coils and drain pans.",
     spec: "\"UVGI lamps downstream of the cooling coil, tested to ASHRAE 185.2\", with a required intensity on the coil face.",
     points: [
@@ -460,7 +464,7 @@
 
   { id: "amca-500-d", code: "AMCA 500-D / 511", title: "Testing and certified ratings of dampers", body: "AMCA", group: "dampers", products: ["ahu"],
     edition: "ANSI/AMCA 500-D; AMCA 511",
-    keys: ["AMCA 500", "AMCA 511"],
+    keys: ["AMCA 500-D", "AMCA 511"],
     covers: "AMCA 500-D is the laboratory test for damper leakage and pressure drop. AMCA 511 is the certified ratings programme and defines the leakage classes.",
     spec: "\"Low leakage dampers, AMCA Class 1A at 1 in. wg, bearing the AMCA seal\".",
     points: [
@@ -509,7 +513,7 @@
 
   { id: "din-1946-4", code: "DIN 1946-4", title: "Ventilation in buildings and rooms of health care", body: "DIN", group: "hygiene", products: ["ahu"],
     edition: "DIN 1946-4:2018",
-    keys: ["DIN 1946"],
+    keys: ["DIN 1946-4", "DIN 1946 Part 4", "DIN 1946 Teil 4"],
     covers: "German standard for ventilation of hospitals. It sets room classes and adds requirements for the AHU beyond VDI 6022.",
     spec: "\"Hospital AHUs shall comply with DIN 1946-4 and VDI 6022\".",
     points: [
@@ -610,7 +614,7 @@
   /* ------------------------------------------------ Fire and product safety */
   { id: "nfpa-90a", code: "NFPA 90A", title: "Installation of air-conditioning and ventilating systems", body: "NFPA", group: "fire", products: ["ahu", "fcu"],
     edition: "NFPA 90A, 2024",
-    keys: ["NFPA 90A", "NFPA 90 A", "NFPA 90B"],
+    keys: ["NFPA 90A", "NFPA 90 A"],
     covers: "US fire safety standard for air systems. It limits how materials inside the air stream burn and smoke, and sets rules for smoke detectors, fire dampers and controls. Gulf civil defence codes lean on it.",
     spec: "\"Insulation and all materials in the air stream shall comply with NFPA 90A: flame spread not over 25, smoke developed not over 50\".",
     points: [
@@ -643,7 +647,7 @@
 
   { id: "en-13501-1", code: "EN 13501-1", title: "Fire classification of construction products - Reaction to fire", body: "CEN", group: "fire", products: ["ahu", "fcu"],
     edition: "EN 13501-1:2018",
-    keys: ["EN 13501", "BS EN 13501"],
+    keys: ["EN 13501-1", "BS EN 13501-1"],
     covers: "European reaction-to-fire classes for materials: A1, A2, B, C, D, E and F, with extra marks for smoke (s1 to s3) and flaming droplets (d0 to d2).",
     spec: "\"Panel insulation shall be non-combustible, class A1 to EN 13501-1\" or \"class B-s1, d0 or better\".",
     points: [
@@ -674,7 +678,7 @@
 
   { id: "ul-1995", code: "UL 1995 / UL 60335-2-40", title: "Safety of heating and cooling equipment", body: "UL", group: "fire", products: ["ahu", "fcu", "chiller"],
     edition: "UL 1995 is being replaced by UL/CSA 60335-2-40",
-    keys: ["UL 1995", "UL 60335"],
+    keys: ["UL 1995", "UL 60335-2-40"],
     covers: "US product safety standards for heating and cooling equipment: electrical safety, enclosure, wiring and, in UL 60335-2-40, the rules for flammable refrigerants.",
     spec: "\"Units shall be UL (or ETL) listed to UL 1995\".",
     points: [
@@ -688,7 +692,7 @@
 
   { id: "iec-60335-2-40", code: "IEC / EN 60335-2-40", title: "Safety of electrical heat pumps, air conditioners and dehumidifiers", body: "IEC / CENELEC", group: "fire", products: ["fcu", "chiller"],
     edition: "IEC 60335-2-40, edition 7 (2022)",
-    keys: ["IEC 60335", "EN 60335"],
+    keys: ["IEC 60335-2-40", "EN 60335-2-40"],
     covers: "International product safety standard for air conditioners and heat pumps with electric compressors, and for fan coils and dehumidifiers. It also sets the charge limits for flammable (A2L, A3) refrigerants.",
     spec: "\"Units shall comply with IEC 60335-2-40 and be CE marked\".",
     points: [
@@ -703,7 +707,7 @@
   /* ------------------------------------------------ Motors and electrical */
   { id: "iec-60034-30-1", code: "IEC 60034-30-1", title: "Efficiency classes of line-operated AC motors (IE code)", body: "IEC", group: "elec", products: ["ahu", "fcu", "chiller"],
     edition: "IEC 60034-30-1:2014",
-    keys: ["IEC 60034", "EN 60034"],
+    keys: ["IEC 60034-30", "EN 60034-30"],
     covers: "Defines the motor efficiency classes IE1 to IE4 for motors that can run direct on line, 50 and 60 Hz.",
     spec: "\"Motors shall be IE3 (or IE4) premium efficiency to IEC 60034-30-1, IP55, class F insulation\".",
     points: [
@@ -819,7 +823,7 @@
 
   { id: "iso-3744", code: "ISO 3744 / ISO 9614", title: "Sound power in a free field, or by sound intensity", body: "ISO", group: "sound", products: ["chiller", "ahu"],
     edition: "ISO 3744:2010; ISO 9614 parts 1 to 3",
-    keys: ["ISO 3744", "ISO 9614", "ISO 3746"],
+    keys: ["ISO 3744", "ISO 9614"],
     covers: "Two ways to measure the sound power of large machines such as chillers: from sound pressure over a reflecting plane (ISO 3744) or by scanning sound intensity (ISO 9614).",
     spec: "\"Chiller sound power shall be measured to ISO 9614\" and \"sound pressure not over ... dB(A) at 1 m (or 10 m)\".",
     points: [
@@ -894,6 +898,7 @@
 
   { id: "eurovent-fcu", code: "Eurovent FCU / EN 1397", title: "Eurovent Certified Performance - Fan coil units", body: "Eurovent Certita Certification / CEN", group: "fcu", products: ["fcu"],
     edition: "EN 1397:2021; programme rules are revised regularly",
+    near: { word: "Eurovent", words: ["fan coil", "FCU", "EN 1397"] },
     keys: ["EN 1397"],
     covers: "Third-party certification of fan coil capacity, airflow, power input and sound, tested to EN 1397.",
     spec: "\"Fan coil units shall be Eurovent certified\".",
@@ -913,7 +918,7 @@
     covers: "US rating standard for chillers: capacity and efficiency at full load and the integrated part load value (IPLV). It is the common baseline in tenders.",
     spec: "\"Chillers shall be rated and certified to AHRI 550/590\" plus a project rating at 46 °C or higher ambient.",
     points: [
-      "Standard conditions: leaving chilled water 44 °F (6.7 °C) with 2.4 gpm per ton; air-cooled at 95 °F (35 °C) entering air.",
+      "Standard conditions: chilled water entering at 54 °F (12.2 °C) and leaving at 44 °F (6.7 °C); air-cooled at 95 °F (35 °C) entering air. Older editions fixed the water flow at 2.4 gpm per ton instead of the entering temperature.",
       "IPLV weights: 1 % at 100 % load, 42 % at 75 %, 45 % at 50 % and 12 % at 25 %.",
       "NPLV is the same calculation at non-standard conditions.",
       "The standard sets tolerances on capacity and efficiency. A witness test is judged against them.",
@@ -927,6 +932,7 @@
 
   { id: "eurovent-chiller", code: "Eurovent LCP-HP / EN 14511", title: "Eurovent certified chillers; EN 14511 and EN 14825", body: "Eurovent Certita Certification / CEN", group: "chiller", products: ["chiller"],
     edition: "EN 14511:2022; EN 14825:2022",
+    near: { word: "Eurovent", words: ["chiller", "chilling", "heat pump", "LCP", "EN 14511", "EN 14825"] },
     keys: ["EN 14511", "EN 14825"],
     covers: "EN 14511 is the European rating test for chillers and heat pumps at standard conditions. EN 14825 gives the seasonal figures (SEER, SCOP, SEPR). Eurovent certifies chillers on both.",
     spec: "\"Chillers shall be Eurovent certified, with EER and SEER to EN 14511 / EN 14825\".",
@@ -973,7 +979,7 @@
   /* ------------------------------------------------ Gulf codes */
   { id: "saso-2874", code: "SASO 2874", title: "Large capacity air conditioners - Minimum energy performance (Saudi Arabia)", body: "SASO", group: "regional", products: ["chiller"],
     edition: "SASO 2874, check SASO for the current issue",
-    keys: ["SASO 2874", "SASO 2663"],
+    keys: ["SASO 2874"],
     covers: "Saudi minimum energy performance standard for large air conditioners, including chillers. Registration on the Saudi Label and Standard portal is needed before shipment. SASO 2663 covers small air conditioners up to 70,000 Btu/h.",
     spec: "\"Chillers shall be SASO 2874 registered\".",
     points: [

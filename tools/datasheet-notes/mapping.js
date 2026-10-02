@@ -64,16 +64,20 @@
     return list.map(function (r) { return { key: r.key, section: r.group, sub: r.sub, component: r.component, show: r.show, label: r.label, strip: r.strip, response: r.response, keywords: r.keywords, 'new': r.isNew, _row: r }; });
   }
 
-  function changed(r) { return !r.saved || r.isNew || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.strip.trim() !== r.orig.strip || r.response.trim() !== r.orig.response || r.keywords.trim() !== r.orig.keywords; }
+  /* A row a user's datasheet added (marked New) is already saved, so it is not a change: it does not
+     count and does not trigger the leave warning. Save stays possible while there are New rows, so the
+     admin can confirm them (saving clears the New mark). */
+  function changed(r) { return !r.saved || r.show !== r.orig.show || r.label.trim() !== r.orig.label || r.strip.trim() !== r.orig.strip || r.response.trim() !== r.orig.response || r.keywords.trim() !== r.orig.keywords; }
   function pending() {
     var n = list.filter(changed).length + removed.length;
     if ((unmappedSel.value === 'show') !== savedUnmapped) n++;
     return n;
   }
   function refreshSave() {
-    var n = pending();
-    saveBtn.disabled = !n || busy;
-    changes.textContent = n ? n + (n === 1 ? ' change' : ' changes') + ' not saved yet.' : 'No changes to save.';
+    var n = pending(), fresh = list.filter(function (r) { return r.isNew; }).length;
+    saveBtn.disabled = !(n || fresh) || busy;
+    changes.textContent = n ? n + (n === 1 ? ' change' : ' changes') + ' not saved yet.'
+      : fresh ? 'No changes to save. Save mapping confirms the ' + (fresh === 1 ? 'new row' : fresh + ' new rows') + ' (marked New).' : 'No changes to save.';
   }
 
   /* ---------- table ---------- */
@@ -225,7 +229,7 @@
         if (k) { r.saved = k._row.saved; r.orig = k._row.orig; }
       });
       render(); describe();
-    }, function (err) { describe(); fail(err.message); })
+    }).then(null, function (err) { describe(); fail(err.message); })   // also a datasheet of another product (DSRead.check)
       .then(function () { busy = false; refreshSave(); });
   });
 

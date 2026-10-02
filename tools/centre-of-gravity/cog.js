@@ -328,11 +328,20 @@
 
   /* ---------------------------------------------------------------- app */
 
-  function boot() {
+  function boot(username) {
     var root = document.querySelector('[data-tool="centre-of-gravity"]');
     if (!root) { return; }
 
+    /* One saved project per signed-in user, so the next person on this PC does
+       not open someone else's work. */
+    var storageKey = STORAGE_KEY + (username ? ':' + String(username).toLowerCase() : '');
+
+    /* Lengths are held in millimetres and weights in kilograms whatever unit is
+       on show. The unit choice only changes what is displayed and how a typed
+       figure is read, so switching units and back returns the same figures. */
     var uid = 0;
+    var msgId = 0;
+    var undo = null;
     var state = {
       lengthUnit: 'mm',
       massUnit: 'kg',
@@ -342,6 +351,7 @@
       supports: [],
       capacity: null,
       redistribute: true,
+      gen: { nx: 5, ny: 2, sx: 9720, sy: 2232, ix: 540, iy: 116 },
       view: { envelope: true, labels: true, ortho: false }
     };
 
@@ -350,8 +360,10 @@
     var el = {
       partsBody: document.getElementById('parts-body'),
       partsEmpty: document.getElementById('parts-empty'),
+      partsUndo: document.getElementById('parts-undo'),
       supportsBody: document.getElementById('supports-body'),
       supportsEmpty: document.getElementById('supports-empty'),
+      supportsUndo: document.getElementById('supports-undo'),
       loadsBody: document.getElementById('loads-body'),
       loadsEmpty: document.getElementById('loads-empty'),
       notices: document.getElementById('notices'),
@@ -364,6 +376,8 @@
 
     function lengthLabel() { return state.lengthUnit; }
     function massLabel() { return state.massUnit; }
+    function lenF() { return LENGTH_TO_MM[state.lengthUnit]; }
+    function massF() { return MASS_TO_KG[state.massUnit]; }
 
     function fmt(value, digits) {
       if (!isFinite(value)) { return '—'; }
@@ -378,15 +392,97 @@
       return { mm: 1, cm: 2, m: 3, 'in': 2 }[state.lengthUnit] || 1;
     }
 
-    function fmtLen(value) {
-      return fmt(value, lengthDigits());
+    /* Results: a length in millimetres, shown in the chosen unit. */
+    function fmtLen(mm) {
+      return fmt(mm / lenF(), lengthDigits());
     }
 
-    function toKN(mass) {
-      return mass * MASS_TO_KG[state.massUnit] * GRAVITY / 1000;
+    function fmtMass(kg, digits) {
+      return fmt(kg / massF(), digits);
+    }
+
+    function toKN(kg) {
+      return kg * GRAVITY / 1000;
+    }
+
+    function tidy(value, digits) {
+      var f = Math.pow(10, digits);
+      return Math.round(value * f) / f;
+    }
+
+    /* Input boxes: enough decimals that a converted figure reads back the same. */
+    function inputLenDigits() {
+      return { mm: 3, cm: 4, m: 6, 'in': 4 }[state.lengthUnit] || 3;
+    }
+    function showLen(mm) { return isFinite(mm) ? tidy(mm / lenF(), inputLenDigits()) : ''; }
+    function showMass(kg) { return isFinite(kg) ? tidy(kg / massF(), 3) : ''; }
+
+    /* What was typed, or NaN for an empty or unreadable box. */
+    function entered(text) {
+      var n = parseFloat(text);
+      return isFinite(n) ? n : NaN;
     }
 
     function nextId() { uid += 1; return 'r' + uid; }
+
+    /* ------------------------------------------------------------ checks */
+
+    /* A short message under the box it is about. */
+    function setMsg(input, text) {
+      var msg = input.nextElementSibling;
+      if (!msg || !msg.classList || !msg.classList.contains('cog-msg')) {
+        if (!text) { input.removeAttribute('aria-invalid'); return; }
+        msg = document.createElement('span');
+        msg.className = 'cog-msg';
+        msgId += 1;
+        msg.id = 'cog-msg-' + msgId;
+        input.parentNode.insertBefore(msg, input.nextSibling);
+        input.setAttribute('aria-describedby', msg.id);
+      }
+      msg.textContent = text || '';
+      msg.hidden = !text;
+      if (text) { input.setAttribute('aria-invalid', 'true'); } else { input.removeAttribute('aria-invalid'); }
+    }
+
+    function partProblems(p) {
+      var out = {};
+      ['x', 'y', 'z'].forEach(function (k) {
+        if (!isFinite(p[k])) { out[k] = 'Enter a number'; }
+      });
+      ['dx', 'dy', 'dz'].forEach(function (k) {
+        if (!isFinite(p[k])) { out[k] = 'Enter a number'; }
+        else if (p[k] < 0) { out[k] = 'Cannot be negative'; }
+      });
+      if (!isFinite(p.w)) { out.w = 'Enter a weight'; }
+      else if (p.w <= 0) { out.w = 'Must be above 0'; }
+      return out;
+    }
+
+    function partValid(p) {
+      return Object.keys(partProblems(p)).length === 0;
+    }
+
+    function supportValid(s) {
+      return isFinite(s.x) && isFinite(s.y);
+    }
+
+    function validateRows() {
+      Array.prototype.forEach.call(el.partsBody.querySelectorAll('tr'), function (row) {
+        var p = state.parts.find(function (r) { return r.id === row.dataset.id; });
+        if (!p) { return; }
+        var problems = partProblems(p);
+        Array.prototype.forEach.call(row.querySelectorAll('input[type="number"]'), function (input) {
+          setMsg(input, problems[input.dataset.field] || '');
+        });
+      });
+      Array.prototype.forEach.call(el.supportsBody.querySelectorAll('tr'), function (row) {
+        var s = state.supports.find(function (r) { return r.id === row.dataset.id; });
+        if (!s) { return; }
+        Array.prototype.forEach.call(row.querySelectorAll('input[type="number"]'), function (input) {
+          setMsg(input, isFinite(s[input.dataset.field]) ? '' : 'Enter a number');
+        });
+      });
+    }
 
     /* Blocks are coloured from the --chart-1..8 tokens already in global.css,
        which have their own dark-mode values, so nothing new is introduced. */
@@ -461,56 +557,87 @@
 
     /* ------------------------------------------------------------ state io */
 
+    /* True when the object has the shape of a saved project. Checked before
+       anything on the page is replaced. */
+    function checkProject(data) {
+      function figure(v) { return v === null || (typeof v === 'number' && isFinite(v)); }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) { return false; }
+      if (!Array.isArray(data.parts) || !Array.isArray(data.supports)) { return false; }
+      if (data.lengthUnit !== undefined && !LENGTH_TO_MM[data.lengthUnit]) { return false; }
+      if (data.massUnit !== undefined && !MASS_TO_KG[data.massUnit]) { return false; }
+      var partsOk = data.parts.every(function (p) {
+        return p && typeof p === 'object' &&
+          ['x', 'y', 'z', 'dx', 'dy', 'dz', 'w'].every(function (k) { return figure(p[k]); });
+      });
+      var supportsOk = data.supports.every(function (s) {
+        return s && typeof s === 'object' && figure(s.x) && figure(s.y);
+      });
+      return partsOk && supportsOk;
+    }
+
+    /* Files saved before version 2 hold figures in the unit named in the file;
+       version 2 holds millimetres and kilograms. */
     function applyProject(data) {
+      var lf = data.version >= 2 ? 1 : (LENGTH_TO_MM[data.lengthUnit] || 1);
+      var mf = data.version >= 2 ? 1 : (MASS_TO_KG[data.massUnit] || 1);
+      function len(v) { var n = parseFloat(v); return isFinite(n) ? n * lf : NaN; }
+      function mass(v) { var n = parseFloat(v); return isFinite(n) ? n * mf : NaN; }
+      function size(v) { var n = len(v); return isFinite(n) && n > 0 ? n : 0; }
+
       state.envelope = {
-        dx: num(data.envelope && data.envelope.dx, 0),
-        dy: num(data.envelope && data.envelope.dy, 0),
-        dz: num(data.envelope && data.envelope.dz, 0)
+        dx: size(data.envelope && data.envelope.dx),
+        dy: size(data.envelope && data.envelope.dy),
+        dz: size(data.envelope && data.envelope.dz)
       };
       state.parts = (data.parts || []).map(function (p) {
         return {
           id: nextId(),
           name: String(p.name || 'Block'),
-          x: num(p.x), y: num(p.y), z: num(p.z),
-          dx: num(p.dx), dy: num(p.dy), dz: num(p.dz),
-          w: num(p.w),
+          x: len(p.x), y: len(p.y), z: len(p.z),
+          dx: len(p.dx), dy: len(p.dy), dz: len(p.dz),
+          w: mass(p.w),
           on: p.on !== false
         };
       });
       state.supports = (data.supports || []).map(function (s, i) {
-        return { id: nextId(), name: String(s.name || 'S' + (i + 1)), x: num(s.x), y: num(s.y) };
+        return { id: nextId(), name: String(s.name || 'S' + (i + 1)), x: len(s.x), y: len(s.y) };
       });
       if (data.lengthUnit && LENGTH_TO_MM[data.lengthUnit]) { state.lengthUnit = data.lengthUnit; }
       if (data.massUnit && MASS_TO_KG[data.massUnit]) { state.massUnit = data.massUnit; }
       if (data.posMode === 'centre' || data.posMode === 'corner') { state.posMode = data.posMode; }
-      if (data.capacity !== undefined && data.capacity !== null && data.capacity !== '') {
-        state.capacity = num(data.capacity, null);
-      } else {
-        state.capacity = null;
-      }
+      var cap = mass(data.capacity);
+      state.capacity = isFinite(cap) && cap > 0 ? cap : null;
+      state.redistribute = data.redistribute !== false;
+      clearUndo();
     }
 
     function serialise() {
+      function figure(v) { return isFinite(v) ? v : null; }
       return {
         tool: 'centre-of-gravity',
-        version: 1,
+        version: 2,
+        stored: 'lengths in mm, weights in kg',
         lengthUnit: state.lengthUnit,
         massUnit: state.massUnit,
         posMode: state.posMode,
         capacity: state.capacity,
+        redistribute: state.redistribute,
         envelope: state.envelope,
         parts: state.parts.map(function (p) {
-          return { name: p.name, x: p.x, y: p.y, z: p.z, dx: p.dx, dy: p.dy, dz: p.dz, w: p.w, on: p.on };
+          return {
+            name: p.name, x: figure(p.x), y: figure(p.y), z: figure(p.z),
+            dx: figure(p.dx), dy: figure(p.dy), dz: figure(p.dz), w: figure(p.w), on: p.on
+          };
         }),
         supports: state.supports.map(function (s) {
-          return { name: s.name, x: s.x, y: s.y };
+          return { name: s.name, x: figure(s.x), y: figure(s.y) };
         })
       };
     }
 
     function save() {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(serialise()));
+        localStorage.setItem(storageKey, JSON.stringify(serialise()));
       } catch (err) {
         /* Storage can be full or blocked; the tool still works without it. */
       }
@@ -518,9 +645,20 @@
 
     function restore() {
       try {
-        var raw = localStorage.getItem(STORAGE_KEY);
+        var raw = localStorage.getItem(storageKey);
+        if (!raw && storageKey !== STORAGE_KEY) {
+          /* A project saved before projects were kept per user goes to whoever
+             opens the page first. */
+          raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            localStorage.setItem(storageKey, raw);
+            localStorage.removeItem(STORAGE_KEY);
+          }
+        }
         if (!raw) { return false; }
-        applyProject(JSON.parse(raw));
+        var data = JSON.parse(raw);
+        if (!checkProject(data)) { return false; }
+        applyProject(data);
         return true;
       } catch (err) {
         return false;
@@ -529,9 +667,10 @@
 
     /* ------------------------------------------------------------ rows */
 
-    function cell(input, numeric) {
+    function cell(input, numeric, label) {
       var td = document.createElement('td');
       if (numeric) { td.className = 'num'; }
+      if (label) { td.dataset.label = label; }
       td.appendChild(input);
       return td;
     }
@@ -556,21 +695,34 @@
       return input;
     }
 
-    function removeButton(ariaLabel) {
-      var td = document.createElement('td');
+    function rowButton(action, ariaLabel, disabled) {
       var button = document.createElement('button');
       button.type = 'button';
       button.className = 'btn btn--quiet btn--sm';
-      button.dataset.action = 'delete';
-      button.innerHTML = global.TN ? global.TN.icon('trash', 18) : '&times;';
+      button.dataset.action = action;
+      if (action === 'delete') {
+        button.innerHTML = global.TN ? global.TN.icon('trash', 18) : '&times;';
+      } else {
+        button.textContent = action === 'up' ? '↑' : '↓';
+      }
       button.setAttribute('aria-label', ariaLabel);
-      td.appendChild(button);
+      button.disabled = !!disabled;
+      return button;
+    }
+
+    function actionsCell(name, index, count) {
+      var td = document.createElement('td');
+      td.className = 'cog-row-actions';
+      td.appendChild(rowButton('up', 'Move ' + name + ' up', index === 0));
+      td.appendChild(rowButton('down', 'Move ' + name + ' down', index === count - 1));
+      td.appendChild(rowButton('delete', 'Remove ' + name));
       return td;
     }
 
     function renderParts() {
       var tokens = readTokens();
       var colours = palette(Math.max(state.parts.length, 1), tokens);
+      var unit = lengthLabel();
       el.partsBody.textContent = '';
       el.partsEmpty.hidden = state.parts.length > 0;
 
@@ -580,6 +732,7 @@
         tr.dataset.off = p.on ? 'false' : 'true';
 
         var includeTd = document.createElement('td');
+        includeTd.className = 'cog-cell-include';
         var include = document.createElement('span');
         include.className = 'cog-include';
         var box = document.createElement('input');
@@ -596,54 +749,113 @@
         includeTd.appendChild(include);
         tr.appendChild(includeTd);
 
-        tr.appendChild(cell(textInput(p.name, 'Name of block ' + (index + 1)), false));
+        var nameTd = cell(textInput(p.name, 'Name of block ' + (index + 1)), false);
+        nameTd.className = 'cog-cell-name';
+        tr.appendChild(nameTd);
 
         [['x', 'X'], ['y', 'Y'], ['z', 'Z'],
          ['dx', 'Size X'], ['dy', 'Size Y'], ['dz', 'Size Z']].forEach(function (f) {
           tr.appendChild(cell(
-            numberInput(p[f[0]], f[0], f[1] + ' of ' + p.name + ' in ' + lengthLabel()),
-            true
+            numberInput(showLen(p[f[0]]), f[0], f[1] + ' of ' + p.name + ' in ' + unit),
+            true, f[1] + ' ' + unit
           ));
         });
         tr.appendChild(cell(
-          numberInput(p.w, 'w', 'Weight of ' + p.name + ' in ' + massLabel()),
-          true
+          numberInput(showMass(p.w), 'w', 'Weight of ' + p.name + ' in ' + massLabel()),
+          true, 'Weight ' + massLabel()
         ));
-        tr.appendChild(removeButton('Remove ' + p.name));
+        tr.appendChild(actionsCell(p.name, index, state.parts.length));
 
         el.partsBody.appendChild(tr);
       });
     }
 
     function renderSupports() {
+      var unit = lengthLabel();
       el.supportsBody.textContent = '';
       el.supportsEmpty.hidden = state.supports.length > 0;
 
       state.supports.forEach(function (s, index) {
         var tr = document.createElement('tr');
         tr.dataset.id = s.id;
-        tr.appendChild(cell(textInput(s.name, 'Name of support ' + (index + 1)), false));
+        var nameTd = cell(textInput(s.name, 'Name of support ' + (index + 1)), false);
+        nameTd.className = 'cog-cell-name';
+        tr.appendChild(nameTd);
         tr.appendChild(cell(
-          numberInput(s.x, 'x', 'X position of ' + s.name + ' in ' + lengthLabel()), true));
+          numberInput(showLen(s.x), 'x', 'X position of ' + s.name + ' in ' + unit), true, 'X ' + unit));
         tr.appendChild(cell(
-          numberInput(s.y, 'y', 'Y position of ' + s.name + ' in ' + lengthLabel()), true));
-        tr.appendChild(removeButton('Remove ' + s.name));
+          numberInput(showLen(s.y), 'y', 'Y position of ' + s.name + ' in ' + unit), true, 'Y ' + unit));
+        tr.appendChild(actionsCell(s.name, index, state.supports.length));
         el.supportsBody.appendChild(tr);
       });
+    }
+
+    /* ------------------------------------------------------------ undo */
+
+    /* One step back for a removed row, or for a whole list that was removed
+       or replaced. */
+    function clearUndo() {
+      undo = null;
+      if (el.partsUndo) { el.partsUndo.hidden = true; el.partsUndo.textContent = ''; }
+      if (el.supportsUndo) { el.supportsUndo.hidden = true; el.supportsUndo.textContent = ''; }
+    }
+
+    function offerUndo(kind, removed, index, replaced) {
+      clearUndo();
+      undo = { kind: kind, removed: removed, index: index, replaced: !!replaced };
+      var bar = kind === 'parts' ? el.partsUndo : el.supportsUndo;
+      var what = kind === 'parts' ? 'block' : 'support';
+      var text = replaced
+        ? 'Supports replaced by the grid.'
+        : (removed.length === 1
+          ? 'Removed ' + (removed[0].name || 'the ' + what) + '.'
+          : 'Removed ' + removed.length + ' ' + what + 's.');
+      bar.appendChild(document.createTextNode(text + ' '));
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn--ghost btn--sm';
+      button.textContent = 'Undo';
+      button.addEventListener('click', doUndo);
+      bar.appendChild(button);
+      bar.hidden = false;
+    }
+
+    function doUndo() {
+      if (!undo) { return; }
+      var kind = undo.kind;
+      if (undo.replaced) {
+        state[kind] = undo.removed;
+      } else {
+        Array.prototype.splice.apply(state[kind], [Math.min(undo.index, state[kind].length), 0].concat(undo.removed));
+      }
+      clearUndo();
+      if (kind === 'parts') { renderParts(); } else { renderSupports(); }
+      recompute();
     }
 
     /* ------------------------------------------------------------ results */
 
     var lastResult = null;
+    var METHOD_NOTE = 'Rigid unit on equally stiff supports: with three or more supports the loads form a plane through the centre of gravity. First-pass figures.';
 
     function recompute(skipDraw) {
-      var cg = computeCog(state.parts, state.posMode);
+      validateRows();
+
+      /* A block with a figure that cannot be used is left out, and the page says so. */
+      var usable = state.parts.filter(function (p) { return p.on && partValid(p); });
+      var leftOut = state.parts.filter(function (p) { return p.on && !partValid(p); }).length;
+      var cg = computeCog(usable, state.posMode);
       var notices = [];
 
-      document.getElementById('s-weight').textContent = cg.ok ? fmt(cg.weight, 1) + ' ' + massLabel() : '—';
+      document.getElementById('s-weight').textContent = cg.ok ? fmtMass(cg.weight, 1) + ' ' + massLabel() : '—';
       document.getElementById('s-weight-sub').textContent = cg.ok
         ? fmt(toKN(cg.weight), 2) + ' kN over ' + cg.counted + ' block' + (cg.counted === 1 ? '' : 's')
-        : 'Add a block with a weight';
+          + (leftOut ? ', ' + leftOut + ' left out' : '')
+        : (leftOut ? 'Correct the marked figures in Blocks' : 'Add a block with a weight');
+      if (leftOut) {
+        notices.push(leftOut + ' block' + (leftOut === 1 ? ' is' : 's are')
+          + ' left out of the result until the marked figures in Blocks are corrected.');
+      }
 
       var axes = [['x', 's-cgx', state.envelope.dx], ['y', 's-cgy', state.envelope.dy], ['z', 's-cgz', state.envelope.dz]];
       axes.forEach(function (a) {
@@ -651,24 +863,36 @@
         var subEl = document.getElementById(a[1] + '-sub');
         if (!cg.ok) {
           valueEl.textContent = '—';
-          subEl.textContent = '\u00a0';
+          subEl.textContent = ' ';
           return;
         }
         valueEl.textContent = fmtLen(cg[a[0]]) + ' ' + lengthLabel();
         if (a[2] > 0) {
           var offset = cg[a[0]] - a[2] / 2;
-          subEl.textContent = (offset >= 0 ? '+' : '\u2212') + fmtLen(Math.abs(offset)) + ' '
+          subEl.textContent = (offset >= 0 ? '+' : '−') + fmtLen(Math.abs(offset)) + ' '
             + lengthLabel() + ' from the middle';
         } else {
-          subEl.textContent = '\u00a0';
+          subEl.textContent = ' ';
         }
       });
 
-      var supports = state.supports.map(function (s) { return { x: s.x, y: s.y }; });
+      /* Supports with an unreadable position are left out the same way. */
+      var live = [];
+      state.supports.forEach(function (s, i) { if (supportValid(s)) { live.push(i); } });
+      var supports = live.map(function (i) { return { x: state.supports[i].x, y: state.supports[i].y }; });
+      var badSupports = state.supports.length - live.length;
       var reactions = null;
       var stability = null;
+      var loads = state.supports.map(function () { return null; });
+      var lifted = [];
+      var statuses = state.supports.map(function () { return ''; });
 
       el.loadsBody.textContent = '';
+
+      if (badSupports) {
+        notices.push(badSupports + ' support' + (badSupports === 1 ? ' is' : 's are')
+          + ' left out until the marked position is corrected.');
+      }
 
       if (cg.ok && supports.length) {
         reactions = solveReactions(supports, cg.weight, cg.x, cg.y, state.redistribute);
@@ -677,35 +901,48 @@
 
       if (reactions && reactions.ok) {
         el.loadsEmpty.hidden = true;
-        var maxLoad = Math.max.apply(null, reactions.loads);
+        live.forEach(function (i, k) { loads[i] = reactions.loads[k]; });
+        lifted = reactions.lifted.map(function (k) { return live[k]; });
+
+        var carried = reactions.active.map(function (k) { return reactions.loads[k]; });
+        var maxLoad = Math.max.apply(null, carried);
+        var minLoad = Math.min.apply(null, carried);
+        var tol = Math.max(1e-6, Math.abs(cg.weight) * 1e-9);
+        /* With every support carrying the same there is no highest one to point at. */
+        var hasHighest = maxLoad - minLoad > tol;
+
         state.supports.forEach(function (s, i) {
-          var load = reactions.loads[i];
+          var load = loads[i];
           var tr = document.createElement('tr');
 
           tr.appendChild(readCell(s.name, false));
-          tr.appendChild(readCell(fmtLen(s.x), true));
-          tr.appendChild(readCell(fmtLen(s.y), true));
-          tr.appendChild(readCell(fmt(load, 1), true));
-          tr.appendChild(readCell(fmt(toKN(load), 2), true));
-          tr.appendChild(readCell(cg.weight > 0 ? fmt(load / cg.weight * 100, 1) + '%' : '—', true));
+          tr.appendChild(readCell(isFinite(s.x) ? fmtLen(s.x) : '—', true));
+          tr.appendChild(readCell(isFinite(s.y) ? fmtLen(s.y) : '—', true));
+          tr.appendChild(readCell(load === null ? '—' : fmtMass(load, 1), true));
+          tr.appendChild(readCell(load === null ? '—' : fmt(toKN(load), 2), true));
+          tr.appendChild(readCell(load !== null && cg.weight > 0 ? fmt(load / cg.weight * 100, 1) + '%' : '—', true));
 
           var chip = document.createElement('span');
           chip.className = 'chip';
-          if (reactions.lifted.indexOf(i) !== -1) {
+          if (load === null) {
+            chip.className += ' chip--danger';
+            chip.textContent = 'Check position';
+          } else if (lifted.indexOf(i) !== -1) {
             chip.className += ' chip--auth';
             chip.textContent = 'Lifts off';
-          } else if (load < 0) {
+          } else if (load < -tol) {
             chip.className += ' chip--danger';
             chip.textContent = 'Uplift';
-          } else if (state.capacity !== null && state.capacity > 0 && load > state.capacity) {
+          } else if (state.capacity !== null && load > state.capacity) {
             chip.className += ' chip--danger';
             chip.textContent = 'Over capacity';
-          } else if (Math.abs(load - maxLoad) < 1e-6) {
+          } else if (hasHighest && Math.abs(load - maxLoad) <= tol) {
             chip.className += ' chip--restricted';
             chip.textContent = 'Highest';
           } else {
             chip.textContent = 'Carrying';
           }
+          statuses[i] = chip.textContent;
           var statusTd = document.createElement('td');
           statusTd.appendChild(chip);
           tr.appendChild(statusTd);
@@ -724,15 +961,15 @@
         }
         if (reactions.lifted.length) {
           notices.push(reactions.lifted.length + ' support'
-            + (reactions.lifted.length === 1 ? '' : 's')
-            + ' carry no load and were left out of the distribution.');
+            + (reactions.lifted.length === 1 ? ' carries' : 's carry')
+            + ' no load and ' + (reactions.lifted.length === 1 ? 'was' : 'were') + ' left out of the distribution.');
         }
         if (reactions.negative.length) {
           notices.push('Some supports are still in uplift. Check the layout, or move weight towards the middle of the support pattern.');
         }
-        if (state.capacity !== null && state.capacity > 0 && maxLoad > state.capacity) {
-          notices.push('The heaviest support carries ' + fmt(maxLoad, 1) + ' ' + massLabel()
-            + ', above the ' + fmt(state.capacity, 1) + ' ' + massLabel() + ' capacity you set.');
+        if (state.capacity !== null && maxLoad > state.capacity) {
+          notices.push('The heaviest support carries ' + fmtMass(maxLoad, 1) + ' ' + massLabel()
+            + ', above the ' + fmtMass(state.capacity, 1) + ' ' + massLabel() + ' capacity you set.');
         }
       } else {
         el.loadsEmpty.hidden = false;
@@ -742,12 +979,16 @@
       }
 
       if (stability && stability.ok) {
-        el.stability.textContent = stability.inside
-          ? 'The centre of gravity sits inside the support outline, ' + fmtLen(stability.margin) + ' '
-            + lengthLabel() + ' clear of the nearest edge.'
-          : 'The centre of gravity falls outside the support outline by ' + fmtLen(Math.abs(stability.margin))
+        /* On the edge: closer than a twentieth of a millimetre either way. */
+        if (Math.abs(stability.margin) < 0.05) {
+          el.stability.textContent = 'The centre of gravity sits on the edge of the support outline, with no margin. Any shift tips the unit.';
+          notices.push('The centre of gravity is on the edge of the support outline.');
+        } else if (stability.inside) {
+          el.stability.textContent = 'The centre of gravity sits inside the support outline, ' + fmtLen(stability.margin) + ' '
+            + lengthLabel() + ' clear of the nearest edge.';
+        } else {
+          el.stability.textContent = 'The centre of gravity falls outside the support outline by ' + fmtLen(Math.abs(stability.margin))
             + ' ' + lengthLabel() + '. The unit will tip.';
-        if (!stability.inside) {
           notices.push('The centre of gravity is outside the support outline.');
         }
       } else if (cg.ok && supports.length) {
@@ -771,7 +1012,10 @@
         el.notices.textContent = '';
       }
 
-      lastResult = { cg: cg, reactions: reactions, stability: stability };
+      lastResult = {
+        cg: cg, reactions: reactions, stability: stability,
+        loads: loads, statuses: statuses, notices: notices, tipping: el.stability.textContent
+      };
       if (!skipDraw) { draw(); }
       save();
     }
@@ -803,11 +1047,12 @@
         add(state.envelope.dx, state.envelope.dy, state.envelope.dz);
       }
       state.parts.forEach(function (p) {
+        if (!partValid(p)) { return; }
         var lo = blockMin(p, state.posMode);
         add(lo.x, lo.y, lo.z);
         add(lo.x + p.dx, lo.y + p.dy, lo.z + p.dz);
       });
-      state.supports.forEach(function (s) { add(s.x, s.y, 0); });
+      state.supports.forEach(function (s) { if (supportValid(s)) { add(s.x, s.y, 0); } });
 
       if (!isFinite(min.x)) {
         min = { x: 0, y: 0, z: 0 };
@@ -964,7 +1209,7 @@
       var basis = cameraBasis();
 
       state.parts.forEach(function (p, index) {
-        if (!p.on) { return; }
+        if (!p.on || !partValid(p)) { return; }
         if (p.dx <= 0 && p.dy <= 0 && p.dz <= 0) { return; }
         var lo = blockMin(p, state.posMode);
         var corners = boxCorners(lo, { dx: p.dx, dy: p.dy, dz: p.dz });
@@ -1092,36 +1337,102 @@
       return true;
     }
 
+    /* A label on a patch of the surface colour, so it reads over any block
+       colour in day and night mode. Returns false when there is no room. */
+    function drawLabel(text, x, midY, align, size, tokens) {
+      ctx.font = fontFor(size, tokens);
+      if (!claimLabel(text, x, midY, align, size)) { return false; }
+      var b = labelBoxes[labelBoxes.length - 1];
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tokens.surface;
+      ctx.fillRect(b.x0 - 1, b.y0, b.x1 - b.x0 + 2, b.y1 - b.y0);
+      ctx.restore();
+      ctx.textAlign = align;
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = tokens.text;
+      ctx.fillText(text, x, midY);
+      return true;
+    }
+
+    /* True when a solid block stands between the point and the camera.
+       `own` is the block the point belongs to, which cannot hide it. */
+    function occluded(point, own) {
+      var basis = cameraBasis();
+      var dir = basis.forward;
+      var reach = Infinity;
+      if (!state.view.ortho) {
+        var ex = basis.eye.x - point.x;
+        var ey = basis.eye.y - point.y;
+        var ez = basis.eye.z - point.z;
+        reach = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        if (reach <= 0) { return false; }
+        dir = { x: ex / reach, y: ey / reach, z: ez / reach };
+      }
+      var eps = Math.max(1e-6, cam.radius * 1e-6);
+      var axes = [['x', 'dx'], ['y', 'dy'], ['z', 'dz']];
+
+      return state.parts.some(function (p) {
+        if (p === own || !p.on || !partValid(p)) { return false; }
+        var lo = blockMin(p, state.posMode);
+        var t0 = eps;
+        var t1 = reach;
+        for (var i = 0; i < 3; i++) {
+          var a = lo[axes[i][0]] + eps;
+          var b = lo[axes[i][0]] + p[axes[i][1]] - eps;
+          if (b < a) { return false; }                 /* a point weight or a flat sheet */
+          var o = point[axes[i][0]];
+          var d = dir[axes[i][0]];
+          if (Math.abs(d) < 1e-12) {
+            if (o < a || o > b) { return false; }
+          } else {
+            var ta = (a - o) / d;
+            var tb = (b - o) / d;
+            if (ta > tb) { var swap = ta; ta = tb; tb = swap; }
+            if (ta > t0) { t0 = ta; }
+            if (tb < t1) { t1 = tb; }
+            if (t0 > t1) { return false; }
+          }
+        }
+        return true;
+      });
+    }
+
     function drawSupports(project, tokens) {
       if (!state.supports.length) { return; }
-      var loads = lastResult && lastResult.reactions && lastResult.reactions.ok
-        ? lastResult.reactions.loads
-        : null;
-
-      ctx.font = fontFor(11, tokens);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
+      var loads = lastResult ? lastResult.loads : null;
       var pending = [];
 
       state.supports.forEach(function (s, i) {
+        if (!supportValid(s)) { return; }
         var p = project({ x: s.x, y: s.y, z: 0 });
         if (!p.ok) { return; }
-        var load = loads ? loads[i] : null;
+        var load = loads && loads[i] !== undefined ? loads[i] : null;
         var colour = tokens.primary;
         if (load !== null && load < -1e-6) { colour = tokens.danger; }
         else if (load !== null && Math.abs(load) < 1e-6) { colour = tokens.warning; }
 
+        /* A support behind a block is drawn as a thin open ring, the way a
+           hidden edge is shown on a drawing, instead of a dot on top of it. */
         ctx.beginPath();
         ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = colour;
-        ctx.fill();
-        ctx.strokeStyle = tokens.surface;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
+        if (occluded({ x: s.x, y: s.y, z: 0 }, null)) {
+          ctx.setLineDash([2, 2]);
+          ctx.strokeStyle = colour;
+          ctx.lineWidth = 1.25;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        } else {
+          ctx.fillStyle = colour;
+          ctx.fill();
+          ctx.strokeStyle = tokens.surface;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
 
         if (state.view.labels) {
           var text = s.name;
-          if (load !== null) { text += '  ' + fmt(load, 0) + ' ' + massLabel(); }
+          if (load !== null) { text += '  ' + fmtMass(load, 0) + ' ' + massLabel(); }
           pending.push({ text: text, x: p.x, y: p.y, depth: p.depth });
         }
       });
@@ -1129,11 +1440,8 @@
       /* Nearest labels claim their space first, so a support hidden behind
          another one gives up its label rather than covering the visible one. */
       pending.sort(function (a, b) { return a.depth - b.depth; });
-      ctx.fillStyle = tokens.muted;
       pending.forEach(function (label) {
-        if (claimLabel(label.text, label.x, label.y + 14, 'center', 11)) {
-          ctx.fillText(label.text, label.x, label.y + 8);
-        }
+        drawLabel(label.text, label.x, label.y + 15, 'center', 11, tokens);
       });
     }
 
@@ -1181,38 +1489,32 @@
       ctx.stroke();
 
       if (state.view.labels) {
-        ctx.font = fontFor(12, tokens);
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = tokens.text;
-        if (claimLabel('CG', top.x + r + 4, top.y, 'left', 12)) {
-          ctx.fillText('CG', top.x + r + 4, top.y);
-        }
+        drawLabel('CG', top.x + r + 5, top.y, 'left', 12, tokens);
       }
     }
 
     function drawPartLabels(project, tokens) {
-      ctx.font = fontFor(11, tokens);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = tokens.text;
       var pending = [];
       state.parts.forEach(function (p) {
-        if (!p.on || !p.name) { return; }
+        if (!p.on || !p.name || !partValid(p)) { return; }
         var c = blockCentre(p, state.posMode);
-        var top = project({ x: c.x, y: c.y, z: blockMin(p, state.posMode).z + p.dz });
+        var anchor = { x: c.x, y: c.y, z: blockMin(p, state.posMode).z + p.dz };
+        var top = project(anchor);
         if (!top.ok) { return; }
+        /* A block covered by another one does not get its name printed on the
+           block that covers it. */
+        if (occluded(anchor, p)) { return; }
         pending.push({ name: p.name, x: top.x, y: top.y, depth: top.depth });
       });
 
       /* Same rule as the supports: the block nearest the camera keeps its name. */
       pending.sort(function (a, b) { return a.depth - b.depth; });
       pending.forEach(function (label) {
-        if (!claimLabel(label.name, label.x, label.y, 'center', 11)) { return; }
-        ctx.strokeStyle = tokens.surface;
-        ctx.lineWidth = 3;
-        ctx.strokeText(label.name, label.x, label.y);
-        ctx.fillText(label.name, label.x, label.y);
+        /* If the middle of the block is taken, try just above and just below it. */
+        if (!drawLabel(label.name, label.x, label.y, 'center', 11, tokens) &&
+            !drawLabel(label.name, label.x, label.y - 18, 'center', 11, tokens)) {
+          drawLabel(label.name, label.x, label.y + 18, 'center', 11, tokens);
+        }
       });
     }
 
@@ -1262,34 +1564,56 @@
       } else if (field === 'on') {
         item.on = target.checked;
         row.dataset.off = item.on ? 'false' : 'true';
+      } else if (field === 'w') {
+        item.w = entered(target.value) * massF();
       } else {
-        item[field] = num(target.value, 0);
+        item[field] = entered(target.value) * lenF();
       }
       recompute();
     }
 
-    function onTableClick(list, event, rerender) {
+    function onTableClick(kind, body, event, rerender) {
       var button = event.target.closest('button[data-action]');
       if (!button) { return; }
       var row = button.closest('tr');
       if (!row) { return; }
-      var index = list.findIndex(function (r) { return r.id === row.dataset.id; });
+      var list = state[kind];
+      var id = row.dataset.id;
+      var index = list.findIndex(function (r) { return r.id === id; });
       if (index < 0) { return; }
+      var action = button.dataset.action;
 
-      list.splice(index, 1);
+      if (action === 'delete') {
+        offerUndo(kind, list.splice(index, 1), index);
+      } else {
+        var to = action === 'up' ? index - 1 : index + 1;
+        if (to < 0 || to >= list.length) { return; }
+        list.splice(to, 0, list.splice(index, 1)[0]);
+      }
       rerender();
       recompute();
+
+      /* Keep the keyboard on the row that was moved. */
+      if (action !== 'delete') {
+        var moved = body.querySelector('tr[data-id="' + id + '"] button[data-action="' + action + '"]');
+        if (moved && moved.disabled) {
+          moved = body.querySelector('tr[data-id="' + id + '"] button[data-action="' + (action === 'up' ? 'down' : 'up') + '"]');
+        }
+        if (moved) { moved.focus(); }
+      }
     }
 
     el.partsBody.addEventListener('input', function (e) { onTableInput(state.parts, el.partsBody, e); });
-    el.partsBody.addEventListener('change', function (e) { onTableInput(state.parts, el.partsBody, e); });
+    el.partsBody.addEventListener('change', function (e) {
+      if (e.target.dataset.field === 'on') { onTableInput(state.parts, el.partsBody, e); }
+    });
     el.partsBody.addEventListener('click', function (e) {
-      onTableClick(state.parts, e, renderParts);
+      onTableClick('parts', el.partsBody, e, renderParts);
     });
 
     el.supportsBody.addEventListener('input', function (e) { onTableInput(state.supports, el.supportsBody, e); });
     el.supportsBody.addEventListener('click', function (e) {
-      onTableClick(state.supports, e, renderSupports);
+      onTableClick('supports', el.supportsBody, e, renderSupports);
     });
 
     document.getElementById('btn-add-part').addEventListener('click', function () {
@@ -1304,7 +1628,7 @@
 
     document.getElementById('btn-clear-parts').addEventListener('click', function () {
       if (!state.parts.length || !confirm('Remove every block?')) { return; }
-      state.parts = [];
+      offerUndo('parts', state.parts.splice(0, state.parts.length), 0);
       renderParts();
       recompute();
     });
@@ -1317,40 +1641,76 @@
 
     document.getElementById('btn-clear-supports').addEventListener('click', function () {
       if (!state.supports.length || !confirm('Remove every support?')) { return; }
-      state.supports = [];
+      offerUndo('supports', state.supports.splice(0, state.supports.length), 0);
       renderSupports();
       recompute();
     });
 
-    document.getElementById('btn-generate').addEventListener('click', function () {
-      var nx = Math.max(1, Math.round(num(document.getElementById('gen-nx').value, 1)));
-      var ny = Math.max(1, Math.round(num(document.getElementById('gen-ny').value, 1)));
-      var sx = num(document.getElementById('gen-sx').value, 0);
-      var sy = num(document.getElementById('gen-sy').value, 0);
-      var ix = num(document.getElementById('gen-ix').value, 0);
-      var iy = num(document.getElementById('gen-iy').value, 0);
+    /* Grid generator. The limits are the ones the boxes state: 1 to 40 points
+       each way, nothing negative, and insets that fit inside the span. */
+    var GEN_MAX = 40;
+    var GEN_FIELDS = { nx: 'gen-nx', ny: 'gen-ny', sx: 'gen-sx', sy: 'gen-sy', ix: 'gen-ix', iy: 'gen-iy' };
 
-      var usableX = Math.max(0, sx - 2 * ix);
-      var usableY = Math.max(0, sy - 2 * iy);
+    Object.keys(GEN_FIELDS).forEach(function (key) {
+      document.getElementById(GEN_FIELDS[key]).addEventListener('input', function () {
+        var v = entered(this.value);
+        state.gen[key] = (key === 'nx' || key === 'ny') ? v : v * lenF();
+        setMsg(this, '');
+      });
+    });
+
+    function checkGenerator() {
+      var g = state.gen;
+      var ok = true;
+      function flag(key, text) {
+        setMsg(document.getElementById(GEN_FIELDS[key]), text);
+        if (text) { ok = false; }
+      }
+      function countMsg(n) {
+        return isFinite(n) && n >= 1 && n <= GEN_MAX && Math.round(n) === n ? '' : 'Whole number from 1 to ' + GEN_MAX;
+      }
+      function spanMsg(v) { return isFinite(v) && v >= 0 ? '' : 'Enter 0 or more'; }
+
+      flag('nx', countMsg(g.nx));
+      flag('ny', countMsg(g.ny));
+      flag('sx', spanMsg(g.sx));
+      flag('sy', spanMsg(g.sy));
+      flag('ix', spanMsg(g.ix) || (isFinite(g.sx) && 2 * g.ix > g.sx ? 'Twice the inset is more than the span' : ''));
+      flag('iy', spanMsg(g.iy) || (isFinite(g.sy) && 2 * g.iy > g.sy ? 'Twice the inset is more than the span' : ''));
+      if (ok && g.nx > 1 && g.sx - 2 * g.ix <= 0) { flag('sx', 'Too short for ' + g.nx + ' points'); }
+      if (ok && g.ny > 1 && g.sy - 2 * g.iy <= 0) { flag('sy', 'Too short for ' + g.ny + ' points'); }
+      return ok;
+    }
+
+    document.getElementById('btn-generate').addEventListener('click', function () {
+      if (!checkGenerator()) { return; }
+      var g = state.gen;
+      var usableX = g.sx - 2 * g.ix;
+      var usableY = g.sy - 2 * g.iy;
       var list = [];
-      for (var j = 0; j < ny; j++) {
-        for (var i = 0; i < nx; i++) {
+      for (var j = 0; j < g.ny; j++) {
+        for (var i = 0; i < g.nx; i++) {
           list.push({
             id: nextId(),
-            name: String.fromCharCode(65 + j) + (i + 1),
-            x: ix + (nx > 1 ? usableX * i / (nx - 1) : usableX / 2),
-            y: iy + (ny > 1 ? usableY * j / (ny - 1) : usableY / 2)
+            name: (j < 26 ? String.fromCharCode(65 + j) : 'R' + (j + 1) + '-') + (i + 1),
+            x: g.ix + (g.nx > 1 ? usableX * i / (g.nx - 1) : usableX / 2),
+            y: g.iy + (g.ny > 1 ? usableY * j / (g.ny - 1) : usableY / 2)
           });
         }
       }
+      var before = state.supports;
       state.supports = list;
+      if (before.length) { offerUndo('supports', before, 0, true); } else { clearUndo(); }
       renderSupports();
       recompute();
     });
 
     ['env-dx', 'env-dy', 'env-dz'].forEach(function (id) {
       document.getElementById(id).addEventListener('input', function () {
-        state.envelope[id.slice(4)] = num(this.value, 0);
+        var v = entered(this.value);
+        var bad = isFinite(v) && v < 0;
+        setMsg(this, bad ? 'Cannot be negative' : '');
+        state.envelope[id.slice(4)] = isFinite(v) && v > 0 ? v * lenF() : 0;
         recompute();
       });
     });
@@ -1361,7 +1721,10 @@
     });
 
     document.getElementById('cap-per-support').addEventListener('input', function () {
-      state.capacity = this.value === '' ? null : num(this.value, 0);
+      var v = entered(this.value);
+      var bad = this.value !== '' && !(v > 0);
+      setMsg(this, bad ? 'Must be above 0, or leave blank' : '');
+      state.capacity = v > 0 ? v * massF() : null;
       recompute();
     });
 
@@ -1379,52 +1742,23 @@
 
     var lengthSelect = document.getElementById('unit-length');
     var massSelect = document.getElementById('unit-mass');
-    lengthSelect.dataset.previous = state.lengthUnit;
-    massSelect.dataset.previous = state.massUnit;
 
+    /* Only what is shown changes; the stored millimetres and kilograms do not. */
     lengthSelect.addEventListener('change', function () {
-      var previous = lengthSelect.dataset.previous;
-      var factor = LENGTH_TO_MM[previous] / LENGTH_TO_MM[lengthSelect.value];
       state.lengthUnit = lengthSelect.value;
-      lengthSelect.dataset.previous = state.lengthUnit;
-      ['dx', 'dy', 'dz'].forEach(function (k) { state.envelope[k] *= factor; });
-      state.parts.forEach(function (p) {
-        ['x', 'y', 'z', 'dx', 'dy', 'dz'].forEach(function (k) { p[k] *= factor; });
-      });
-      state.supports.forEach(function (s) { s.x *= factor; s.y *= factor; });
-      ['gen-sx', 'gen-sy', 'gen-ix', 'gen-iy'].forEach(function (id) {
-        var input = document.getElementById(id);
-        input.value = roundTidy(num(input.value, 0) * factor);
-      });
       afterUnitChange();
     });
 
     massSelect.addEventListener('change', function () {
-      var previous = massSelect.dataset.previous;
-      var factor = MASS_TO_KG[previous] / MASS_TO_KG[massSelect.value];
       state.massUnit = massSelect.value;
-      massSelect.dataset.previous = state.massUnit;
-      state.parts.forEach(function (p) { p.w *= factor; });
-      if (state.capacity !== null) { state.capacity *= factor; }
       afterUnitChange();
     });
 
-    function roundTidy(value) {
-      return Math.round(value * 1000) / 1000;
-    }
-
     function afterUnitChange() {
-      state.parts.forEach(function (p) {
-        ['x', 'y', 'z', 'dx', 'dy', 'dz', 'w'].forEach(function (k) { p[k] = roundTidy(p[k]); });
-      });
-      state.supports.forEach(function (s) { s.x = roundTidy(s.x); s.y = roundTidy(s.y); });
-      ['dx', 'dy', 'dz'].forEach(function (k) { state.envelope[k] = roundTidy(state.envelope[k]); });
-      if (state.capacity !== null) { state.capacity = roundTidy(state.capacity); }
       syncUnitLabels();
       syncInputs();
       renderParts();
       renderSupports();
-      fitView();
       recompute();
     }
 
@@ -1438,16 +1772,24 @@
     }
 
     function syncInputs() {
-      document.getElementById('env-dx').value = state.envelope.dx;
-      document.getElementById('env-dy').value = state.envelope.dy;
-      document.getElementById('env-dz').value = state.envelope.dz;
+      ['dx', 'dy', 'dz'].forEach(function (k) {
+        var input = document.getElementById('env-' + k);
+        input.value = showLen(state.envelope[k]);
+        setMsg(input, '');
+      });
       document.getElementById('pos-mode').value = state.posMode;
       lengthSelect.value = state.lengthUnit;
       massSelect.value = state.massUnit;
-      lengthSelect.dataset.previous = state.lengthUnit;
-      massSelect.dataset.previous = state.massUnit;
-      document.getElementById('cap-per-support').value = state.capacity === null ? '' : state.capacity;
+      var cap = document.getElementById('cap-per-support');
+      cap.value = state.capacity === null ? '' : showMass(state.capacity);
+      setMsg(cap, '');
       document.getElementById('opt-uplift').checked = state.redistribute;
+      Object.keys(GEN_FIELDS).forEach(function (key) {
+        var input = document.getElementById(GEN_FIELDS[key]);
+        var v = state.gen[key];
+        input.value = (key === 'nx' || key === 'ny') ? (isFinite(v) ? v : '') : showLen(v);
+        setMsg(input, '');
+      });
     }
 
     /* ------------------------------------------------------------ camera input */
@@ -1571,20 +1913,38 @@
       if (global.TN && global.TN.toast) { global.TN.toast('Downloaded ' + filename, 'success'); }
     }
 
-    document.getElementById('btn-load-preset').addEventListener('click', function () {
-      var key = document.getElementById('preset').value;
-      var maker = PRESETS[key] || PRESETS.blank;
-      var data = maker();
-      data.lengthUnit = 'mm';
-      data.massUnit = 'kg';
-      data.posMode = 'corner';
-      applyProject(data);
+    function say(message, kind) {
+      if (global.TN && global.TN.toast) { global.TN.toast(message, kind); }
+    }
+
+    function showProject() {
       syncInputs();
       syncUnitLabels();
       renderParts();
       renderSupports();
       fitView();
       recompute();
+    }
+
+    function countText() {
+      return state.parts.length + ' block' + (state.parts.length === 1 ? '' : 's') + ', '
+        + state.supports.length + ' support' + (state.supports.length === 1 ? '' : 's');
+    }
+
+    document.getElementById('btn-load-preset').addEventListener('click', function () {
+      var select = document.getElementById('preset');
+      var key = select.value;
+      var maker = PRESETS[key] || PRESETS.blank;
+      if ((state.parts.length || state.supports.length) &&
+          !confirm('Replace the blocks and supports on the page with "'
+            + select.options[select.selectedIndex].text + '"?')) { return; }
+      var data = maker();
+      data.lengthUnit = 'mm';
+      data.massUnit = 'kg';
+      data.posMode = 'corner';
+      applyProject(data);
+      showProject();
+      say('Loaded ' + select.options[select.selectedIndex].text + ': ' + countText() + '.', 'success');
     });
 
     document.getElementById('btn-save-json').addEventListener('click', function () {
@@ -1601,19 +1961,19 @@
       if (!file) { return; }
       var reader = new FileReader();
       reader.onload = function () {
-        try {
-          applyProject(JSON.parse(String(reader.result)));
-          syncInputs();
-          syncUnitLabels();
-          renderParts();
-          renderSupports();
-          fitView();
-          recompute();
-        } catch (err) {
-          if (global.TN && global.TN.toast) {
-            global.TN.toast('That file could not be read as a saved project.', 'error');
-          }
+        var data = null;
+        try { data = JSON.parse(String(reader.result)); } catch (err) { data = null; }
+        /* Nothing on the page is touched until the file has the shape of a saved project. */
+        if (!checkProject(data)) {
+          say('That file is not a saved centre of gravity project. Nothing was changed.', 'error');
+          return;
         }
+        applyProject(data);
+        showProject();
+        say('Project loaded: ' + countText() + '.', 'success');
+      };
+      reader.onerror = function () {
+        say('That file could not be read. Nothing was changed.', 'error');
       };
       reader.readAsText(file);
       e.target.value = '';
@@ -1621,38 +1981,73 @@
 
     document.getElementById('btn-csv').addEventListener('click', function () {
       var lines = [];
+      var lu = lengthLabel();
+      var mu = massLabel();
+      var ld = inputLenDigits();
+
+      /* Text cells that start like a formula get an apostrophe so a spreadsheet
+         shows them as text. Numbers are passed as numbers and left alone. */
       function esc(v) {
-        var s = String(v);
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        if (typeof v === 'number') { return isFinite(v) ? String(v) : ''; }
+        var s = String(v == null ? '' : v);
+        if (/^[=+\-@\t\r]/.test(s)) { s = "'" + s; }
+        return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
       }
       function row(arr) { lines.push(arr.map(esc).join(',')); }
+      function len(mm) { return isFinite(mm) ? tidy(mm / lenF(), ld) : ''; }
+      function mass(kg, d) { return isFinite(kg) ? tidy(kg / massF(), d) : ''; }
 
+      row(['Centre of gravity calculator - DAME Tools Hub']);
+      row(['Method', METHOD_NOTE]);
+      row(["A block's position means", state.posMode === 'centre' ? 'its centre' : 'its lowest corner']);
+      row(['Redistribute load if a support lifts off', state.redistribute ? 'yes' : 'no']);
+      row(['Overall envelope X (' + lu + ')', len(state.envelope.dx), 'Y (' + lu + ')', len(state.envelope.dy), 'Z (' + lu + ')', len(state.envelope.dz)]);
+      if (state.capacity !== null) { row(['Capacity per support (' + mu + ')', mass(state.capacity, 3)]); }
+
+      row([]);
       row(['Blocks']);
-      row(['Name', 'Included', 'X', 'Y', 'Z', 'Size X', 'Size Y', 'Size Z', 'Weight (' + massLabel() + ')']);
+      row(['Name', 'Included', 'X (' + lu + ')', 'Y (' + lu + ')', 'Z (' + lu + ')',
+           'Size X (' + lu + ')', 'Size Y (' + lu + ')', 'Size Z (' + lu + ')', 'Weight (' + mu + ')', 'Note']);
       state.parts.forEach(function (p) {
-        row([p.name, p.on ? 'yes' : 'no', p.x, p.y, p.z, p.dx, p.dy, p.dz, p.w]);
+        row([p.name, p.on ? 'yes' : 'no', len(p.x), len(p.y), len(p.z), len(p.dx), len(p.dy), len(p.dz), mass(p.w, 3),
+             p.on && !partValid(p) ? 'Left out: check the figures' : '']);
       });
 
       row([]);
       row(['Result']);
       if (lastResult && lastResult.cg.ok) {
-        row(['Total weight (' + massLabel() + ')', lastResult.cg.weight]);
-        row(['CG X (' + lengthLabel() + ')', lastResult.cg.x]);
-        row(['CG Y (' + lengthLabel() + ')', lastResult.cg.y]);
-        row(['CG Z (' + lengthLabel() + ')', lastResult.cg.z]);
+        row(['Total weight (' + mu + ')', mass(lastResult.cg.weight, 2)]);
+        row(['Total weight (kN)', tidy(toKN(lastResult.cg.weight), 3)]);
+        row(['CG X (' + lu + ')', len(lastResult.cg.x)]);
+        row(['CG Y (' + lu + ')', len(lastResult.cg.y)]);
+        row(['CG Z (' + lu + ')', len(lastResult.cg.z)]);
+        row(['Tipping check', lastResult.tipping]);
+      } else {
+        row(['No result', 'Add a block with a weight']);
       }
 
       row([]);
       row(['Support loads']);
-      row(['Name', 'X', 'Y', 'Load (' + massLabel() + ')', 'Load (kN)', 'Share %']);
+      row(['Name', 'X (' + lu + ')', 'Y (' + lu + ')', 'Load (' + mu + ')', 'Load (kN)', 'Share (%)', 'Status']);
       if (lastResult && lastResult.reactions && lastResult.reactions.ok) {
         state.supports.forEach(function (s, i) {
-          var load = lastResult.reactions.loads[i];
-          row([s.name, s.x, s.y, load, toKN(load), load / lastResult.cg.weight * 100]);
+          var load = lastResult.loads[i];
+          row([s.name, len(s.x), len(s.y),
+               load === null ? '' : mass(load, 2),
+               load === null ? '' : tidy(toKN(load), 3),
+               load === null ? '' : tidy(load / lastResult.cg.weight * 100, 1),
+               lastResult.statuses[i]]);
         });
       }
 
-      download(new Blob([lines.join('\n')], { type: 'text/csv' }), 'centre-of-gravity.csv');
+      if (lastResult && lastResult.notices.length) {
+        row([]);
+        row(['Notes']);
+        lastResult.notices.forEach(function (t) { row([t]); });
+      }
+
+      /* The byte order mark makes Excel read the file as UTF-8. */
+      download(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), 'centre-of-gravity.csv');
     });
 
     document.getElementById('btn-png').addEventListener('click', function () {
@@ -1690,11 +2085,24 @@
     recompute();
   }
 
+  /* The page keeps the sign-in check in window.cogProfile, so the saved project
+     can be kept under the signed-in user's name. */
+  function begin() {
+    var who = global.cogProfile;
+    if (who && typeof who.then === 'function') {
+      who.then(function (profile) {
+        boot(profile && profile.user && profile.user.username ? profile.user.username : '');
+      });
+    } else {
+      boot('');
+    }
+  }
+
   if (typeof document !== 'undefined' && document.addEventListener) {
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot);
+      document.addEventListener('DOMContentLoaded', begin);
     } else {
-      boot();
+      begin();
     }
   }
 

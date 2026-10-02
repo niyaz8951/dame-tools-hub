@@ -27,7 +27,7 @@
   .po-sec > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: var(--radius); }
   .po-sec > summary .count { font-weight: 400; font-size: 13px; color: var(--text-soft); }
   .po-body { padding: 0 14px 12px 14px; }
-  .po-sub { margin: 12px 0 2px; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--text-soft); }
+  .po-sub { margin: 12px 0 2px; font-size: 12px; font-weight: 650; color: var(--text-soft); }   /* datasheet text: case as printed */
   .po-row { display: grid; grid-template-columns: minmax(140px, 230px) 1fr; gap: 6px 14px; padding: 8px 0; border-top: 1px solid var(--border); }
   .po-row.off { opacity: .6; }
   .po-name { font-weight: 600; overflow-wrap: anywhere; }
@@ -114,13 +114,15 @@
       <div class="notice error" id="po-error" role="alert" hidden></div>
       <div class="empty" id="po-empty" hidden></div>
       <div id="po-tree-host"></div>
-      <p class="hint">Values are as printed on the datasheets run so far, for rows the row mapping shows. The small number is how many units had that value.
+      <p class="hint">Values are as printed on the datasheets run so far, for rows the row mapping shows. "Seen n times" is how often the value turned up; a datasheet run again is counted again.
         A value not listed here is not known yet, it does not mean the factory cannot offer it. Confirm special requests with the factory.</p>
     </section>
   </div>
 </main>
 
-<script src="../../assets/js/xlsx-lite.js"></script>
+<script src="../datasheet-notes/ds-parse.js"></script>   <!-- only for the list of readers: which products and factories a datasheet can give -->
+<script src="../datasheet-notes/ds-fcu.js"></script>
+<script src="po-xlsx.js"></script>
 <script src="product-options.js"></script>
 </body>
 </html>

@@ -144,7 +144,27 @@ export async function readWorkbook(file) {
  * CSV
  * ------------------------------------------------------------------ */
 
+/* Which character separates the columns. A sheet saved in a region that
+   writes 2,5 for two and a half uses semicolons between columns, so the
+   separator is counted on the first line rather than assumed: tab, then
+   semicolon, then comma. */
+function csvSeparator(text) {
+  const first = text.split(/\r?\n/).find((line) => line.trim() !== '') || '';
+  let quoted = false;
+  const count = { '\t': 0, ';': 0, ',': 0 };
+  for (const ch of first) {
+    if (ch === '"') quoted = !quoted;
+    else if (!quoted && ch in count) count[ch]++;
+  }
+  if (count['\t']) return '\t';
+  if (count[';']) return ';';
+  return ',';
+}
+
+/* Rows of cell strings. `rows.decimalComma` is true when the columns are not
+   comma-separated, which is when a comma inside a number is a decimal mark. */
 export function parseCsv(text) {
+  const sep = csvSeparator(text);
   const rows = [];
   let row = [];
   let field = '';
@@ -158,13 +178,14 @@ export function parseCsv(text) {
       continue;
     }
     if (ch === '"') { quoted = true; continue; }
-    if (ch === ',' || ch === '\t' || ch === ';') { row.push(field); field = ''; continue; }
+    if (ch === sep) { row.push(field); field = ''; continue; }
     if (ch === '\r') continue;
     if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue; }
     field += ch;
   }
   row.push(field);
   if (row.some((c) => c !== '')) rows.push(row);
+  rows.decimalComma = sep !== ',';
   return rows;
 }
 
@@ -180,7 +201,7 @@ const SYNONYMS = {
   length: ['length', 'l', 'len', 'length m', 'length mm', 'lengthm'],
   width: ['width', 'w', 'wid', 'width m', 'width mm'],
   height: ['height', 'h', 'ht', 'height m', 'height mm', 'depth'],
-  weight: ['gross weight', 'gross weight kgs', 'gross weight kg', 'weight', 'weight kg', 'weight kgs', 'gross wt', 'kg'],
+  weight: ['gross weight', 'gross weight kgs', 'gross weight kg', 'weight', 'weight kg', 'weight kgs', 'gross wt', 'gross kg', 'gross', 'kg'],
   qty: ['qty', 'quantity', 'nos', 'no', 'count', 'pcs'],
   stackable: ['stackable', 'can stack', 'stack'],
 };
@@ -225,41 +246,60 @@ function findHeaderRow(rows) {
   return best.index >= 0 ? best : null;
 }
 
-function num(v) {
+function num(v, decimalComma) {
   if (v === undefined || v === null || v === '') return NaN;
-  const n = Number(String(v).replace(/[, ]/g, ''));
+  let text = String(v).replace(/\s/g, '');
+  if (decimalComma && text.includes(',')) text = text.replace(/\./g, '').replace(',', '.');
+  else text = text.replace(/,/g, '');
+  const n = Number(text);
   return Number.isFinite(n) ? n : NaN;
 }
 
 /**
  * Turn raw sheet rows into item rows.
  * Detects millimetres automatically — a "length" of 12000 is not 12 km of AHU.
- * @returns {{items:Array, unit:'m'|'mm', headerRow:number, skipped:number, mapped:Object}}
+ * Rows with a negative weight or a quantity that is not a whole number of 1
+ * or more are left out and listed in `bad`, so the page can name them.
+ * @returns {{items:Array, unit:'m'|'mm', headerRow:number, skipped:number, bad:Array, mapped:Object}}
  */
 export function rowsToItems(rows) {
+  const dc = !!rows.decimalComma;
   const found = findHeaderRow(rows);
   if (!found) {
     throw new Error('No header row found. The sheet needs columns named Tag, Length, Width, Height and Gross Weight.');
   }
   const { index, map } = found;
   const raw = [];
+  const bad = [];
   let skipped = 0;
 
   for (let r = index + 1; r < rows.length; r++) {
     const row = rows[r];
     if (!row || row.every((c) => String(c).trim() === '')) continue;
-    const l = num(row[map.length]);
-    const w = num(row[map.width]);
-    const h = num(row[map.height]);
+    const l = num(row[map.length], dc);
+    const w = num(row[map.width], dc);
+    const h = num(row[map.height], dc);
     if (!(l > 0 && w > 0 && h > 0)) { skipped++; continue; }
+
+    const tagText = map.tag !== undefined ? String(row[map.tag] || '').trim() : '';
+    const weightCell = map.weight !== undefined ? String(row[map.weight] ?? '').trim() : '';
+    const qtyCell = map.qty !== undefined ? String(row[map.qty] ?? '').trim() : '';
+    const weight = weightCell === '' ? 0 : num(weightCell, dc);
+    const qty = qtyCell === '' ? 1 : num(qtyCell, dc);
+    const why = [];
+    if (Number.isNaN(weight)) why.push('weight is not a number');
+    else if (weight < 0) why.push('weight is negative');
+    if (!(Number.isInteger(qty) && qty >= 1)) why.push('quantity is not a whole number of 1 or more');
+    if (why.length) { bad.push({ row: r + 1, tag: tagText, why: why.join(', ') }); continue; }
+
     const stackRaw = map.stackable !== undefined ? String(row[map.stackable]).trim().toLowerCase() : '';
     raw.push({
-      tag: map.tag !== undefined ? String(row[map.tag] || '').trim() || `Item ${raw.length + 1}` : `Item ${raw.length + 1}`,
+      tag: tagText || `Item ${raw.length + 1}`,
       length: l,
       width: w,
       height: h,
-      weight: map.weight !== undefined ? (num(row[map.weight]) || 0) : 0,
-      qty: map.qty !== undefined ? Math.max(1, Math.round(num(row[map.qty]) || 1)) : 1,
+      weight,
+      qty,
       stackable: stackRaw === '' ? true : !['no', 'n', 'false', '0', 'do not stack'].includes(stackRaw),
     });
   }
@@ -270,7 +310,7 @@ export function rowsToItems(rows) {
   if (unit === 'mm') {
     for (const i of raw) { i.length /= 1000; i.width /= 1000; i.height /= 1000; }
   }
-  return { items: raw, unit, headerRow: index + 1, skipped, mapped: map };
+  return { items: raw, unit, headerRow: index + 1, skipped, bad, mapped: map };
 }
 
 /* ------------------------------------------------------------------ *
@@ -396,13 +436,26 @@ export function buildWorkbook(rows, sheetName = 'Sheet1', widths = null) {
   return zipStore(entries);
 }
 
-/** The blank input sheet users download, fill in and upload back. */
+const ITEM_COLUMNS = ['Tag', 'Length (m)', 'Width (m)', 'Height (m)', 'Gross Weight (kg)', 'Qty', 'Stackable'];
+const ITEM_WIDTHS = [28, 12, 12, 12, 18, 8, 11];
+
+/** The cargo list as entered, in the input sheet's own columns, so it opens
+    back into the tool unchanged. Dimensions are always written in metres. */
+export function cargoWorkbook(items) {
+  const rows = [ITEM_COLUMNS];
+  for (const i of items) {
+    rows.push([i.tag || '', i.length, i.width, i.height, i.weight || 0, i.qty, i.stackable === false ? 'No' : 'Yes']);
+  }
+  return buildWorkbook(rows, 'Items', ITEM_WIDTHS);
+}
+
+/** The blank input sheet users download, fill in and open again. */
 export function templateWorkbook() {
   const rows = [
-    ['Tag', 'Length (m)', 'Width (m)', 'Height (m)', 'Gross Weight (kg)', 'Qty', 'Stackable'],
+    ITEM_COLUMNS,
     ['FAHU-1 (SECTION 1/6)', 3.9, 1.8, 2.5, 648, 1, 'Yes'],
     ['FAHU-1 (SECTION 2/6)', 3.9, 1.0, 2.2, 148, 1, 'Yes'],
     ['HRW-3200-EZ-200', 3.9, 1.0, 2.4, 720, 2, 'No'],
   ];
-  return buildWorkbook(rows, 'Items', [28, 12, 12, 12, 18, 8, 11]);
+  return buildWorkbook(rows, 'Items', ITEM_WIDTHS);
 }

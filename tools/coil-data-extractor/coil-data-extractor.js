@@ -45,16 +45,32 @@
   }
 
   function addFiles(list) {
-    var skipped = 0;
+    var skipped = 0, dupes = 0, added = 0;
     for (var i = 0; i < list.length; i++) {
       var f = list[i];
       if (/^~\$/.test(f.name)) continue;          // Word lock files
       if (!kindOf(f.name)) { skipped++; continue; }
       var dupe = chosen.some(function (c) { return c.name === f.name && c.size === f.size; });
-      if (!dupe) chosen.push(f);
+      if (dupe) dupes++;
+      else { chosen.push(f); added++; }
     }
-    if (skipped) TN.toast(skipped + ' file(s) skipped — only .docx and .pdf are read.', 'error');
+    var said = [];
+    if (skipped) said.push(skipped + ' file(s) skipped — only .docx and .pdf are read.');
+    if (dupes) said.push(dupes + ' file(s) skipped — already in the list.');
+    if (said.length) TN.toast(said.join(' '), skipped ? 'error' : undefined);
+    if (added) dropResult();
     renderFiles();
+  }
+
+  /* A result belongs to the file list it was read from. When the list
+     changes the old table is taken down, so it cannot be downloaded as if it
+     covered the new list. */
+  var listChanged = false;
+  function dropResult() {
+    if (!result) return;
+    result = null;
+    resultPanel.hidden = true;
+    listChanged = true;
   }
 
   function renderFiles() {
@@ -75,6 +91,7 @@
       rm.setAttribute('aria-label', 'Remove ' + f.name);
       rm.addEventListener('click', function () {
         chosen.splice(i, 1);
+        dropResult();
         renderFiles();
       });
       li.append(name, kind, rm);
@@ -91,7 +108,23 @@
     runBtn.textContent = chosen.length
       ? 'Extract ' + chosen.length + ' file' + (chosen.length === 1 ? '' : 's')
       : 'Extract';
-    if (!running) runNote.textContent = chosen.length ? '' : 'Add at least one quotation.';
+    if (!running) {
+      runNote.textContent = !chosen.length ? 'Add at least one quotation.'
+        : listChanged ? 'File list changed — press Extract again.' : '';
+    }
+  }
+
+  /* Plain reasons for a file that cannot be read. The PDF engine and the
+     browser's unzip report in their own terms ("Failed to fetch", "No
+     password given"), which say nothing to the person holding the file. */
+  function whyUnreadable(err, kind) {
+    var name = err && err.name ? err.name : '';
+    var msg = err && err.message ? err.message : String(err);
+    if (name === 'PasswordException') return 'password-protected: save a copy without the password and add that';
+    if (name === 'InvalidPDFException') return 'not a readable PDF: the file is damaged or is not a PDF';
+    if (kind === 'docx' && /zip directory|word\/document\.xml/.test(msg)) return 'not a Word .docx file, or the file is damaged';
+    if (kind === 'docx' && !/This browser/.test(msg)) return 'the file is damaged: open it in Word and save it again';
+    return msg;
   }
 
   dropzone.addEventListener('click', function () { fileInput.click(); });
@@ -148,6 +181,11 @@
         entry.bad = true;
         continue;
       }
+      if (f.size === 0) {
+        entry.status = 'could not be read — the file is empty (0 bytes)';
+        entry.bad = true;
+        continue;
+      }
       try {
         var buffer = await f.arrayBuffer();
         var rows, extra = '';
@@ -172,7 +210,7 @@
           entry.warn = !!extra;
         }
       } catch (err) {
-        entry.status = 'could not be read — ' + (err && err.message ? err.message : err);
+        entry.status = 'could not be read — ' + whyUnreadable(err, kind);
         entry.bad = true;
       }
       /* Let the note repaint between files. */
@@ -186,6 +224,7 @@
     result = { table: table, log: log, name: name };
 
     running = false;
+    listChanged = false;
     syncRun();
     render();
   }
@@ -300,6 +339,7 @@
   clearBtn.addEventListener('click', function () {
     chosen = [];
     result = null;
+    listChanged = false;
     resultPanel.hidden = true;
     $('#preview-head').innerHTML = '';
     $('#preview-body').innerHTML = '';

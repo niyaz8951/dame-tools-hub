@@ -23,6 +23,9 @@
   var hint = $('dn-scope-hint'), upload = $('dn-upload'), result = $('dn-result');
   var drop = $('dn-drop'), fileInput = $('dn-file'), status = $('dn-status'), mapNote = $('dn-map-note');
   var products = [], parsed = null, grid = null, fileName = '', busy = false;   // parsed: [unit, ...]
+  var failed = [], runNo = 0;                    // failed: files of the last run that could not be read
+  var STORE = 'dame_dn_product';                 // the chosen product is kept for this tab (sessionStorage)
+  var narrow = window.matchMedia('(max-width: 560px)');
   var mappings = {}, mapping = null, mapProduct = '';   // mapping per product, loaded once each
 
   /* ---------- selection ---------- */
@@ -54,7 +57,7 @@
     hint.className = 'hint';
     if (p && !canRead(p)) {
       hint.className = 'notice warn';
-      hint.textContent = 'The ' + p.name + ' datasheet reader is not ready yet. Only ' + Object.keys(window.DSParse.readers).join(' and ').toUpperCase() + ' datasheets can be read for now.';
+      hint.textContent = 'The ' + p.name + ' datasheet reader is not ready yet. Only ' + Object.keys(window.DSParse.readers).map(function (k) { return k.toUpperCase(); }).join(' and ') + ' datasheets can be read for now.';
       upload.hidden = true; result.hidden = true;
       return;
     }
@@ -65,10 +68,19 @@
     mapNote.hidden = !(ready && mapping.error);
     if (ready && mapping.error) mapNote.textContent = 'The row mapping for this product could not be loaded (' + mapping.error + '). Every datasheet row is shown as printed.';
     if (!ready) result.hidden = true;
-    else if (parsed) render();            // choices changed: the table follows, no need to upload again
+    else if (parsed) render();            // the mapping has loaded: draw the table
   }
 
-  productSel.addEventListener('change', function () { var p = product(); loadMapping(p && canRead(p) ? p.id : ''); applyGate(); });
+  /* A result belongs to the product it was read for: changing the product clears it. */
+  function clearResult() { parsed = null; grid = null; fileName = ''; failed = []; result.hidden = true; say(''); }
+  function remember() { try { sessionStorage.setItem(STORE, productSel.value); } catch (e) { /* ignore */ } }
+
+  productSel.addEventListener('change', function () {
+    var p = product();
+    if (busy) stop();
+    clearResult(); remember();
+    loadMapping(p && canRead(p) ? p.id : ''); applyGate();
+  });
 
   /* ---------- file ---------- */
   function say(text, kind) {
@@ -93,24 +105,31 @@
   window.addEventListener('dragover', function (e) { e.preventDefault(); });
   window.addEventListener('drop', function (e) { e.preventDefault(); });
 
+  /* Cancel: the run in hand is dropped (its number no longer matches) and the reader stops at the next page. */
+  function stop() { runNo++; busy = false; drop.disabled = false; $('dn-cancel').hidden = true; say(''); }
+  $('dn-cancel').addEventListener('click', function () { if (busy) { stop(); drop.focus(); } });
+
   function read(files) {
     var c = choice();
     if (!c) return;
-    busy = true; drop.disabled = true; parsed = null; result.hidden = true;
+    var no = ++runNo, stopped = function () { return no !== runNo; };
+    busy = true; drop.disabled = true; parsed = null; failed = []; result.hidden = true;
+    $('dn-cancel').hidden = false;
     say('Reading ' + (files.length === 1 ? files[0].name : files.length + ' files') + '…');
-    window.DSRead.files(files, window.DSRead.progress(say)).then(function (units) {
-      window.DSRead.check(units, c.productId);        // an FCU datasheet run as AHU would be mapped under the wrong product
-      if (productSel.value !== c.productId) throw new Error('The product was changed while the datasheet was being read. Choose the datasheet again.');
+    // each file is checked against the product: an FCU datasheet run as AHU would be mapped under the wrong product
+    window.DSRead.files(files, window.DSRead.progress(say, stopped), c.productId, stopped).then(function (units) {
+      if (stopped()) return;
       say('Building the table for ' + units.length + (units.length === 1 ? ' unit…' : ' units…'));
       return new Promise(function (go) { setTimeout(go, 30); }).then(function () {   // let the message show first
-        parsed = units; fileName = files[0].name;
+        if (stopped()) return;
+        parsed = units; fileName = units.names[0]; failed = units.failed;
         say('');
         render();
         register();
         result.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
-    }).then(null, function (err) { say(err.message, 'error'); })
-      .then(function () { busy = false; drop.disabled = false; });
+    }).then(null, function (err) { if (!stopped()) say(err.message, 'error'); })
+      .then(function () { if (!stopped()) { busy = false; drop.disabled = false; $('dn-cancel').hidden = true; } });
   }
 
   /* Row names this product's mapping has not seen before are added to the admins' mapping list,
@@ -204,7 +223,7 @@
     var differ = grid.rows.filter(function (r) { return r.marks && r.marks.some(Boolean); }).length;
     if (units > 1) list.push(differ ? differ + (differ === 1 ? ' row differs' : ' rows differ') + ' from ' + grid.columns[0] : 'All units match ' + grid.columns[0]);
     $('dn-diff').hidden = units < 2;
-    $('dn-diff-text').textContent = grid.columns[0] + ' is taken as the reference. In each row, a value that differs from it is highlighted: yellow for the first different value, another colour for each further different value. The same colour in a row means the same value.';
+    $('dn-diff-text').textContent = grid.columns[0] + ' is taken as the reference. In each row, a value that differs from it is highlighted, with one colour for each different value. The same value in a row always has the same colour; after 5 different values the colours start again.';
     $('dn-only-wrap').hidden = !differ;
     if (!differ) $('dn-only').checked = false;
     list.forEach(function (t) { facts.appendChild(el('span', { 'class': 'badge', text: t })); });
@@ -225,6 +244,13 @@
       if (units === 1 || who.length === units) notes.push(w);
       else notes.push(who.slice(0, 5).join(', ') + (who.length > 5 ? ' and ' + (who.length - 5) + ' more' : '') + ': ' + w);
     });
+    // files of this run that could not be read: the table is for the others
+    var bad = $('dn-failed'); bad.textContent = ''; bad.hidden = !failed.length;
+    if (failed.length) {
+      bad.appendChild(el('strong', { text: failed.length === 1 ? '1 file was not read. The table is for the other files.' : failed.length + ' files were not read. The table is for the other files.' }));
+      bad.appendChild(el('ul', { 'class': 'dn-list' }, failed.map(function (n) { return el('li', { text: n }); })));
+    }
+
     var warn = $('dn-warn'); warn.textContent = ''; warn.hidden = !notes.length;
     if (notes.length) {
       warn.appendChild(el('strong', { text: 'Check these points:' }));
@@ -235,11 +261,12 @@
     var table = $('dn-table').querySelector('table'), cols = $('dn-cols'), head = $('dn-head-row');
     var unitW = units === 1 ? 320 : units > 12 ? 160 : 220;
     cols.textContent = ''; head.textContent = '';
-    [170, 210].concat(grid.columns.map(function () { return unitW; }), [130]).forEach(function (w) { cols.appendChild(el('col', { style: 'width:' + w + 'px' })); });
+    var lead = narrow.matches ? [92, 116] : [170, 210];   // Section and Component stay in view, so they are kept slim on a phone
+    lead.concat(grid.columns.map(function () { return unitW; }), [130]).forEach(function (w) { cols.appendChild(el('col', { style: 'width:' + w + 'px' })); });
     ['Section', 'Component'].concat(grid.columns, ['Remarks']).forEach(function (t, i) {
       head.appendChild(el('th', { text: t, 'class': i >= 2 && i < 2 + units ? 'unit' : null }));
     });
-    table.style.minWidth = (510 + unitW * units) + 'px';
+    table.style.minWidth = (lead[0] + lead[1] + 130 + unitW * units) + 'px';
 
     var body = $('dn-body'), frag = document.createDocumentFragment();
     onScreen().forEach(function (r) {
@@ -256,7 +283,17 @@
     $('dn-empty').hidden = !!grid.rows.length;
     $('dn-download').disabled = !grid.rows.length;
     result.hidden = false;
+    pinColumns();
   }
+
+  /* Component is pinned beside Section: it needs the width Section was given (the columns stretch on a wide screen). */
+  function pinColumns() {
+    var first = $('dn-head-row').firstChild;
+    if (first && !result.hidden) $('dn-table').style.setProperty('--dn-c1', first.offsetWidth + 'px');
+  }
+  window.addEventListener('resize', pinColumns);
+  function onNarrow() { if (parsed && !result.hidden) render(); }
+  if (narrow.addEventListener) narrow.addEventListener('change', onNarrow); else if (narrow.addListener) narrow.addListener(onNarrow);
 
   function safeName(s) { return String(s).replace(/[\\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80); }
 
@@ -273,8 +310,7 @@
   $('dn-only').addEventListener('change', render);
 
   $('dn-clear').addEventListener('click', function () {
-    parsed = null; grid = null; fileName = '';
-    result.hidden = true; say('');
+    clearResult();
     drop.focus();
   });
 
@@ -288,7 +324,11 @@
     productSel.appendChild(option('', 'Choose a product'));
     products.forEach(function (p) { productSel.appendChild(option(p.id, p.name)); });
     productSel.disabled = false;
-    if (products.length === 1) { productSel.value = products[0].id; loadMapping(canRead(products[0]) ? products[0].id : ''); }
+    var last = '';
+    try { last = sessionStorage.getItem(STORE) || ''; } catch (e) { /* ignore */ }
+    if (products.length === 1) productSel.value = products[0].id;
+    else if (products.some(function (p) { return p.id === last; })) productSel.value = last;   // the product chosen before a reload
+    if (product()) loadMapping(canRead(product()) ? product().id : '');
     applyGate();
   }, function (err) {
     productSel.textContent = ''; productSel.appendChild(option('', 'Could not load'));

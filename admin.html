@@ -31,7 +31,7 @@
   <section id="tab-users" class="stack">
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>User</th><th>Team (as requested)</th><th>Status</th><th>Role</th><th>Tile access</th><th>Can edit</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th style="white-space:normal">Team (as requested)</th><th>Status</th><th>Role</th><th>Tile access</th><th>Can edit</th><th></th></tr></thead>
         <tbody id="userRows"></tbody>
       </table>
     </div>
@@ -116,13 +116,13 @@
     var boxes = data.categories.map(function (c) {
       var cb = el("input", { type: "checkbox", value: c.id });
       cb.checked = c.is_default || isAdminRow || u.categories.indexOf(c.id) >= 0; cb.disabled = c.is_default || isAdminRow || !editable;
-      return el("label", { "class": "check", style: "margin-right:12px" }, [cb, c.name]);
+      return el("label", { "class": "check", style: "display:flex;white-space:nowrap" }, [cb, c.name]);
     });
     var editTools = data.tools.filter(function (t) { return t.editable; });
     var editBoxes = editTools.map(function (t) {
       var cb = el("input", { type: "checkbox", value: t.id });
       cb.checked = isAdminRow || (u.edit_tools || []).indexOf(t.id) >= 0; cb.disabled = isAdminRow || !editable;
-      return el("label", { "class": "check", style: "margin-right:12px;white-space:nowrap" }, [cb, t.name]);
+      return el("label", { "class": "check", style: "display:flex;white-space:nowrap" }, [cb, t.name]);
     });
     // the role box drives the two checkbox groups: admins get everything, so the boxes grey out
     roleSel.addEventListener("change", function () {
@@ -134,14 +134,15 @@
     function payload(status) {
       return { id: u.id, status: status || statusSel.value, role: roleSel.value, categories: checked(boxes), editTools: checked(editBoxes) };
     }
-    var actions = el("div", { "class": "row", style: "justify-content:flex-end;flex-wrap:nowrap" });
+    var actions = el("div", { "class": "row", style: "justify-content:flex-end;flex-wrap:nowrap" }), saveBtn;
     if (!editable) {
       actions.appendChild(el("span", { "class": "small muted", text: isSuperRow ? "Site owner" : "Managed by the super user" }));
     } else if (pending) {
       actions.appendChild(el("button", { "class": "btn sm", type: "button", text: "Approve", onclick: function () { call(Api.adminSetUser(Hub.token(), payload("approved")), u.username + " approved"); } }));
       actions.appendChild(el("button", { "class": "btn danger sm", type: "button", text: "Reject", onclick: function () { call(Api.adminSetUser(Hub.token(), payload("rejected")), u.username + " rejected"); } }));
     } else {
-      actions.appendChild(el("button", { "class": "btn sm", type: "button", text: "Save", onclick: function () { call(Api.adminSetUser(Hub.token(), payload()), "Saved " + u.username); } }));
+      saveBtn = el("button", { "class": "btn sm", type: "button", text: "Save", disabled: true, onclick: function () { call(Api.adminSetUser(Hub.token(), payload()), "Saved " + u.username); } });
+      actions.appendChild(saveBtn);
       actions.appendChild(el("button", { "class": "btn ghost sm", type: "button", text: "Reset password", onclick: function () {
         var pw = window.prompt("New password for " + u.username + " (at least 8 characters):");
         if (pw) call(Api.adminResetPassword(Hub.token(), u.id, pw), "Password reset for " + u.username);
@@ -152,8 +153,10 @@
         } }));
       }
     }
-    return el("tr", {}, [
-      el("td", {}, [el("b", { text: u.full_name }), el("div", { "class": "small muted", text: u.username })]),
+    // Save stays disabled until this row differs from what is stored
+    var stored = JSON.stringify(payload());
+    return el("tr", { onchange: function () { if (saveBtn) saveBtn.disabled = JSON.stringify(payload()) === stored; } }, [
+      el("td", { "class": "user-cell" }, [el("b", { text: u.full_name }), el("div", { "class": "small muted", text: u.username })]),
       el("td", { text: u.team_note || "-" }),
       el("td", {}, pending ? [el("span", { "class": "badge warn", text: "Pending" })] : [statusSel]),
       el("td", {}, [roleSel]),
