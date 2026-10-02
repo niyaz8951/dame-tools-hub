@@ -1564,11 +1564,31 @@ language sql immutable as $$
                        'general||product', 'general||factory', 'general||unit');
 $$;
 
+-- The model a unit is filed under: the Unit Model without a trailing N, which marks a motor variant of
+-- the same model (owner's rule, 2 Oct 2026: FWW1600TAN is FWW1600TA, FWW600VAN is FWW600VA). The
+-- variant still shows inside the model as a value of the Unit Model row, and its other differences
+-- as further values of the rows concerned.
+create or replace function public.po__model(p_model text) returns text
+language sql immutable as $$
+  select regexp_replace(left(regexp_replace(trim(coalesce(p_model, '')), '\s+', ' ', 'g'), 60), 'N$', '', 'i');
+$$;
+
 -- The series of a unit model: the model without its size figure (FWW600VA -> FWWVA, FWW700VA-D -> FWWVA-D).
 create or replace function public.po__series(p_model text) returns text
 language sql immutable as $$
-  select regexp_replace(coalesce(p_model, ''), '\d+', '', 'g');
+  select regexp_replace(public.po__model(p_model), '\d+', '', 'g');
 $$;
+
+-- Values filed under a variant model before the rule above are moved to their model (merged with
+-- what is there; nothing to do once the script has run).
+insert into public.po_values (factory_id, row_key, model, value_key, value, times, hidden, first_at, last_at)
+select v.factory_id, v.row_key, public.po__model(v.model), v.value_key, min(v.value), sum(v.times)::int, bool_or(v.hidden), min(v.first_at), max(v.last_at)
+  from public.po_values v
+ where v.model <> public.po__model(v.model)
+ group by v.factory_id, v.row_key, public.po__model(v.model), v.value_key
+on conflict (factory_id, row_key, model, value_key) do update
+   set times = po_values.times + excluded.times, last_at = greatest(po_values.last_at, excluded.last_at);
+delete from public.po_values v where v.model <> public.po__model(v.model);
 
 -- A value as it is kept: spacing tidied, and the quantity in front of an option line removed
 -- ("2 x Inspection window" and "1 x Inspection window" are one option).
@@ -1604,7 +1624,7 @@ begin
   select x.factory_id, x.row_key, x.model, x.value_key, min(x.value), count(*)::int
     from (
       select f.id as factory_id, m.row_key,
-             left(regexp_replace(trim(coalesce(e->>'model', '')), '\s+', ' ', 'g'), 60) as model,
+             public.po__model(e->>'model') as model,
              public.po__value(m.row_key, e->>'value') as value,
              lower(public.po__value(m.row_key, e->>'value')) as value_key
         from jsonb_array_elements(p_items) e

@@ -201,7 +201,8 @@
   var PO_SKIP = ["project", "reference", "material name", "selection software", "report date", "product", "factory", "unit"];
   function poSkip(key) { return /^general\|\|/.test(key) && PO_SKIP.indexOf(key.slice(9)) >= 0; }
   // the series of a unit model = the model without its size figure (FWW600VA -> FWWVA); mirrors po__series
-  function poSeries(model) { return String(model || "").replace(/\d+/g, ""); }
+  function poModel(model) { return String(model || "").replace(/\s+/g, " ").trim().slice(0, 60).replace(/N$/i, ""); }   // mirrors po__model
+  function poSeries(model) { return poModel(model).replace(/\d+/g, ""); }
   function poValue(key, value) {
     var v = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     if (/\|options\|option$/.test(key)) v = v.replace(/^\d+\s*x\s+/i, "");
@@ -417,7 +418,7 @@
         var f = p.factories.filter(function (x) { return x.name.toLowerCase() === String(it.factory || "").trim().toLowerCase(); })[0];
         var key = String(it.key || "").trim(), m = rules.filter(function (r) { return r.key === key; })[0];
         if (!f || !m || m.show === false || m.in_tree === false || poSkip(key)) return;
-        var v = poValue(key, it.value), model = String(it.model || "").replace(/\s+/g, " ").trim().slice(0, 60), k = model + "\u0001" + v.toLowerCase();
+        var v = poValue(key, it.value), model = poModel(it.model), k = model + "\u0001" + v.toLowerCase();
         if (!v || v === "-") return;
         var row = (db.po.values[f.id] = db.po.values[f.id] || {})[key] = (db.po.values[f.id][key] || {});
         if (row[k]) row[k].n++; else if (Object.keys(row).filter(function (x) { return x.split("\u0001")[0] === model; }).length < 300) row[k] = { v: v, n: 1, hidden: false, model: model }; else return;

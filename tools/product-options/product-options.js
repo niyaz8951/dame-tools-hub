@@ -10,7 +10,10 @@
    notes, take a value or a row out of the tree and bring it back.
    FCU: the values come per unit model (tree.models), so the tree is
    series > model > section > component, each model with the values
-   its units had (owner's rule, 2 Oct 2026). Special options and
+   its units had (owner's rule, 2 Oct 2026). A trailing N on the
+   Unit Model is a motor variant of the same model (FWW1600TAN is
+   filed under FWW1600TA; the database does that), so the Unit Model
+   row inside a model lists the variants seen. Special options and
    notes are per section or row, not per model: they are drawn once
    under "All models". AHU trees have no models and stay as before.
    ============================================================ */
@@ -20,7 +23,6 @@
   var $ = function (id) { return document.getElementById(id); };
   var el = window.Hub.el, Api = window.Api;
   var TOOL = 'product-options', FEW = 8, STORE = 'dame_po_choice';
-  var MODEL_ROW = /^unit data\|\|unit model$/;      // says only what the model group already says
 
   var productSel = $('po-product'), factorySel = $('po-factory'), search = $('po-search');
   var hint = $('po-hint'), result = $('po-result'), host = $('po-tree-host');
@@ -215,7 +217,6 @@
         var values = extrasOnly ? [] : r.values.filter(function (v) { return model ? v.model === model : true; });
         return { key: r.key, sub: r.sub, name: r.name, off: r.off, values: values, extras: model ? [] : r.extras, model: model };
       }).filter(function (r) {
-        if (model && MODEL_ROW.test(r.key)) return false;
         return r.values.length || r.extras.length || (!model && !extrasOnly && edit);
       });
       live.forEach(function (r) { if (!r.off) { nRows++; nVals += r.values.filter(function (v) { return !v.hidden; }).length; } });
@@ -399,7 +400,7 @@
         var lead = byModel ? [series, model] : [];
         if (!model && s.extras.length) rows.push(lead.concat([s.name, '', '(whole section)', '', txt(s.extras, 'option'), txt(s.extras, 'note')]));
         s.rows.forEach(function (r) {
-          if (r.off || (model && MODEL_ROW.test(r.key))) return;
+          if (r.off) return;
           var vals = model ? r.values.filter(function (v) { return !v.hidden && v.model === model; }) : (byModel ? [] : r.values.filter(function (v) { return !v.hidden; }));
           var extras = model ? [] : r.extras;
           if (!vals.length && !extras.length) return;
