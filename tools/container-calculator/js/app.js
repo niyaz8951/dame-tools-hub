@@ -22,6 +22,7 @@ const state = {
   pallet: { on: false,
             types: ['eur1'],      // every pallet the user can source
             useCustom: false,
+            fit: true,            // made-to-size skid for items no ticked pallet takes
             clearance: DEFAULT_PALLET_CLEARANCE,
             maxLoadHeight: 1.8,   // goods height above the deck
             maxLoad: 0,           // 0 = use each pallet's own safe working load
@@ -56,6 +57,12 @@ const piecesWord = (n) => `${n} piece${n === 1 ? '' : 's'}`;
 function enteredSize(p) {
   if (p.pallet) return { l: p.pallet.deckL, w: p.pallet.deckW, h: p.rawH };
   return { l: p.rawL, w: p.rawW, h: p.rawH };
+}
+
+/* The loading rules in force. Palletised cargo stays upright, so turning on
+   side is off whenever "Cargo is palletised" is ticked. */
+function packOptions() {
+  return { ...state.options, allowTilt: state.options.allowTilt && !state.pallet.on };
 }
 
 function clearanceLine() {
@@ -276,12 +283,15 @@ function buildPalletSelect() {
   head.textContent = 'Your own';
   list.appendChild(head);
   list.appendChild(addCheck('custom', 'Custom pallet', 'dimensions below'));
+  list.appendChild(addCheck('fit', 'Made-to-size skid', `for items too large for the ticked pallets · deck ${Math.round(FIT_SKID.deck * 1000)} mm, about ${FIT_SKID.kgPerM2} kg per m² (estimate)`));
 
   list.addEventListener('change', (e) => {
     const id = e.target.dataset && e.target.dataset.pallet;
     if (!id) return;
     if (id === 'custom') {
       state.pallet.useCustom = e.target.checked;
+    } else if (id === 'fit') {
+      state.pallet.fit = e.target.checked;
     } else {
       const set = new Set(state.pallet.types);
       if (e.target.checked) set.add(id); else set.delete(id);
@@ -297,7 +307,9 @@ function syncPalletPanel() {
   for (const box of $('#pallet-list').querySelectorAll('input[data-pallet]')) {
     box.checked = box.dataset.pallet === 'custom'
       ? state.pallet.useCustom
-      : state.pallet.types.includes(box.dataset.pallet);
+      : box.dataset.pallet === 'fit'
+        ? state.pallet.fit !== false
+        : state.pallet.types.includes(box.dataset.pallet);
   }
   setValue('#pallet-clearance', Math.round(state.pallet.clearance * 1000));
   $('#pallet-custom').hidden = !state.pallet.useCustom;
@@ -358,7 +370,11 @@ function syncSetupPanel() {
   setValue('#cost', state.cost || '');
   setValue('#currency', state.currency);
   $('#opt-stack').checked = state.options.allowStacking;
-  $('#opt-tilt').checked = state.options.allowTilt;
+  $('#opt-tilt').checked = state.options.allowTilt && !state.pallet.on;
+  $('#opt-tilt').disabled = state.pallet.on;
+  $('#opt-tilt-note').textContent = state.pallet.on
+    ? 'Not used: palletised cargo stays upright'
+    : 'Lets the packer rotate items in all axes';
   $('#opt-pallet').checked = state.pallet.on;
   setValue('#opt-gap', Math.round(state.options.gap * 1000));
   setValue('#c-length', state.custom.length);
@@ -636,6 +652,22 @@ function candidatePallets() {
   return chosen.sort((a, b) => (a.length * a.width) - (b.length * b.width));
 }
 
+/* A skid built to the item's own footprint, for cargo no ticked pallet takes
+   (long FCU cartons, AHU sections). Deck height, weight per square metre and
+   safe working load are estimates in line with the China skids in the preset
+   list (60 kg for 2000 x 1500, 80 kg for 2000 x 2000 = 20 kg per m²); the
+   page says so. */
+const FIT_SKID = { deck: 0.150, kgPerM2: 20, swl: 2000 };
+function fitSkid(item) {
+  const mm = (m) => Math.round(m * 1000);
+  return {
+    id: 'fit',
+    name: `made-to-size skid (${mm(item.length)} × ${mm(item.width)})`,
+    length: item.length, width: item.width, deck: FIT_SKID.deck,
+    weight: Math.round(FIT_SKID.kgPerM2 * item.length * item.width), swl: FIT_SKID.swl,
+  };
+}
+
 /* The load ceiling for one pallet: the override if set, otherwise that
    pallet's own rating. */
 function loadLimitFor(pal) {
@@ -705,7 +737,7 @@ function palletise(items) {
 
     /* Smallest deck that physically takes the item wins. The list is already
        sorted small-to-large, so the first hit is the answer. */
-    const pal = pallets.find((p) => tilePerLayer(item, p) >= 1);
+    const pal = pallets.find((p) => tilePerLayer(item, p) >= 1) || (state.pallet.fit !== false ? fitSkid(item) : null);
     if (!pal) {
       loose.push(item);
       report.push({ tag: item.tag || 'untitled', loose: true });
@@ -857,7 +889,7 @@ function run() {
 
   if (!worker) {
     setStatusFallback();
-    applyResult(packItems(items, vehicle, state.options), compareFleet(items, state.options));
+    applyResult(packItems(items, vehicle, packOptions()), compareFleet(items, packOptions()));
     syncRunButton();
     return;
   }
@@ -883,7 +915,7 @@ function run() {
     notify(`The calculation failed: ${err.message || 'worker error'}`, true);
   };
 
-  worker.postMessage({ items, vehicle, options: state.options });
+  worker.postMessage({ items, vehicle, options: packOptions() });
 }
 
 /* The fallback path cannot report progress — it blocks the thread it would
@@ -984,8 +1016,8 @@ function renderResults() {
       : `${looseRun.tags.length} of ${looseRun.rows} rows do not fit the chosen pallet`));
     const shown = looseRun.tags.slice(0, 8).join(', ') + (looseRun.tags.length > 8 ? ` and ${looseRun.tags.length - 8} more` : '');
     body.appendChild(el('p', null, all
-      ? 'Every item is larger than the pallet deck, so all are packed loose and the result is the same as without pallets. Tick a larger pallet or enter a custom pallet to palletise them.'
-      : `Packed loose, without a pallet: ${shown}. Tick a larger pallet or enter a custom pallet to palletise them.`));
+      ? 'Every item is larger than the ticked pallets, so all are packed loose. Tick "Made-to-size skid", a larger pallet or a custom pallet to palletise them.'
+      : `Packed loose, without a pallet: ${shown}. Tick "Made-to-size skid", a larger pallet or a custom pallet to palletise them.`));
     alert.appendChild(body);
     box.appendChild(alert);
   }
@@ -1267,7 +1299,7 @@ function buildPdf() {
   y = doc.paragraph(
     `${v.name} · internal ${fmt(v.length)} × ${fmt(v.width)} × ${fmt(v.height)} m · max payload ` +
     `${Math.round(v.payload).toLocaleString()} kg. Stacking ${state.options.allowStacking ? 'allowed' : 'not allowed'}; ` +
-    `turning on side ${state.options.allowTilt ? 'allowed' : 'not allowed'}. ${clearanceLine()} ` +
+    `turning on side ${packOptions().allowTilt ? 'allowed' : 'not allowed'}${state.pallet.on ? ' (cargo is palletised)' : ''}. ${clearanceLine()} ` +
     `Loading order: ${s.strategyLabel}${s.strategiesTried > 1 ? `, the best of ${s.strategiesTried} tried` : ''}.`,
     M, y, W, { size: 9, leading: 12 });
   y += 10;
