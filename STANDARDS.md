@@ -92,7 +92,7 @@ Goal: turn a product datasheet PDF into the compliance table format: Section / C
 - **Power Supply** is read from the datasheet: the Electrical Connection printed for `Fan Supply` in "Electrical Power Inputs Data" (for example `400V/3Ph/50Hz + PE`), as printed. If there is no Fan Supply line the first line starting with "Fan" is used; if there is none the row is missing and the page says so.
 - **Several units.** One PDF can hold several units (a unit starts on the page with the "Unit Data" heading; `DSParse.parseAll`), and several PDFs can be chosen at once. Every unit gets its own column headed by its unit tag (the "Unit" line of the datasheet; repeated tags get "(2)", "(3)"). Remarks is the last column. There is no "Unit" row, the tag is the column heading.
 - With one unit the Section column shows the datasheet heading (`2) Filter Supply`). With several units section numbers differ per unit, so rows are lined up by section name (a 2nd section of the same name is `Filter Supply (2)`), sub-heading and component; option lines are lined up by their text. A unit that does not have a row gets `-`. A row only a later unit has is placed after the row that comes before it in that unit. Only `DSParse.grid` builds the table.
-- The PDF is read in the browser with the local pdf.js. The datasheet is never uploaded or saved. Only new section and row names are saved (see row mapping below); the page tells the user so.
+- The PDF is read in the browser with the local pdf.js. The datasheet is never uploaded or saved. Saved are: new section and row names (row mapping below) and the values of the shown rows for the Product Options tree (section 2g; never the project, reference or unit tag). The page tells the user so.
 - Only the AHU reader exists (Daikin ASTRAWEB technical report). FCU and Chiller show "not ready yet" until sample datasheets are supplied; add a reader and switch it on in `DSParse.readers`.
 - The reader gives: General (product, power supply, project, reference, material name, software, report date), Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report and NRVU pages are not read; from the Electrical page only the Fan Supply connection is used.
 - Labels paired with a solid dot become one row each: `Panel • Insulation` = `62 mm • Foam` gives Panel: 62 mm and Insulation: Foam. A one-word second label takes its context from the first (`Temp. Dry Bulb In • Out` gives Temp. Dry Bulb In / Temp. Dry Bulb Out). A value with dots under a single label stays as printed (`Mounting`: `Internal • Left`).
@@ -139,6 +139,23 @@ Goal: plot any number of air states on an ASHRAE-style chart, join them into a p
 - Worked examples must be internally consistent (a "Mixed" row equals the mix of its sources).
 - State names are user text: written with `value` / `textContent` in the tables; they pass through `TN.esc` only where they enter the SVG string.
 
+## 2g. Product Options (tree of what each factory offers)
+
+Goal: one place to see, per product and factory, the sections, components and the options given so far, plus what the team knows beyond the datasheets. Tool id `product-options`, General tile (sort 17, after Datasheet Notes), editable. Built 2 Oct 2026.
+
+- The user chooses **Product** and **Factory** (`Api.cmOptions`). The tree is Product > Section > (sub-heading) > Component > values.
+- **Only mapped rows.** The tree shows rows of the Datasheet Notes row mapping (`dn_map`) with Show ticked, and only those that have a value or an editor's entry for the chosen factory. A row unticked in the mapping leaves the tree at once. The database decides this (`po_get_tree`); the page only draws.
+- **It grows with every datasheet run.** After each Datasheet Notes run of any user, the page sends the values of the shown rows of every unit (`po_collect`), with the unit's factory as read from the datasheet (Material Name ending). Stored in `po_values`: one row per distinct value per row and factory, with how many units had it (`times`). The value is as printed, after the row's "Remove text", never the standard response. Option lines lose their quantity (`2 x Inspection window` = `Inspection window`). At most 300 different values per row and factory.
+- **Never stored:** project, reference, material name, selection software, report date, product, factory, unit tag (`po__skip`; the page does not send them either). Power Supply is kept. A unit whose factory is not known is not collected.
+- **Editors** (admins, and users with "Can edit" for Product Options) use the Edit switch on the same page:
+  - add / change / delete a **special option** or a **note** on a section or on one row (`po_extras`, per factory; shows who and when), and on a section that is not in the tree yet or a new section name;
+  - **take out a value** (per factory, `po_values.hidden`) or **leave out a row** (`dn_map.in_tree = false`, for every factory of the product; such a row is no longer collected). Both can be brought back. Use it for figures that are not options (airflow, pressure drop).
+- Users never receive hidden rows or values. Rows with more than 8 values show the 8 most seen and "+ N more"; when every value is a number with one unit, the lowest and highest are shown as a range first.
+- Search filters sections, components, values, special options and notes. Download Excel gives Section / Sub-section / Component / Options seen on datasheets / Special options / Notes (what a user sees).
+- The page must say that a value not listed is not known yet, not that the factory cannot offer it.
+- Database: `po_collect`, `po_get_tree` (any approved user), `po_admin_save_extra`, `po_admin_delete_extra`, `po_admin_set_hidden` (editors of `product-options`). The permissions block opens `po_*` like `app_*`, `cm_*`, `dn_*`. Demo mirror in `api.js` (`poSkip`, `poValue`; change both together).
+- Files: `tools/product-options/index.html`, `product-options.js`; the hook is `collect()` in `tools/datasheet-notes/datasheet-notes.js`.
+
 ## 3. Theme
 
 Daikin colours with day and night mode. Never hard-code a colour in a tool; use the variables.
@@ -179,7 +196,7 @@ A tool is ready to be set Live only when:
 
 | Tile | Who | Tools |
 |---|---|---|
-| General | every approved user | Compliance Maker, Datasheet Notes, Coil Data Extractor, Container Calculator, Centre of Gravity (all live), Psychrometric Chart (delivered 2026-10-01, add in Admin > Tools) |
+| General | every approved user | Compliance Maker, Datasheet Notes, Product Options, Coil Data Extractor, Container Calculator, Centre of Gravity (all live), Psychrometric Chart (delivered 2026-10-01, add in Admin > Tools) |
 | Sales | sales team | special sales tools, to be decided per requirement |
 | SBU | SBU team | special SBU tools, to be decided per requirement |
 | more tiles | | added later from Admin > Team tiles |

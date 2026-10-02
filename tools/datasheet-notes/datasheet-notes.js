@@ -119,11 +119,31 @@
         fresh.push({ key: r.key, section: r.group, sub: /^Filter \d+$/i.test(r.sub) ? '' : r.sub, component: r.component });
       });
     });
-    if (!fresh.length) return;
+    var units = parsed;
+    if (!fresh.length) { collect(c, m, units); return; }
     window.Api.dnAddRows(window.Hub.token(), { productId: c.productId, rows: fresh }).then(function () {
       // remembered as they were added, so the next datasheet in this visit does not send them again
       fresh.forEach(function (r) { m.rules[r.key] = { key: r.key, show: m.showUnmapped, label: '', response: '' }; });
-    }, function () { /* the next run sends them again */ });
+    }, function () { /* the next run sends them again */ }).then(function () { collect(c, m, units); });
+  }
+
+  /* The values of the rows the mapping shows go to the Product Options tree of the unit's factory
+     (the factory read from the datasheet). The database takes only mapped rows and never the
+     project, reference, material name, report date or unit tag; they are not sent either.
+     The value is sent as printed, after the row's "Remove text", not the standard response. */
+  var PROJECT_ROWS = /^general\|\|(?!power supply$)/;
+  function collect(c, m, units) {
+    var items = [];
+    units.forEach(function (unit) {
+      if (!unit.hdr.factory) return;
+      window.DSParse.rows(unit, c).forEach(function (r) {
+        var rule = m.rules[r.key];
+        if (PROJECT_ROWS.test(r.key) || (rule ? rule.show === false : !m.showUnmapped)) return;
+        var v = window.DSParse.fill('', r.value, rule && rule.strip);
+        if (v && v !== '-') items.push({ factory: unit.hdr.factory, key: r.key, value: v });
+      });
+    });
+    if (items.length) window.Api.poCollect(window.Hub.token(), { productId: c.productId, items: items }).then(null, function () { /* the tree misses this run */ });
   }
 
   /* ---------- result ---------- */

@@ -1476,6 +1476,242 @@ begin
   return jsonb_build_object('ok', true, 'saved', v_saved, 'removed', v_removed);
 end $$;
 
+-- ============================================================
+-- PRODUCT OPTIONS - what each factory has offered so far
+--
+-- A tree per product and factory: section > component > the values seen on datasheets,
+-- plus special options and notes typed by editors.
+--   po_values   one row per distinct value of a datasheet row, per factory. Filled by
+--               po_collect after every Datasheet Notes run of any user. Only rows the
+--               product's row mapping shows (dn_map.show) and that are not left out of the
+--               tree (dn_map.in_tree) are taken. Project, reference, material name, report
+--               date and unit tag are never stored (po__skip).
+--                 times   how many units carried this value
+--                 hidden  an editor took this value out of the tree
+--   po_extras   special options and notes added by editors (admins and users with
+--               "Can edit" for product-options), on a section or on one row of it.
+--   dn_map.in_tree   false = the row is left out of the tree for every factory
+--               (performance figures such as airflow that are not an option).
+-- The tree only ever shows rows of the row mapping with Show ticked.
+-- ============================================================
+
+alter table public.dn_map add column if not exists in_tree boolean not null default true;
+
+create table if not exists public.po_values (
+  factory_id text not null references public.cm_factories(id) on delete cascade,
+  row_key    text not null,
+  value_key  text not null,
+  value      text not null,
+  times      int  not null default 1,
+  hidden     boolean not null default false,
+  first_at   timestamptz not null default now(),
+  last_at    timestamptz not null default now(),
+  primary key (factory_id, row_key, value_key)
+);
+
+create table if not exists public.po_extras (
+  id         uuid primary key default gen_random_uuid(),
+  factory_id text not null references public.cm_factories(id) on delete cascade,
+  section    text not null,
+  row_key    text not null default '',
+  kind       text not null check (kind in ('option', 'note')),
+  body       text not null,
+  created_by uuid references public.app_users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_by uuid references public.app_users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+create index if not exists po_extras_factory on public.po_extras (factory_id);
+
+alter table public.po_values enable row level security;
+alter table public.po_extras enable row level security;
+revoke all on public.po_values, public.po_extras from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.po_values, public.po_extras from anon, authenticated;
+  end if;
+end $$;
+
+insert into public.app_tools (id, category_id, name, description, path, status, sort) values
+  ('product-options', 'general', 'Product Options',
+   'See the sections, options and notes each factory offers, built from the datasheets run so far.',
+   'tools/product-options/', 'live', 17)
+on conflict (id) do nothing;
+update public.app_tools set editable = true where id = 'product-options';
+
+-- Rows that describe one project, not the product: never stored.
+create or replace function public.po__skip(p_row_key text) returns boolean
+language sql immutable as $$
+  select p_row_key in ('general||project', 'general||reference', 'general||material name',
+                       'general||selection software', 'general||report date',
+                       'general||product', 'general||factory', 'general||unit');
+$$;
+
+-- A value as it is kept: spacing tidied, and the quantity in front of an option line removed
+-- ("2 x Inspection window" and "1 x Inspection window" are one option).
+create or replace function public.po__value(p_row_key text, p_value text) returns text
+language sql immutable as $$
+  select left(trim(case when p_row_key like '%|options|option'
+                        then regexp_replace(regexp_replace(coalesce(p_value, ''), '\s+', ' ', 'g'), '^\s*\d+\s*x\s+', '', 'i')
+                        else regexp_replace(coalesce(p_value, ''), '\s+', ' ', 'g') end), 300);
+$$;
+
+-- Called by Datasheet Notes after every datasheet, for any approved user.
+--   p_items: [{ "factory": "Riyadh", "key": "unit data||panel", "value": "62 mm" }, ...]
+--            one item per unit and row. The factory is the name read from the datasheet.
+-- Items whose factory is not a factory of the product, whose row is not shown by the row
+-- mapping, or that are left out of the tree, are ignored. At most 300 different values are
+-- kept per row and factory.
+create or replace function public.po_collect(p_token text, p_product_id text, p_items jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare v_product text; v_n int := 0;
+begin
+  perform public.app__session_user(p_token);
+  v_product := public.dn__product(p_product_id);
+  if p_items is null or jsonb_typeof(p_items) <> 'array' then
+    perform public.app__fail('The values could not be read.');
+  end if;
+  if jsonb_array_length(p_items) > 20000 then
+    perform public.app__fail('Too many values to save in one go (more than 20000).');
+  end if;
+
+  insert into public.po_values (factory_id, row_key, value_key, value, times)
+  select x.factory_id, x.row_key, x.value_key, min(x.value), count(*)::int
+    from (
+      select f.id as factory_id, m.row_key,
+             public.po__value(m.row_key, e->>'value') as value,
+             lower(public.po__value(m.row_key, e->>'value')) as value_key
+        from jsonb_array_elements(p_items) e
+        join public.cm_factories f on f.product_id = v_product and f.active
+                                  and lower(f.name) = lower(trim(coalesce(e->>'factory', '')))
+        join public.dn_map m on m.product_id = v_product and m.row_key = trim(coalesce(e->>'key', ''))
+                            and m.show and m.in_tree
+       where not public.po__skip(m.row_key)
+    ) x
+   where x.value_key not in ('', '-')
+     and (exists (select 1 from public.po_values v
+                   where v.factory_id = x.factory_id and v.row_key = x.row_key and v.value_key = x.value_key)
+          or (select count(*) from public.po_values v
+               where v.factory_id = x.factory_id and v.row_key = x.row_key) < 300)
+   group by x.factory_id, x.row_key, x.value_key
+  on conflict (factory_id, row_key, value_key) do update
+     set times = po_values.times + excluded.times, last_at = now();
+  get diagnostics v_n = row_count;
+  return jsonb_build_object('ok', true, 'saved', v_n);
+end $$;
+
+-- The tree of one factory. Any approved user.
+-- Rows: only rows of the row mapping with Show ticked that have a value or an editor's entry
+-- for this factory. Editors also get the rows and values taken out of the tree (marked hidden)
+-- and the list of section names, so they can bring a row back or add to any section.
+create or replace function public.po_get_tree(p_token text, p_factory_id text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; f public.cm_factories; v_edit boolean;
+begin
+  u := public.app__session_user(p_token);
+  f := public.cm__factory(p_factory_id);
+  v_edit := public.app__can_edit(u, 'product-options');
+  return jsonb_build_object(
+    'factory', jsonb_build_object('id', f.id, 'name', f.name, 'product_id', f.product_id,
+                 'product', (select p.name from public.cm_products p where p.id = f.product_id)),
+    'can_edit', v_edit,
+    'updated', (select max(v.last_at) from public.po_values v where v.factory_id = f.id),
+    'rows', coalesce((
+      select jsonb_agg(jsonb_build_object('key', m.row_key, 'section', m.section, 'sub', m.sub,
+               'component', case when m.label <> '' then m.label else m.component end,
+               'hidden', not m.in_tree,
+               'values', coalesce((
+                 select jsonb_agg(jsonb_build_object('k', v.value_key, 'v', v.value, 'n', v.times, 'hidden', v.hidden)
+                                  order by v.times desc, v.value_key)
+                   from public.po_values v
+                  where v.factory_id = f.id and v.row_key = m.row_key and (v_edit or not v.hidden)), '[]'::jsonb))
+             order by m.sort, m.row_key)
+        from public.dn_map m
+       where m.product_id = f.product_id and m.show and not public.po__skip(m.row_key)
+         and (v_edit or m.in_tree)
+         and (exists (select 1 from public.po_values v
+                       where v.factory_id = f.id and v.row_key = m.row_key and (v_edit or not v.hidden))
+              or exists (select 1 from public.po_extras x where x.factory_id = f.id and x.row_key = m.row_key))
+      ), '[]'::jsonb),
+    'extras', coalesce((
+      select jsonb_agg(jsonb_build_object('id', x.id, 'section', x.section, 'key', x.row_key, 'kind', x.kind,
+               'body', x.body, 'at', x.updated_at,
+               'by', (select w.full_name from public.app_users w where w.id = coalesce(x.updated_by, x.created_by)))
+             order by x.created_at, x.id)
+        from public.po_extras x where x.factory_id = f.id), '[]'::jsonb),
+    'sections', case when v_edit then coalesce((
+      select jsonb_agg(s.section order by s.sort)
+        from (select m.section, min(m.sort) as sort from public.dn_map m
+               where m.product_id = f.product_id and m.show and m.section <> '' and lower(m.section) <> 'general'
+               group by m.section) s), '[]'::jsonb) else '[]'::jsonb end);
+end $$;
+
+-- Add (p_id null) or change a special option or a note. Editors of product-options.
+--   p_section: section name; p_row_key: '' = for the whole section, or the key of one row.
+create or replace function public.po_admin_save_extra(
+  p_token text, p_factory_id text, p_id uuid, p_section text, p_row_key text, p_kind text, p_body text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; f public.cm_factories; v_id uuid;
+  v_section text := trim(regexp_replace(coalesce(p_section, ''), '\s+', ' ', 'g'));
+  v_body    text := trim(coalesce(p_body, ''));
+begin
+  u := public.app__require_editor(p_token, 'product-options');
+  f := public.cm__factory(p_factory_id);
+  if p_kind is null or p_kind not in ('option', 'note') then perform public.app__fail('Choose special option or note.'); end if;
+  if length(v_section) not between 1 and 120 then perform public.app__fail('Give the section a name of up to 120 characters.'); end if;
+  if length(v_body) = 0 then perform public.app__fail('Type the text first.'); end if;
+  if length(v_body) > 1000 then perform public.app__fail('The text is longer than 1000 characters.'); end if;
+
+  if p_id is null then
+    insert into public.po_extras (factory_id, section, row_key, kind, body, created_by, updated_by)
+    values (f.id, v_section, trim(coalesce(p_row_key, '')), p_kind, v_body, u.id, u.id)
+    returning id into v_id;
+  else
+    update public.po_extras set kind = p_kind, body = v_body, updated_by = u.id, updated_at = now()
+     where id = p_id and factory_id = f.id
+    returning id into v_id;
+    if v_id is null then perform public.app__fail('That entry no longer exists. Refresh the page.'); end if;
+  end if;
+  return jsonb_build_object('ok', true, 'id', v_id);
+end $$;
+
+create or replace function public.po_admin_delete_extra(p_token text, p_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__require_editor(p_token, 'product-options');
+  delete from public.po_extras where id = p_id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Take a value or a whole row out of the tree, or bring it back. Editors of product-options.
+--   p_value_key '' = the whole row, for every factory of the product (dn_map.in_tree);
+--   otherwise that one value for this factory.
+create or replace function public.po_admin_set_hidden(
+  p_token text, p_factory_id text, p_row_key text, p_value_key text, p_hidden boolean)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare f public.cm_factories; v_n int;
+begin
+  perform public.app__require_editor(p_token, 'product-options');
+  f := public.cm__factory(p_factory_id);
+  if coalesce(p_value_key, '') = '' then
+    update public.dn_map set in_tree = not coalesce(p_hidden, false)
+     where product_id = f.product_id and row_key = p_row_key;
+  else
+    update public.po_values set hidden = coalesce(p_hidden, false)
+     where factory_id = f.id and row_key = p_row_key and value_key = p_value_key;
+  end if;
+  get diagnostics v_n = row_count;
+  if v_n = 0 then perform public.app__fail('That row no longer exists. Refresh the page.'); end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- ---------- permissions: website may call ONLY the public/admin API ----------
 do $$
 declare
@@ -1485,7 +1721,7 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%')
+     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%' or p.proname like 'po\_%')
   loop
     execute format('revoke all on function %s from public', f.sig);
     if has_anon then

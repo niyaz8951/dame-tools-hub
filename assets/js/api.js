@@ -60,11 +60,17 @@
     dnRules: function (t, productId) { return rpc("dn_get_rules", { p_token: t, p_product_id: productId }); },
     dnAddRows: function (t, d) { return rpc("dn_add_rows", { p_token: t, p_product_id: d.productId, p_rows: d.rows || [] }); },
     dnAdminSaveRules: function (t, d) { return rpc("dn_admin_save_rules", { p_token: t, p_product_id: d.productId, p_show_unmapped: d.showUnmapped !== false, p_rules: d.rules || [], p_remove: d.remove || [] }); },
+    // Product Options (tree of sections, options and notes per factory)
+    poCollect: function (t, d) { return rpc("po_collect", { p_token: t, p_product_id: d.productId, p_items: d.items || [] }); },
+    poTree: function (t, factoryId) { return rpc("po_get_tree", { p_token: t, p_factory_id: factoryId }); },
+    poAdminSaveExtra: function (t, d) { return rpc("po_admin_save_extra", { p_token: t, p_factory_id: d.factoryId, p_id: d.id || null, p_section: d.section, p_row_key: d.key || "", p_kind: d.kind, p_body: d.body }); },
+    poAdminDeleteExtra: function (t, id) { return rpc("po_admin_delete_extra", { p_token: t, p_id: id }); },
+    poAdminSetHidden: function (t, d) { return rpc("po_admin_set_hidden", { p_token: t, p_factory_id: d.factoryId, p_row_key: d.key, p_value_key: d.valueKey || "", p_hidden: !!d.hidden }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v5", mem = null;
+  var KEY = "dame_hub_demo_db_v6", mem = null;
   function seed() {
     return {
       users: [
@@ -81,6 +87,7 @@
       tools: [
         { id: "compliance-maker", category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10, editable: true },
         { id: "datasheet-notes", category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: true },
+        { id: "product-options", category_id: "general", name: "Product Options", description: "See the sections, options and notes each factory offers, built from the datasheets run so far.", path: "tools/product-options/", status: "live", sort: 17, editable: true },
         { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
         { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 }
@@ -189,6 +196,14 @@
     var p = db.cm.products.filter(function (x) { return x.id === id; })[0];
     if (!p) fail("Choose a product first.");
     return p;
+  }
+  // mirror po__skip and po__value in db/schema.sql
+  var PO_SKIP = ["project", "reference", "material name", "selection software", "report date", "product", "factory", "unit"];
+  function poSkip(key) { return /^general\|\|/.test(key) && PO_SKIP.indexOf(key.slice(9)) >= 0; }
+  function poValue(key, value) {
+    var v = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    if (/\|options\|option$/.test(key)) v = v.replace(/^\d+\s*x\s+/i, "");
+    return v.trim().slice(0, 300);
   }
   function checkPw(p) { if (!p || p.length < 8) fail("Password must be at least 8 characters."); }
   function demo(fn) {
@@ -384,10 +399,87 @@
         var k = String(r.key).trim(); if (seen[k]) return; seen[k] = 1; saved++;
         var row = { key: k, section: String(r.section || "").trim(), sub: String(r.sub || "").trim(), component: String(r.component || "").trim(),
                     show: r.show !== false, label: String(r.label || "").trim(), strip: String(r.strip || "").trim(), response: String(r.response || "").trim(), keywords: String(r.keywords || "").trim(), "new": false };
+        var was = m.rules.filter(function (x) { return x.key === k; })[0];
+        if (was && was.in_tree === false) row.in_tree = false;       // "left out of the tree" is kept (Product Options)
         m.rules = m.rules.filter(function (x) { return x.key !== k; }); m.rules.push(row);
       });
       m.show_unmapped = d.showUnmapped !== false; db.dn[f.id] = m;
       return { ok: true, saved: saved, removed: removed };
+    }),
+    // ---- Product Options (same rules as po_* in db/schema.sql) ----
+    poCollect: demo(function (db, t, d) {
+      sessionUser(db, t); var p = dnProduct(db, d.productId), saved = 0;
+      var rules = ((db.dn || {})[p.id] || { rules: [] }).rules;
+      db.po = db.po || { values: {}, extras: [] };
+      (d.items || []).forEach(function (it) {
+        var f = p.factories.filter(function (x) { return x.name.toLowerCase() === String(it.factory || "").trim().toLowerCase(); })[0];
+        var key = String(it.key || "").trim(), m = rules.filter(function (r) { return r.key === key; })[0];
+        if (!f || !m || m.show === false || m.in_tree === false || poSkip(key)) return;
+        var v = poValue(key, it.value), k = v.toLowerCase();
+        if (!k || k === "-") return;
+        var row = (db.po.values[f.id] = db.po.values[f.id] || {})[key] = (db.po.values[f.id][key] || {});
+        if (row[k]) row[k].n++; else if (Object.keys(row).length < 300) row[k] = { v: v, n: 1, hidden: false }; else return;
+        saved++;
+      });
+      db.po.updated = new Date().toISOString();
+      return { ok: true, saved: saved };
+    }),
+    poTree: demo(function (db, t, factoryId) {
+      var u = sessionUser(db, t), f = cmFactory(db, factoryId), edit = canEdit(db, u, "product-options");
+      var p = db.cm.products.filter(function (x) { return x.factories.some(function (y) { return y.id === f.id; }); })[0];
+      var rules = ((db.dn || {})[p.id] || { rules: [] }).rules, po = db.po || { values: {}, extras: [] };
+      var vals = po.values[f.id] || {}, extras = po.extras.filter(function (x) { return x.factory_id === f.id; }), sections = [];
+      var rows = [];
+      rules.forEach(function (m) {
+        if (m.show === false || poSkip(m.key)) return;
+        if (m.section && m.section.toLowerCase() !== "general" && sections.indexOf(m.section) < 0) sections.push(m.section);
+        if (!edit && m.in_tree === false) return;
+        var list = Object.keys(vals[m.key] || {}).map(function (k) { var x = vals[m.key][k]; return { k: k, v: x.v, n: x.n, hidden: !!x.hidden }; })
+          .filter(function (x) { return edit || !x.hidden; })
+          .sort(function (a, b) { return b.n - a.n || a.k.localeCompare(b.k); });
+        if (!list.length && !extras.some(function (x) { return x.key === m.key; })) return;
+        rows.push({ key: m.key, section: m.section, sub: m.sub, component: m.label || m.component, hidden: m.in_tree === false, values: list });
+      });
+      return { factory: { id: f.id, name: f.name, product_id: p.id, product: p.name }, can_edit: edit, updated: po.updated || null,
+               rows: rows, extras: extras.map(function (x) { return { id: x.id, section: x.section, key: x.key, kind: x.kind, body: x.body, at: x.at, by: x.by }; }),
+               sections: edit ? sections : [] };
+    }),
+    poAdminSaveExtra: demo(function (db, t, d) {
+      var u = editor(db, t, "product-options"), f = cmFactory(db, d.factoryId);
+      var section = String(d.section || "").replace(/\s+/g, " ").trim(), body = String(d.body || "").trim();
+      if (d.kind !== "option" && d.kind !== "note") fail("Choose special option or note.");
+      if (!section || section.length > 120) fail("Give the section a name of up to 120 characters.");
+      if (!body) fail("Type the text first.");
+      if (body.length > 1000) fail("The text is longer than 1000 characters.");
+      db.po = db.po || { values: {}, extras: [] };
+      var x;
+      if (d.id) {
+        x = db.po.extras.filter(function (e) { return e.id === d.id && e.factory_id === f.id; })[0];
+        if (!x) fail("That entry no longer exists. Refresh the page.");
+        x.kind = d.kind; x.body = body;
+      } else {
+        x = { id: "x" + Date.now() + Math.random().toString(36).slice(2, 7), factory_id: f.id, section: section, key: String(d.key || "").trim(), kind: d.kind, body: body };
+        db.po.extras.push(x);
+      }
+      x.by = u.full_name; x.at = new Date().toISOString();
+      return { ok: true, id: x.id };
+    }),
+    poAdminDeleteExtra: demo(function (db, t, id) {
+      editor(db, t, "product-options");
+      if (db.po) db.po.extras = db.po.extras.filter(function (e) { return e.id !== id; });
+      return { ok: true };
+    }),
+    poAdminSetHidden: demo(function (db, t, d) {
+      editor(db, t, "product-options"); var f = cmFactory(db, d.factoryId), found = false;
+      var p = db.cm.products.filter(function (x) { return x.factories.some(function (y) { return y.id === f.id; }); })[0];
+      if (!d.valueKey) {
+        (((db.dn || {})[p.id] || { rules: [] }).rules).forEach(function (r) { if (r.key === d.key) { r.in_tree = !d.hidden; found = true; } });
+      } else {
+        var v = (((db.po || { values: {} }).values[f.id] || {})[d.key] || {})[d.valueKey];
+        if (v) { v.hidden = !!d.hidden; found = true; }
+      }
+      if (!found) fail("That row no longer exists. Refresh the page.");
+      return { ok: true };
     }),
     adminSaveCategory: demo(function (db, t, d) {
       superUser(db, t);
