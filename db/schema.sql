@@ -678,6 +678,14 @@ create index if not exists cm_answer_log_line_idx on public.cm_answer_log (line_
 alter table public.cm_lines add column if not exists part    int  not null default 0;
 alter table public.cm_lines add column if not exists section text not null default '';
 create index if not exists cm_lines_part_idx on public.cm_lines (factory_id, part);
+-- Where the clause was first seen, so the library can be read like the specification it came from:
+-- the conversion (home_run), its position in it (home_seq), its own label (sr: A, 1, a) and row type,
+-- and the number of its section there (section_sr: 1.07).
+alter table public.cm_lines add column if not exists home_run   uuid references public.cm_runs(id) on delete set null;
+alter table public.cm_lines add column if not exists home_seq   int;
+alter table public.cm_lines add column if not exists sr         text not null default '';
+alter table public.cm_lines add column if not exists row_type   text not null default '';
+alter table public.cm_lines add column if not exists section_sr text not null default '';
 
 alter table public.cm_products   enable row level security;
 alter table public.cm_factories  enable row level security;
@@ -753,17 +761,23 @@ $$;
 
 -- Fill Part and section of library lines from the saved conversions (cm_run_lines keeps every
 -- row of every conversion in order). A line takes the Part and section it was first seen under;
--- a value already there is never changed. p_run = one conversion, or null for all of them.
+-- a value already there is never changed. The same first sighting gives the line its place in the
+-- library (home_run, home_seq, sr, row_type, section_sr). p_run = one conversion, or null for all.
 create or replace function public.cm__fill_structure(p_run uuid default null) returns int
 language plpgsql security definer set search_path = public, extensions as $$
 declare v_n int;
 begin
   update public.cm_lines l
-     set part    = case when l.part = 0 then s.part else l.part end,
-         section = case when l.section = '' then s.section else l.section end
+     set part       = case when l.part = 0 then s.part else l.part end,
+         section    = case when l.section = '' then s.section else l.section end,
+         home_run   = coalesce(l.home_run, s.run_id),
+         home_seq   = case when l.home_run is null then s.seq else l.home_seq end,
+         sr         = case when l.home_run is null then s.sr else l.sr end,
+         row_type   = case when l.home_run is null then s.type else l.row_type end,
+         section_sr = case when l.home_run is null then s.section_sr else l.section_sr end
     from (
-      select distinct on (rl.line_id) rl.line_id,
-             coalesce(pp.part, 0) as part, coalesce(ss.title, '') as section
+      select distinct on (rl.line_id) rl.line_id, rl.run_id, rl.seq, rl.sr, rl.type,
+             coalesce(pp.part, 0) as part, coalesce(ss.title, '') as section, coalesce(ss.sr, '') as section_sr
         from public.cm_run_lines rl
         join public.cm_runs r on r.id = rl.run_id
         left join lateral (
@@ -773,7 +787,7 @@ begin
              and public.cm__part_no(x.spec_text) > 0
            order by x.seq desc limit 1) pp on true
         left join lateral (
-          select left(trim(x.spec_text), 120) as title
+          select left(trim(x.spec_text), 120) as title, left(trim(x.sr), 12) as sr
             from public.cm_run_lines x
            where x.run_id = rl.run_id and x.type = 'section' and x.seq < rl.seq
              and x.seq > coalesce(pp.seq, -1)
@@ -784,7 +798,7 @@ begin
        order by rl.line_id, r.created_at, rl.seq
     ) s
    where l.id = s.line_id
-     and ((l.part = 0 and s.part > 0) or (l.section = '' and s.section <> ''));
+     and (l.home_run is null or (l.part = 0 and s.part > 0) or (l.section = '' and s.section <> ''));
   get diagnostics v_n = row_count;
   return v_n;
 end $$;
@@ -897,18 +911,44 @@ end $$;
 -- ---------- editor API (admins, and users given edit access to compliance-maker) ----------
 
 -- One page of the library for a factory, unanswered and most-seen first.
+-- The reading order of a factory's library, the one place it is decided:
+--   Part 1, 2, 3 (part not known last)
+--   then sections by title: every "QUALITY CONTROL" of every specification together, the groups in
+--     the order of their lowest section number (1.05 before 1.07)
+--   then, inside a title, one block per specification the clauses were first seen in, oldest first
+--   then the clauses in the order they stand in that specification.
+create or replace function public.cm__library_order(p_factory text)
+returns table (line_id uuid, ord bigint, file_name text)
+language sql stable security definer set search_path = public, extensions as $$
+  select g.id,
+         row_number() over (order by (g.part = 0), g.part, g.gsort, lower(g.section), g.run_at nulls last,
+                                     g.home_run, g.home_seq nulls last, g.first_seen_at, g.id),
+         g.file_name
+    from (
+      select l.id, l.part, l.section, l.home_run, l.home_seq, l.first_seen_at,
+             r.created_at as run_at, coalesce(r.file_name, '') as file_name,
+             min(case when l.section_sr ~ '^\d{1,2}\.\d{1,2}$'
+                      then split_part(l.section_sr, '.', 1)::int * 1000 + split_part(l.section_sr, '.', 2)::int
+                      else 99999 end) over (partition by l.part, lower(l.section)) as gsort
+        from public.cm_lines l
+        left join public.cm_runs r on r.id = l.home_run
+       where l.factory_id = p_factory
+    ) g;
+$$;
+
 -- p_part: null = every part, 0 = part not known, 1..3. p_topic: '' = every topic, or a cm__topic name.
 drop function if exists public.cm_admin_lines(text, text, text, text, int, int);
+drop function if exists public.cm_admin_lines(text, text, text, text, int, int, int, text);
 create or replace function public.cm_admin_lines(
   p_token text, p_factory_id text, p_status text default 'open',
-  p_search text default '', p_limit int default 50, p_offset int default 0,
+  p_search text default '', p_limit int default 100, p_offset int default 0,
   p_part int default null, p_topic text default '')
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
   f public.cm_factories;
   v_like text := '%' || replace(replace(replace(trim(coalesce(p_search, '')), '\', '\\'), '%', '\%'), '_', '\_') || '%';
-  v_limit int := least(greatest(coalesce(p_limit, 50), 1), 200);
+  v_limit int := least(greatest(coalesce(p_limit, 100), 1), 300);
   v_topic text := trim(coalesce(p_topic, ''));
 begin
   perform public.app__require_editor(p_token, 'compliance-maker');
@@ -933,21 +973,22 @@ begin
                  and l.spec_text ilike v_like),
     'lines', coalesce((
       select jsonb_agg(x.j order by x.rn) from (
-        select row_number() over (order by (l.status = 'open') desc, (l.part = 0), l.part, public.cm__topic(l.section), l.section,
-                                           l.times_seen desc, l.last_seen_at desc, l.id) as rn,
+        select row_number() over (order by o.ord) as rn,
                jsonb_build_object('id', l.id, 'spec_text', l.spec_text, 'compliance', l.compliance,
                  'remarks', l.remarks, 'status', l.status, 'times_seen', l.times_seen,
                  'last_seen_at', l.last_seen_at, 'answered_at', l.answered_at,
                  'answer_source', l.answer_source,
                  'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section),
+                 'sr', l.sr, 'row_type', l.row_type, 'section_sr', l.section_sr,
+                 'home_run', l.home_run, 'file_name', o.file_name,
                  'answered_by', (select au.full_name from public.app_users au where au.id = l.answered_by)) as j
-          from public.cm_lines l
-         where l.factory_id = f.id
-           and (p_status = 'all' or l.status = p_status)
+          from public.cm__library_order(f.id) o
+          join public.cm_lines l on l.id = o.line_id
+         where (p_status = 'all' or l.status = p_status)
            and (p_part is null or l.part = p_part)
            and (v_topic = '' or public.cm__topic(l.section) = v_topic)
            and l.spec_text ilike v_like
-         order by rn
+         order by o.ord
          limit v_limit offset greatest(coalesce(p_offset, 0), 0)
       ) x), '[]'::jsonb));
 end $$;
@@ -1090,9 +1131,12 @@ begin
   return jsonb_build_object('lines', coalesce((
     select jsonb_agg(jsonb_build_object('spec_text', l.spec_text, 'compliance', l.compliance,
                                         'remarks', l.remarks, 'times_seen', l.times_seen,
-                                        'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section))
-                     order by (l.part = 0), l.part, public.cm__topic(l.section), l.section, l.spec_text)
-      from public.cm_lines l where l.factory_id = f.id), '[]'::jsonb));
+                                        'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section),
+                                        'sr', l.sr, 'row_type', l.row_type, 'section_sr', l.section_sr,
+                                        'home_run', l.home_run, 'file_name', o.file_name)
+                     order by o.ord)
+      from public.cm__library_order(f.id) o
+      join public.cm_lines l on l.id = o.line_id), '[]'::jsonb));
 end $$;
 
 -- ---------- the super user (SQL Editor only, never from the website) ----------

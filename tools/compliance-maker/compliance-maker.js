@@ -46,6 +46,7 @@
   var pasteInput = document.getElementById('paste-input');
   var keepBreaks = document.getElementById('keep-breaks');
   var tidyFirst  = document.getElementById('tidy-first');
+  var skipFront  = document.getElementById('skip-front');
   var btnConvert = document.getElementById('btn-convert');
   var convertHint= document.getElementById('convert-hint');
   var pageLimitNote = document.getElementById('page-limit-note');
@@ -510,6 +511,33 @@
     return removed;
   }
 
+  /* Cover sheets, revision tables and the table of contents come before the specification
+     and are not clauses. Lines are dropped from the top of the document only:
+       1. up to the first real "PART 1" heading, i.e. one that is not a contents entry
+          (a contents entry ends in dot leaders and a page number);
+       2. if the document has no PART 1 heading, up to the last contents entry of a table of
+          contents that sits in the first third of the document.
+     Nothing after that point is touched. Returns { lines, skipped, why }. */
+  var TOC_LINE = /\.{5,}\s*\d*\s*$/;
+  var PART_ONE = /^\s*PART\s+(1|I|ONE)\b(?!\s*[0-9IVX])/i;
+  function skipFrontMatter(lines) {
+    var i, start = -1, why = '';
+    for (i = 0; i < lines.length; i++) {
+      if (PART_ONE.test(lines[i]) && !TOC_LINE.test(lines[i])) { start = i; why = 'before PART 1'; break; }
+    }
+    if (start < 0) {
+      var last = -1, count = 0;
+      for (i = 0; i < Math.ceil(lines.length / 3); i++) if (TOC_LINE.test(lines[i])) { last = i; count++; }
+      if (count >= 3) { start = last + 1; why = 'up to the end of the contents'; }
+    }
+    if (start <= 0) return { lines: lines, skipped: 0, why: '' };
+    var skipped = lines.slice(0, start).filter(function (l) { return l.trim(); }).length;
+    return { lines: lines.slice(start), skipped: skipped, why: why };
+  }
+  function frontNote(f) {
+    return f.skipped ? ' · cover and contents skipped (' + f.skipped + (f.skipped === 1 ? ' line' : ' lines') + ' ' + f.why + ')' : '';
+  }
+
   /* ======================================================================
      BUILD
      ====================================================================== */
@@ -614,12 +642,13 @@
             return;
           }
           setStatus('Building matrix…');
-          var rows = parseLines(allLines);
+          var front = skipFront && skipFront.checked ? skipFrontMatter(allLines) : { lines: allLines, skipped: 0 };
+          var rows = parseLines(front.lines);
           var note = pdf.numPages > MAX_PAGES
             ? ' (first ' + MAX_PAGES + ' of ' + pdf.numPages + ' pages)'
             : '';
           finishBuild(rows, 'Done — ' + rows.length + ' rows' + note +
-            (dropped ? ' · ' + dropped + ' page header and footer lines removed' : ''));
+            (dropped ? ' · ' + dropped + ' page header and footer lines removed' : '') + frontNote(front));
           setConverting(false);
         });
       }).catch(function (err) {
@@ -677,9 +706,11 @@
         if (did.length) tidyNote = ' · tidy: ' + did.join(', ');
       }
 
-      var rows = parseLines(raw.split(/\r\n|\r|\n/),
+      var rawLines = raw.split(/\r\n|\r|\n/);
+      var front = skipFront && skipFront.checked ? skipFrontMatter(rawLines) : { lines: rawLines, skipped: 0 };
+      var rows = parseLines(front.lines,
                             { keepBreaks: keepBreaks && keepBreaks.checked });
-      finishBuild(rows, 'Done — ' + rows.length + ' rows' + trimmed + tidyNote);
+      finishBuild(rows, 'Done — ' + rows.length + ' rows' + trimmed + tidyNote + frontNote(front));
       setConverting(false);
     }
   }

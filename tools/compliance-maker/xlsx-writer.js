@@ -527,5 +527,59 @@
     });
   }
 
-  window.xlsxWriter = { build: build };
+  /* The compliance library as a workbook that reads like a converted specification.
+     items, in reading order:
+       { kind: 'part',    part, text }                                  black row
+       { kind: 'section', part, topic, section, sr, text, source }      blue row
+       { kind: 'line',    part, topic, section, sr, type, spec, compliance, remarks }
+     Columns: Part | Topic | Section | Sr | Specifications | Compliance | Remarks | Source file.
+     runsOf(text) -> highlight runs (same as the preview). The header names Specifications /
+     Compliance / Remarks are what the library upload looks for, so this file can be filled and
+     uploaded back. */
+  function buildLibrary(items, runsOf) {
+    var HEAD = ['Part', 'Topic', 'Section', 'Sr', 'Specifications', 'Compliance', 'Remarks', 'Source file'];
+    var out = ['<row r="1" ht="22" customHeight="1">' + HEAD.map(function (h, i) { return inlineStrCell(colLetter(i + 1) + '1', 0, h); }).join('') + '</row>'];
+    function c(col, n, style, text) {
+      return text === '' || text == null ? '<c r="' + colLetter(col) + n + '" s="' + style + '"/>' : inlineStrCell(colLetter(col) + n, style, String(text));
+    }
+    items.forEach(function (it, i) {
+      var n = i + 2, row;
+      if (it.kind === 'part') {
+        row = c(1, n, 1, it.part) + c(2, n, 1, '') + c(3, n, 1, '') + c(4, n, 1, '') + c(5, n, 1, it.text) + c(6, n, 1, '') + c(7, n, 1, '') + c(8, n, 1, '');
+      } else if (it.kind === 'section') {
+        row = c(1, n, 2, it.part) + c(2, n, 2, it.topic) + c(3, n, 2, it.section) + c(4, n, 3, it.sr) + c(5, n, 2, it.text) +
+              c(6, n, 2, '') + c(7, n, 2, '') + c(8, n, 2, it.source);
+      } else {
+        var srStyle = it.type === 'letter' && /^[A-Z]/.test(it.sr || '') ? 5 : it.type === 'number' ? 6 : 7;
+        var runs = runsOf ? runsOf(it.spec) : null;
+        row = c(1, n, 4, it.part) + c(2, n, 4, it.topic) + c(3, n, 4, it.section) + c(4, n, srStyle, it.sr) +
+              (runs && runs.length > 1 ? richStrCell('E' + n, 4, runs) : c(5, n, 4, it.spec)) +
+              c(6, n, 4, it.compliance) + c(7, n, 4, it.remarks) + c(8, n, 8, '');
+      }
+      out.push('<row r="' + n + '">' + row + '</row>');
+    });
+    var last = items.length + 1;
+    var sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+        '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+        '<sheetFormatPr defaultRowHeight="15"/>' +
+        '<cols>' + [16, 22, 28, 7, 80, 18, 44, 28].map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' +
+        '<sheetData>' + out.join('') + '</sheetData>' +
+        '<autoFilter ref="A1:H' + last + '"/>' +
+        '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
+        '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +
+      '</worksheet>';
+    var X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    return new Blob([zip([
+      { name: '[Content_Types].xml', data: strToU8(X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>') },
+      { name: '_rels/.rels', data: strToU8(X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>') },
+      { name: 'xl/workbook.xml', data: strToU8(X + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Library" sheetId="1" r:id="rId1"/></sheets></workbook>') },
+      { name: 'xl/_rels/workbook.xml.rels', data: strToU8(X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>') },
+      { name: 'xl/styles.xml', data: strToU8(STYLES_XML) },
+      { name: 'xl/worksheets/sheet1.xml', data: strToU8(sheet) }
+    ])], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  window.xlsxWriter = { build: build, buildLibrary: buildLibrary };
 })();

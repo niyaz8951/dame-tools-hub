@@ -11,6 +11,8 @@
 <script src="../../assets/js/api.js"></script>
 <script src="../../assets/js/hub.js"></script>
 <script src="../../assets/js/xlsx-lite.js"></script>
+<script src="xlsx-writer.js"></script>
+<script src="cm-highlight.js"></script>
 <style>
   .scope { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
   .stats { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -23,12 +25,20 @@
   .filters .input { width: auto; min-width: 160px; }
   .filters .grow { flex: 1 1 220px; }
   .lib td { vertical-align: top; }
-  .lib .spec { min-width: 280px; line-height: 1.45; overflow-wrap: anywhere; }
+  .lib .spec { line-height: 1.45; overflow-wrap: anywhere; }
   .lib .meta { font-size: 12px; color: var(--text-soft); margin-top: 4px; }
-  .lib .where { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
-  .lib tr.group td { background: var(--surface-2); font-weight: 650; font-size: 13px; padding: 8px 12px; }
-  .lib textarea.input { min-height: 40px; height: 40px; resize: vertical; min-width: 200px; }
-  .lib input.input { min-width: 140px; }
+  /* The library reads like a converted specification: a dark PART row, a blue section row,
+     the clause label in the Sr column, and the same word highlights. Colours come from the theme. */
+  .lib { table-layout: fixed; min-width: 860px; }
+  .lib tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
+  .lib tr.sect td { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); font-weight: 650; }
+  .lib tr.sect .src { font-weight: 400; font-size: 12px; color: var(--text-soft); margin-left: 10px; }
+  .lib td.sr { text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .lib tr.sect td.sr { color: var(--link); }
+  .lib td.sr.letter { color: var(--warn); } .lib td.sr.number { color: var(--ok); }
+  .lib .hl-red { color: var(--danger); } .lib .hl-redbold { color: var(--danger); font-weight: 700; }
+  .lib .hl-underline { text-decoration: underline; } .lib .hl-colon { color: var(--warn); font-weight: 700; }
+  .lib textarea.input { min-height: 40px; height: 40px; resize: vertical; }
   .lib .state { font-size: 12px; white-space: nowrap; min-width: 64px; }
   .lib .state.ok { color: var(--ok); } .lib .state.err { color: var(--danger); }
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -44,7 +54,7 @@
   <div class="page-head">
     <p class="small"><a href="./">&larr; Compliance Maker</a></p>
     <h1>Compliance library</h1>
-    <p>Every clause converted by anyone lands here once. Fill in Compliance and Remarks, and the next conversion that contains the same clause gets them automatically.</p>
+    <p>Every clause converted by anyone lands here once, under its Part and section, in the order of the specification it came from. Fill in Compliance and Remarks, and the next conversion that contains the same clause gets them automatically.</p>
   </div>
 
   <div class="card stack">
@@ -79,7 +89,7 @@
       </div>
       <div class="table-wrap">
         <table class="table lib">
-          <thead><tr><th>Specification</th><th style="width:190px">Compliance</th><th style="width:30%">Remarks</th><th></th></tr></thead>
+          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:170px">Compliance</th><th style="width:26%">Remarks</th><th style="width:128px"></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -143,7 +153,7 @@
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
-  var el = Hub.el, PAGE = 50;
+  var el = Hub.el, PAGE = 100;
   var products = [], offset = 0, total = 0, pending = null, searchTimer;
 
   function fail(err) { Hub.toast(err && err.message ? err.message : String(err), true); }
@@ -204,9 +214,13 @@
       } });
     var meta = "Seen in " + l.times_seen + (l.times_seen === 1 ? " conversion" : " conversions") +
       (l.answered_at && (l.compliance || l.remarks) ? " · answered " + fmt(l.answered_at) + (l.answered_by ? " by " + l.answered_by : "") + (l.answer_source === "upload" ? " (upload)" : "") : "");
+    var text = el("div", {}, CMHighlight.runs(l.spec_text).map(function (r) {
+      return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text;
+    }));
+    var kind = l.row_type === "letter" && /^[A-Z]/.test(l.sr || "") ? "letter" : l.row_type === "number" ? "number" : "";
     return el("tr", {}, [
-      el("td", { "class": "spec" }, [el("div", { text: l.spec_text }),
-        el("div", { "class": "meta", text: (l.section ? "Section: " + l.section + " · " : "") + meta })]),
+      el("td", { "class": "sr " + kind, text: l.sr || "" }),
+      el("td", { "class": "spec" }, [text, el("div", { "class": "meta", text: meta })]),
       el("td", {}, [comp]), el("td", {}, [rem]),
       el("td", { style: "text-align:right;white-space:nowrap" }, [state, " ", del])
     ]);
@@ -225,13 +239,14 @@
                 : $("fPart").value || $("fTopic").value ? "No lines here for this part and topic."
                 : $("fSearch").value ? "No lines match that search."
                 : $("fStatus").value === "open" ? "Nothing left to answer for this factory." : "No lines here.";
-        body.appendChild(el("tr", {}, [el("td", { colspan: "4", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
+        body.appendChild(el("tr", {}, [el("td", { colspan: "5", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
       }
-      var group = null;
-      res.lines.forEach(function (l) {
-        var g = partName(l.part) + (l.topic ? "  ·  " + l.topic : "");
-        if (g !== group) { group = g; body.appendChild(el("tr", { "class": "group" }, [el("td", { colspan: "4", text: g })])); }
-        body.appendChild(lineRow(l));
+      layout(res.lines).forEach(function (it) {
+        if (it.kind === "part") body.appendChild(el("tr", { "class": "part" }, [el("td"), el("td", { colspan: "4", text: it.text })]));
+        else if (it.kind === "section") body.appendChild(el("tr", { "class": "sect" }, [
+          el("td", { "class": "sr", text: it.sr }),
+          el("td", { colspan: "4" }, [it.text, el("span", { "class": "src", text: [it.topic, it.source ? "from " + it.source : ""].filter(Boolean).join(" · ") })])]));
+        else body.appendChild(lineRow(it.line));
       });
       $("pageInfo").textContent = total ? "Showing " + (offset + 1) + " to " + Math.min(offset + PAGE, total) + " of " + total : "";
       $("prev").disabled = offset === 0; $("next").disabled = offset + PAGE >= total;
@@ -240,6 +255,24 @@
   // Part and topic filters: filled from what this factory's library holds, with the lines still to answer.
   var PARTS = { 1: "Part 1 General", 2: "Part 2 Products", 3: "Part 3 Execution" };
   function partName(p) { return !p ? "Part not known" : PARTS[p] || "Part " + p; }
+  /* Lines come from the database in reading order. Put a PART row where the part changes and a
+     section row where the section, or the specification it came from, changes. The same list
+     feeds the screen and the Excel download, so both read the same. */
+  function layout(lines) {
+    var out = [], part = null, block = null;
+    lines.forEach(function (l) {
+      if (l.part !== part) { part = l.part; block = null; out.push({ kind: "part", part: partName(l.part), text: partName(l.part).toUpperCase() }); }
+      var b = (l.section || "").toLowerCase() + "|" + (l.home_run || "") + "|" + (l.section_sr || "");
+      if (b !== block) {
+        block = b;
+        out.push({ kind: "section", part: partName(l.part), topic: l.topic || "", section: l.section || "", sr: l.section_sr || "",
+                   text: l.section || "(no section heading)", source: l.file_name || "" });
+      }
+      out.push({ kind: "line", line: l, part: partName(l.part), topic: l.topic || "", section: l.section || "", sr: l.sr || "", type: l.row_type || "",
+                 spec: l.spec_text, compliance: l.compliance || "", remarks: l.remarks || "" });
+    });
+    return out;
+  }
   function fillGroups(groups) {
     function fill(sel, first, items) {
       var keep = sel.value;
@@ -274,10 +307,7 @@
   $("btnExport").addEventListener("click", function () {
     Api.cmAdminExport(Hub.token(), factoryId()).then(function (res) {
       if (!res.lines.length) { Hub.toast("There are no lines to download yet."); return; }
-      var rows = [["Part", "Topic", "Section", "Specifications", "Compliance", "Remarks", "Times seen"]].concat(res.lines.map(function (l) {
-        return [partName(l.part), l.topic || "", l.section || "", l.spec_text, l.compliance, l.remarks, l.times_seen];
-      }));
-      download(HubXlsx.build(rows, "Library", [18, 24, 30, 90, 22, 50, 12]), "compliance-library-" + factoryId() + ".xlsx");
+      download(xlsxWriter.buildLibrary(layout(res.lines), CMHighlight.runs), "compliance-library-" + factoryId() + ".xlsx");
     }, fail);
   });
 
@@ -368,7 +398,8 @@
     });
   });
 
-  Hub.requireLogin({ edit: "compliance-maker" }).then(function () { return Api.cmOptions(Hub.token()); }).then(function (res) {
+  Hub.requireLogin({ edit: "compliance-maker" }).then(function () { return CMHighlight.load(); })
+    .then(function () { return Api.cmOptions(Hub.token()); }).then(function (res) {
     products = res.products || [];
     var s = $("product"); s.appendChild(el("option", { value: "", text: "Choose a product" }));
     products.forEach(function (p) { s.appendChild(el("option", { value: p.id, text: p.name })); });

@@ -49,7 +49,7 @@
     // Compliance Maker library
     cmOptions: function (t) { return rpc("cm_options", { p_token: t }); },
     cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines }); },
-    cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 50, p_offset: d.offset || 0,
+    cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 100, p_offset: d.offset || 0,
       p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "" }); },
     cmAdminSaveAnswer: function (t, id, c, r) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r }); },
     cmAdminDeleteLine: function (t, id) { return rpc("cm_admin_delete_line", { p_token: t, p_line_id: id }); },
@@ -166,6 +166,18 @@
     for (var i = 0; i < CM_TOPICS.length; i++) if (CM_TOPICS[i][1].test(s)) return CM_TOPICS[i][0];
     return "Other";
   }
+  // mirrors cm__library_order: Part, then section title (groups by their lowest section number),
+  // then one block per conversion the lines were first seen in, then the order in that specification
+  function cmLibraryOrder(lines) {
+    function num(sr) { var m = /^(\d{1,2})\.(\d{1,2})$/.exec(sr || ""); return m ? +m[1] * 1000 + +m[2] : 99999; }
+    var gsort = {};
+    lines.forEach(function (x) { var k = (x.part || 0) + "|" + String(x.section || "").toLowerCase(); gsort[k] = Math.min(gsort[k] == null ? 99999 : gsort[k], num(x.section_sr)); });
+    return lines.slice().sort(function (a, b) {
+      var pa = a.part || 0, pb = b.part || 0, sa = String(a.section || "").toLowerCase(), sb = String(b.section || "").toLowerCase();
+      return (pa === 0) - (pb === 0) || pa - pb || gsort[pa + "|" + sa] - gsort[pb + "|" + sb] || sa.localeCompare(sb) ||
+             String(a.home_run || "~").localeCompare(String(b.home_run || "~")) || (a.home_seq == null ? 1e9 : a.home_seq) - (b.home_seq == null ? 1e9 : b.home_seq);
+    });
+  }
   function cmNorm(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
   function cmFactory(db, id) {
     var out = null;
@@ -270,10 +282,10 @@
     cmSaveRun: demo(function (db, t, d) {
       var u = sessionUser(db, t), f = cmFactory(db, d.factoryId), seen = {}, answers = [], matched = 0;
       if (!d.lines || !d.lines.length) fail("There are no lines to save.");
-      var part = 0, section = "";
+      var part = 0, section = "", sectionSr = "", runId = "r" + Date.now();
       d.lines.forEach(function (ln, i) {
-        if (ln.type === "part") { var pn = cmPartNo(ln.spec); if (pn) { part = pn; section = ""; } return; }
-        if (ln.type === "section") { if (!/\.{5,}/.test(ln.spec) && !/^0\./.test(ln.sr || "")) section = String(ln.spec || "").trim().slice(0, 120); return; }
+        if (ln.type === "part") { var pn = cmPartNo(ln.spec); if (pn) { part = pn; section = ""; sectionSr = ""; } return; }
+        if (ln.type === "section") { if (!/\.{5,}/.test(ln.spec) && !/^0\./.test(ln.sr || "")) { section = String(ln.spec || "").trim().slice(0, 120); sectionSr = String(ln.sr || "").trim(); } return; }
         if (["letter", "number", "text"].indexOf(ln.type) < 0) return;
         var n = cmNorm(ln.spec); if (n.length < 8 || /\.{5,}/.test(ln.spec)) return;
         var line = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === n; })[0];
@@ -281,9 +293,10 @@
         if (!seen[n]) { seen[n] = 1; line.times_seen++; line.last_seen_at = new Date().toISOString(); }
         if (!line.part && part) line.part = part;
         if (!line.section && section) line.section = section;
+        if (!line.home_run) { line.home_run = runId; line.home_seq = i; line.sr = String(ln.sr || "").replace(/[.)]\s*$/, ""); line.row_type = ln.type; line.section_sr = sectionSr; line.file_name = d.fileName || ""; }
         if (line.status === "answered") { matched++; answers.push({ i: i, compliance: line.compliance, remarks: line.remarks }); }
       });
-      var run = { id: "r" + Date.now(), kind: "conversion", created_at: new Date().toISOString(), user: u.full_name, username: u.username, product: f.product, factory: f.name, source: d.source, file_name: d.fileName || "", line_count: d.lines.length, unique_count: Object.keys(seen).length, matched_count: matched };
+      var run = { id: runId, kind: "conversion", created_at: new Date().toISOString(), user: u.full_name, username: u.username, product: f.product, factory: f.name, source: d.source, file_name: d.fileName || "", line_count: d.lines.length, unique_count: Object.keys(seen).length, matched_count: matched };
       db.cm.runs.unshift(run);
       return { ok: true, run_id: run.id, lines: d.lines.length, unique_lines: run.unique_count, matched: matched, answers: answers };
     }),
@@ -299,10 +312,9 @@
       var list = all.filter(function (x) {
         return (st === "all" || x.status === st) && x.spec_text.toLowerCase().indexOf(q) >= 0 &&
                (wantPart === null || x.part === wantPart) && (!d.topic || x.topic === d.topic);
-      }).sort(function (a, b) {
-        return (b.status === "open") - (a.status === "open") || (a.part === 0) - (b.part === 0) || a.part - b.part ||
-               a.topic.localeCompare(b.topic) || a.section.localeCompare(b.section) || b.times_seen - a.times_seen;
       });
+      var orderOf = {}; cmLibraryOrder(all).forEach(function (x, k) { orderOf[x.id] = k; });
+      list.sort(function (a, b) { return orderOf[a.id] - orderOf[b.id]; });
       var off = d.offset || 0;
       return { groups: Object.keys(groups).map(function (k) { return groups[k]; }).sort(function (a, b) { return (a.part === 0) - (b.part === 0) || a.part - b.part || a.topic.localeCompare(b.topic); }),
                counts: { all: all.length, open: all.filter(function (x) { return x.status === "open"; }).length, answered: all.filter(function (x) { return x.status === "answered"; }).length },
@@ -334,10 +346,11 @@
     cmAdminRuns: demo(function (db, t) { editor(db, t, "compliance-maker"); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
     cmAdminExport: demo(function (db, t, factoryId) {
       editor(db, t, "compliance-maker"); var f = cmFactory(db, factoryId);
-      return { lines: db.cm.lines.filter(function (x) { return x.factory_id === f.id; }).map(function (x) {
+      return { lines: cmLibraryOrder(db.cm.lines.filter(function (x) { return x.factory_id === f.id; })).map(function (x) {
         return { spec_text: x.spec_text, compliance: x.compliance, remarks: x.remarks, times_seen: x.times_seen,
-                 part: x.part || 0, section: x.section || "", topic: cmTopic(x.section) };
-      }).sort(function (a, b) { return (a.part === 0) - (b.part === 0) || a.part - b.part || a.topic.localeCompare(b.topic) || a.section.localeCompare(b.section); }) };
+                 part: x.part || 0, section: x.section || "", topic: cmTopic(x.section),
+                 sr: x.sr || "", row_type: x.row_type || "", section_sr: x.section_sr || "", home_run: x.home_run || null, file_name: x.file_name || "" };
+      }) };
     }),
     // ---- Datasheet Notes row mapping (same rules as db/schema.sql) ----
     dnRules: demo(function (db, t, productId) {

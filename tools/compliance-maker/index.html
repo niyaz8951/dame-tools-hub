@@ -213,6 +213,20 @@
         </div>
       </div>
 
+      <!-- Applies to both a PDF and pasted text -->
+      <div class="toggle-row" style="margin-top:var(--space-3)">
+        <input type="checkbox" id="skip-front" checked>
+        <label for="skip-front">
+          Skip the cover and contents pages — start at the specification itself
+          <span class="hint" style="display:block">
+            Everything before the real "PART 1" heading is left out: cover sheet,
+            revision table and table of contents. What was skipped is reported
+            beside the Convert button. Untick it if the start of your
+            specification goes missing.
+          </span>
+        </label>
+      </div>
+
       <div class="row" style="margin-top:var(--space-3)">
         <span id="file-slot"></span>
         <span id="status" class="status" role="status" aria-live="polite"></span>
