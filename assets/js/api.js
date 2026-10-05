@@ -442,19 +442,19 @@
       Object.keys(uniq).forEach(function (k) {
         var v = uniq[k], has = !!(v.c || v.r), l = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === k; })[0];
         if (has) n++;
-        if (l && v.cm && !l.comments) l.comments = v.cm;                    // internal comments only where the line has none
+        if (l && v.cm) l.comments = v.cm;                                   // the file's internal comments replace the old ones
         if (!l) {
           l = { id: "l" + Date.now() + "_" + v.ord, factory_id: f.id, norm_text: k, spec_text: v.spec, times_seen: 0, last_seen_at: "", compliance: "", remarks: "", status: "open", comments: v.cm,
                 part: +v.row.part || 0, section: v.row.section || "", sr: v.row.sr || "", row_type: v.row.type || "text", section_sr: v.row.section_sr || "", home_run: runId, home_seq: v.ord, file_name: d.fileName || "" };
           db.cm.lines.push(l); if (!has) return; added++;
         }
         else if (!has) return;
-        else if (l.status === "answered") { if (l.compliance !== v.c || l.remarks !== v.r) kept++; return; }   // an answered line keeps its answer
+        else if (l.status === "answered") { if (l.compliance === v.c && l.remarks === v.r) return; kept++; }   // an uploaded file replaces an existing answer
         else updated++;
         l.compliance = v.c; l.remarks = v.r; l.status = "answered"; l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "upload";
       });
       db.cm.runs.unshift({ id: runId, kind: "library-upload", created_at: new Date().toISOString(), user: a.full_name, username: a.username, product: f.product, factory: f.name, source: "xlsx", file_name: d.fileName || "", line_count: d.rows.length, unique_count: n, matched_count: added + updated });
-      return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, kept: kept, unchanged: n - added - updated - kept, skipped: d.rows.length - n };
+      return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, replaced: kept, unchanged: n - added - updated - kept, skipped: d.rows.length - n };
     }),
     cmAdminRuns: demo(function (db, t) { editor(db, t, "compliance-maker"); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
     cmAdminExport: demo(function (db, t, factoryId) {

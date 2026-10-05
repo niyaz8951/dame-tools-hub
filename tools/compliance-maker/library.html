@@ -93,6 +93,7 @@
         <select class="input" id="fClientType" aria-label="Client type"><option value="">All client types</option></select>
         <select class="input" id="fClient" aria-label="Client name"><option value="">All clients</option></select>
         <input class="input grow" id="fSearch" type="search" placeholder="Search clause text" aria-label="Search clause text">
+        <button class="btn" type="button" id="btnFocus">Read and fill full screen</button>
         <button class="btn ghost" type="button" id="btnExport">Download library (Excel)</button>
       </div>
       <div class="table-wrap">
@@ -116,7 +117,7 @@
     <section id="tab-upload" class="stack" hidden>
       <div class="card stack">
         <h2>Upload a filled compliance</h2>
-        <p class="muted">Use an Excel file with the columns <b>Sr</b>, <b>Specifications</b>, <b>Compliance</b>, <b>Remarks</b> and <b>Internal Comments</b>, the same for every product: a PART row, then each section with its number in Sr, then its clauses. <a href="sample-compliance-upload.xlsx" download>Download the sample file</a>. A sheet downloaded from the Compliance Maker or from this library and filled in works too. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once. A clause that already has an answer in the library is never overwritten: it is skipped.</p>
+        <p class="muted">Use an Excel file with the columns <b>Sr</b>, <b>Specifications</b>, <b>Compliance</b>, <b>Remarks</b> and <b>Internal Comments</b>, the same for every product: a PART row, then each section with its number in Sr, then its clauses. <a href="sample-compliance-upload.xlsx" download>Download the sample file</a>. A sheet downloaded from the Compliance Maker or from this library and filled in works too. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once. A clause that already has an answer in the library gets this file's answer instead; the preview says how many before you add.</p>
         <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose an Excel file or drop one here">
           <b>Choose an .xlsx file or drop it here</b>
           <div class="small muted">Nothing is saved until you press Add to library.</div>
@@ -139,7 +140,7 @@
           <div class="result">
             <div class="stat"><b id="rAdded">0</b><span>new lines</span></div>
             <div class="stat"><b id="rUpdated">0</b><span>open lines answered</span></div>
-            <div class="stat"><b id="rKept">0</b><span>already answered, kept as they are</span></div>
+            <div class="stat"><b id="rKept">0</b><span>existing answers replaced</span></div>
             <div class="stat"><b id="rSame">0</b><span>already the same</span></div>
             <div class="stat"><b id="rSkipped">0</b><span>rows skipped</span></div>
           </div>
@@ -159,12 +160,13 @@
     </section>
   </div>
 </main>
+<script src="cm-focus.js"></script>
 <script>
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var el = Hub.el, PAGE = 100;
-  var products = [], offset = 0, total = 0, pending = null, searchTimer;
+  var products = [], offset = 0, total = 0, pending = null, searchTimer, shownLines = [];
 
   function fail(err) { Hub.toast(err && err.message ? err.message : String(err), true); }
   function factoryId() { return $("factory").value; }
@@ -268,7 +270,7 @@
     Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value.replace(/\s+/g, " ").trim(), limit: PAGE, offset: offset,
                                      part: $("fPart").value, topic: $("fTopic").value, clientType: $("fClientType").value, clientName: $("fClient").value }).then(function (res) {
       if (loadLines.last !== req) return;
-      total = res.total; setCounts(res.counts); fillGroups(res.groups || []); fillClients(res.client_types || [], res.client_names || []);
+      shownLines = res.lines; total = res.total; setCounts(res.counts); fillGroups(res.groups || []); fillClients(res.client_types || [], res.client_names || []);
       var body = $("rows"); body.textContent = "";
       if (!res.lines.length) {
         var msg = res.counts.all === 0 ? "No lines yet for this factory. They appear here after the first conversion or upload."
@@ -347,6 +349,26 @@
   $("fSearch").addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(function () { offset = 0; loadLines(); }, 300); });
   $("prev").addEventListener("click", function () { offset = Math.max(0, offset - PAGE); loadLines(); window.scrollTo(0, 0); });
   $("next").addEventListener("click", function () { offset += PAGE; loadLines(); window.scrollTo(0, 0); });
+
+  /* Full screen, one clause at a time (cm-focus.js), over the lines of this page and filters. */
+  $("btnFocus").addEventListener("click", function () {
+    var items = layout(shownLines).filter(function (it) { return it.kind === "line"; }).map(function (it) {
+      var l = it.line;
+      return { line: l, part: it.part, section: (l.section_sr ? l.section_sr + " " : "") + (l.section || ""), sr: l.sr || "", spec: l.spec_text,
+               compliance: l.compliance || "", remarks: l.remarks || "", comments: l.comments || "",
+               info: l.answered_by && (l.compliance || l.remarks) ? "Answered by " + l.answered_by : "",
+               others: (l.project_answers || []).map(function (a) { return a.by + " · " + a.project + " · " + a.client + ": " + (a.compliance || "(no compliance)") + (a.remarks ? " - " + a.remarks : ""); }) };
+    });
+    var first = 0; for (var k = 0; k < items.length; k++) if (!items[k].compliance && !items[k].remarks) { first = k; break; }
+    CMFocus.open({ title: scopeName() + " library", items: items, start: first,
+      choices: ["Comply", "Comply with Remarks", "Noted", "Not Comply", "Not Applicable", "In Contractor's Scope"],
+      save: function (it, v) {
+        return Api.cmAdminSaveAnswer(Hub.token(), it.line.id, v.compliance, v.remarks, v.comments).then(function () {
+          it.compliance = v.compliance; it.remarks = v.remarks; it.comments = v.comments; return {};
+        });
+      },
+      onClose: loadLines });
+  });
 
   function download(blob, name) {
     var url = URL.createObjectURL(blob), a = el("a", { href: url, download: name });
@@ -427,10 +449,10 @@
         else if ((old.compliance || "") === r.compliance && (old.remarks || "") === r.remarks) same++;
         else repl++;
       });
-      box.textContent = repl ? repl + (repl === 1 ? " clause already has a different answer in the library. It is kept; this file's answer for it is skipped" : " clauses already have a different answer in the library. They are kept; this file's answers for them are skipped") +
+      box.textContent = repl ? repl + (repl === 1 ? " clause already has a different answer in the library. This file's answer will replace it" : " clauses already have a different answer in the library. This file's answers will replace them") +
                                ". " + fresh + " new answers, " + same + " already the same."
-                             : "Nothing in the library is overwritten. " + fresh + " new answers, " + same + " already the same.";
-      box.className = "notice " + (repl ? "warn" : "ok"); box.hidden = false;   // an answered line is never overwritten by an upload
+                             : "No existing answer will be replaced. " + fresh + " new answers, " + same + " already the same.";
+      box.className = "notice " + (repl ? "warn" : "ok"); box.hidden = false;   // an uploaded file replaces existing answers: say how many before Add
     }, function (err) {
       if (pending !== p) return;
       box.textContent = "Could not check which answers this file replaces: " + (err && err.message ? err.message : err);
@@ -450,7 +472,7 @@
     Api.cmAdminImport(Hub.token(), { factoryId: factoryId(), fileName: pending.fileName, rows: pending.rows }).then(function (res) {
       btn.disabled = false; var name = pending.fileName, ignored = pending.read - pending.rows.length; resetUpload();
       $("upResultMsg").textContent = name + " added to the library for " + scopeName() + ".";
-      $("rAdded").textContent = res.added; $("rUpdated").textContent = res.updated; $("rKept").textContent = res.kept || 0; $("rSame").textContent = res.unchanged; $("rSkipped").textContent = res.skipped + ignored;
+      $("rAdded").textContent = res.added; $("rUpdated").textContent = res.updated; $("rKept").textContent = res.replaced || 0; $("rSame").textContent = res.unchanged; $("rSkipped").textContent = res.skipped + ignored;
       $("upResult").hidden = false; offset = 0; loadLines();
     }, function (err) { btn.disabled = false; show($("upMsg"), err.message); });
   });

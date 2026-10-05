@@ -1105,9 +1105,11 @@ end $$;
 --   (the page works out part / section / type from the PART rows, section rows and Sr of the sheet)
 -- Rows with an answer or an internal comment are taken; when the same clause appears twice in
 -- the file the last one wins. A new clause becomes a library line in its Part and section. A
--- line with no answer yet is filled. A line that already has an answer is NEVER overwritten
--- (owner's rule, 5 Oct 2026): the file's answer for it is skipped and counted as "kept"; an
--- editor changes it by hand. Internal comments are filled only where the line has none.
+-- line with no answer yet is filled. A line that already has an answer gets the file's answer
+-- instead (owner's rule, 5 Oct 2026 evening: an editor's uploaded file REPLACES existing
+-- answers; counted as "replaced"). The same goes for the internal comments the file carries.
+-- Only this upload and an editor typing on the screen change an existing answer; a conversion
+-- or a user's project answer never does.
 create or replace function public.cm_admin_import(
   p_token text, p_factory_id text, p_file_name text, p_rows jsonb)
 returns jsonb
@@ -1163,19 +1165,20 @@ begin
          t.part, t.section, t.sr, t.row_type, t.section_sr, v_run, t.ord
     from cm__import_tmp t where t.was_there is not true
   on conflict (factory_id, norm_hash) do nothing;
-  -- lines with no answer yet are filled; answered lines keep their answer
+  -- lines already in the library take the file's answer: open ones are filled, answered ones replaced
   update public.cm_lines l
      set compliance = t.c, remarks = t.r, status = 'answered', answered_by = a.id, answered_at = now(), answer_source = 'upload'
     from cm__import_tmp t
-   where l.factory_id = f.id and l.norm_hash = md5(t.norm) and t.was_there and t.was_answered is not true and (t.c <> '' or t.r <> '');
-  -- internal comments only where the line has none
+   where l.factory_id = f.id and l.norm_hash = md5(t.norm) and t.was_there and (t.c <> '' or t.r <> '')
+     and (l.compliance, l.remarks) is distinct from (t.c, t.r);
+  -- and the file's internal comments
   update public.cm_lines l set comments = t.cm
     from cm__import_tmp t
-   where l.factory_id = f.id and l.norm_hash = md5(t.norm) and t.was_there and t.cm <> '' and l.comments = '';
+   where l.factory_id = f.id and l.norm_hash = md5(t.norm) and t.was_there and t.cm <> '' and l.comments is distinct from t.cm;
   insert into public.cm_answer_log (line_id, compliance, remarks, source, run_id, user_id)
   select l.id, t.c, t.r, 'upload', v_run, a.id
     from cm__import_tmp t join public.cm_lines l on l.factory_id = f.id and l.norm_hash = md5(t.norm)
-   where (t.c <> '' or t.r <> '') and (t.was_there is not true or t.was_answered is not true);
+   where (t.c <> '' or t.r <> '') and (t.was_there is not true or t.was_answered is not true or (t.old_c, t.old_r) is distinct from (t.c, t.r));
 
   select count(*) filter (where c <> '' or r <> ''),
          count(*) filter (where was_there is not true and (c <> '' or r <> '')),
@@ -1185,7 +1188,7 @@ begin
 
   update public.cm_runs set unique_count = v_unique, matched_count = v_added + v_updated where id = v_run;
   return jsonb_build_object('ok', true, 'rows', v_total, 'unique_lines', v_unique,
-                            'added', v_added, 'updated', v_updated, 'kept', v_kept,
+                            'added', v_added, 'updated', v_updated, 'replaced', v_kept,
                             'unchanged', v_unique - v_added - v_updated - v_kept,
                             'skipped', v_total - v_unique);
 end $$;

@@ -49,11 +49,12 @@
     <div class="page-head rc-head">
       <div>
         <h1 id="rc-name"></h1>
-        <p>Read the specification and fill Compliance and Remarks here. Every change is saved as you leave the box.</p>
+        <p>Read the specification and fill Compliance and Remarks here. Every change is saved by itself. "Read and fill full screen" shows one clause at a time, with one-tap answers.</p>
         <div class="rc-facts" id="rc-facts"></div>
       </div>
       <div class="row">
-        <button type="button" class="btn" id="rc-download">Download Excel</button>
+        <button type="button" class="btn" id="rc-focus">Read and fill full screen</button>
+        <button type="button" class="btn ghost" id="rc-download">Download Excel</button>
       </div>
     </div>
 
@@ -80,12 +81,13 @@
           <tbody id="rc-body"></tbody>
         </table>
       </div>
-      <datalist id="rc-words"><option value="Comply"><option value="Noted"><option value="Deviation"><option value="Not applicable"></datalist>
+      <datalist id="rc-words"><option value="Comply"><option value="Comply with Remarks"><option value="Noted"><option value="Not Comply"><option value="Not Applicable"><option value="In Contractor's Scope"></datalist>
     </section>
   </div>
 </main>
 
 <script src="../compliance-maker/cm-highlight.js"></script>
+<script src="../compliance-maker/cm-focus.js"></script>
 <script src="../compliance-maker/xlsx-writer.js"></script>
 <script src="pr-xlsx.js"></script>
 <script>
@@ -110,6 +112,36 @@
     $("rc-bar").style.width = (can.length ? Math.round(100 * done / can.length) : 0) + "%";
   }
 
+  /* Save one clause. Back to exactly the library answer, or both boxes emptied: no own answer is kept. */
+  function saveLine(l, c, r) {
+    var same = c === l.lib_compliance && r === l.lib_remarks;
+    return Api.prRunSaveLine(Hub.token(), { run: runId, seq: l.seq, compliance: same ? "" : c, remarks: same ? "" : r }).then(function (res) {
+      l.own = !same && !!(c || r); l.compliance = l.own ? c : ""; l.remarks = l.own ? r : ""; l.review = res.review || "";
+    });
+  }
+
+  /* Full screen, one clause at a time (cm-focus.js). Opens on the first clause still to fill. */
+  function focusMode() {
+    var part = "", sect = "", items = [];
+    lines.forEach(function (l) {
+      if (l.type === "part") { part = l.spec; sect = ""; return; }
+      if (l.type === "section") { sect = (l.sr ? l.sr + " " : "") + l.spec; return; }
+      if (!l.can) return;
+      var s = shown(l);
+      items.push({ line: l, part: part, section: sect, sr: l.sr, spec: l.spec, compliance: s.c, remarks: s.r, info: stateText(l), lib: !l.own && filled(l) });
+    });
+    var first = 0; for (var k = 0; k < items.length; k++) if (!filled(items[k].line)) { first = k; break; }
+    CMFocus.open({ title: bare(run.file_name), items: items, start: first, choices: CHOICES,
+      save: function (it, v) {
+        return saveLine(it.line, v.compliance, v.remarks).then(function () {
+          var s = shown(it.line); it.compliance = s.c; it.remarks = s.r; it.lib = !it.line.own && filled(it.line); it.info = stateText(it.line);
+          return { info: it.line.own && it.line.review === "pending" ? "sent for review" : "", lib: it.lib };
+        });
+      },
+      onClose: function () { counts(); draw(); } });
+  }
+  var CHOICES = ["Comply", "Comply with Remarks", "Noted", "Not Comply", "Not Applicable", "In Contractor's Scope"];
+
   function row(l) {
     if (l.type === "part") return el("tr", { "class": "part" }, [el("td", { "class": "sr" }), el("td", { colspan: "4", text: l.spec })]);
     if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "4", text: l.spec })]);
@@ -127,11 +159,8 @@
     function save() {
       var c = comp.value.trim(), r = rem.value.trim(), now = shown(l);
       if (c === now.c && r === now.r) return;
-      // back to exactly the library answer, or both emptied: no own answer is kept
-      var same = c === l.lib_compliance && r === l.lib_remarks;
       state.className = "state"; state.textContent = "Saving…";
-      Api.prRunSaveLine(Hub.token(), { run: runId, seq: l.seq, compliance: same ? "" : c, remarks: same ? "" : r }).then(function (res) {
-        l.own = !same && !!(c || r); l.compliance = l.own ? c : ""; l.remarks = l.own ? r : ""; l.review = res.review || "";
+      saveLine(l, c, r).then(function () {
         if (!l.own) { comp.value = l.lib_compliance; rem.value = l.lib_remarks; }
         tr.className = !l.own && filled(l) ? "lib" : "";
         state.textContent = stateText(l); counts();
@@ -166,6 +195,7 @@
   $("rc-show").addEventListener("change", draw);
   $("rc-q").addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(draw, 200); });
 
+  $("rc-focus").addEventListener("click", focusMode);
   $("rc-download").addEventListener("click", function () {
     var rows = lines.map(function (l) {
       var s = shown(l);
@@ -190,6 +220,8 @@
     [run.project, run.product + ", " + run.factory + " factory", "Converted by " + run.user + ", " + when(run.created_at)].forEach(function (t) { facts.appendChild(el("span", { "class": "badge", text: t })); });
     $("rc-loading").hidden = true; $("rc-main").hidden = false;
     counts(); draw();
+    // on a phone the table is hard to fill: start in the full-screen mode, "Done" shows the table
+    if (window.matchMedia("(max-width: 640px)").matches && lines.some(function (l) { return l.can; })) focusMode();
   }, function (err) {
     $("rc-loading").hidden = true; $("rc-error").hidden = false;
     $("rc-error").textContent = ((err && err.message) || err) + " Go back to Projects and open it from the project page.";

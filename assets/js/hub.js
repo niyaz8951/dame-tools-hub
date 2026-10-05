@@ -50,6 +50,30 @@
 
   applyTheme(sget(localStorage, THEME_KEY) || systemTheme());
 
+  // ---------- phone app (installable web app) ----------
+  // The site can be added to the home screen of a phone and then opens like an app, without the
+  // browser bars (manifest.webmanifest at the site root). The tags are added here so every page
+  // has them. No service worker: pages are always loaded fresh, so an update shows at once.
+  (function () {
+    function add(tag, attrs) { var n = document.createElement(tag); for (var k in attrs) n.setAttribute(k, attrs[k]); document.head.appendChild(n); }
+    add("link", { rel: "manifest", href: ROOT + "manifest.webmanifest" });
+    add("link", { rel: "apple-touch-icon", href: ROOT + "assets/icons/apple-touch-icon.png" });
+    add("meta", { name: "theme-color", content: "#0097E0" });
+    add("meta", { name: "mobile-web-app-capable", content: "yes" });
+    add("meta", { name: "apple-mobile-web-app-capable", content: "yes" });
+    add("meta", { name: "apple-mobile-web-app-title", content: "DAME Tools" });
+    add("meta", { name: "apple-mobile-web-app-status-bar-style", content: "default" });
+  })();
+  var installEvent = null;                                  // Chrome and Edge offer the install themselves
+  window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); installEvent = e; });
+  function isApp() { return (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true; }
+  function installApp() {
+    if (installEvent) { installEvent.prompt(); installEvent = null; return; }
+    var ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    window.alert(ios ? "To put DAME Tools on your home screen: tap the Share button of Safari, then \"Add to Home Screen\"."
+                     : "To install DAME Tools: open the browser menu (three dots) and choose \"Add to Home screen\" or \"Install app\".");
+  }
+
   // ---------- helpers ----------
   function el(tag, attrs, children) {
     var n = document.createElement(tag), k;
@@ -227,6 +251,7 @@
       el("a", { role: "menuitem", href: url("profile.html"), text: "My profile" }),
       el("a", { role: "menuitem", href: url("profile.html#password"), text: "Change password" }),
       isAdmin(user) ? el("a", { role: "menuitem", href: url("admin.html"), text: "Admin" }) : null,
+      isApp() ? null : el("button", { role: "menuitem", type: "button", text: "Install as an app", onclick: installApp }),
       el("button", { role: "menuitem", type: "button", text: "Log out", onclick: logout })
     ]);
     var trigger = el("button", { "class": "account", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "Account menu for " + user.full_name }, [
