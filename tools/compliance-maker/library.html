@@ -175,7 +175,7 @@
     var f = p && p.factories.filter(function (x) { return x.id === factoryId(); })[0];
     return p && f ? p.name + " / " + f.name : "";
   }
-  function fmt(iso) { if (!iso) return ""; var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  function fmt(iso) { if (!iso) return ""; var d = new Date(iso); return isNaN(d) ? "" : Hub.date(iso, true); }
 
   // ---------- scope ----------
   function fillFactories() {
@@ -222,8 +222,9 @@
     comp.addEventListener("change", save); rem.addEventListener("change", save); note.addEventListener("change", save);
     var del = el("button", { "class": "btn danger sm", type: "button", text: "Delete", title: "Remove this line from the library",
       onclick: function () {
-        if (!window.confirm("Delete this line from the library? Use this for junk lines only.")) return;
-        Api.cmAdminDeleteLine(Hub.token(), l.id).then(function () { Hub.toast("Line deleted"); loadLines(); }, fail);
+        Hub.confirm("Use this for junk lines only. The clause and its answer leave the library for every user.", { title: "Delete this line?", ok: "Delete", danger: true }).then(function (yes) {
+          if (yes) Api.cmAdminDeleteLine(Hub.token(), l.id).then(function () { Hub.toast("Line deleted"); loadLines(); }, fail);
+        });
       } });
     var meta = "Seen in " + l.times_seen + (l.times_seen === 1 ? " conversion" : " conversions") +
       (l.answered_at && (l.compliance || l.remarks) ? " · answered " + fmt(l.answered_at) + (l.answered_by ? " by " + l.answered_by : "") + (l.answer_source === "upload" ? " (upload)" : "") : "");

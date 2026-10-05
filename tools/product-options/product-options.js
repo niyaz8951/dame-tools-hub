@@ -142,7 +142,7 @@
 
   /* ---------- drawing ---------- */
   function editing() { return canEdit && $('po-edit').checked; }
-  function when(iso) { var d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''; }
+  function when(iso) { var d = iso ? new Date(iso) : null; return d && !isNaN(d) ? window.Hub.date(iso) : ''; }
 
   function busy(btn, promise, done) {
     btn.disabled = true;
@@ -187,8 +187,10 @@
       if (!edit) return;
       node.appendChild(xbtn('Change', function () { openForm(ctx.anchor(), { id: x.id, kind: x.kind, body: x.body, section: x.section, key: x.key, where: ctx.where }); }));
       node.appendChild(xbtn('Delete', function (e) {
-        if (!window.confirm('Delete this ' + (x.kind === 'note' ? 'note' : 'special option') + '?\n\n' + x.body)) return;
-        busy(e.currentTarget, Api.poAdminDeleteExtra(window.Hub.token(), x.id), 'Deleted.');
+        var btn = e.currentTarget;
+        window.Hub.confirm(x.body, { title: 'Delete this ' + (x.kind === 'note' ? 'note' : 'special option') + '?', ok: 'Delete', danger: true }).then(function (yes) {
+          if (yes) busy(btn, Api.poAdminDeleteExtra(window.Hub.token(), x.id), 'Deleted.');
+        });
       }, true));
     }
     list.filter(function (x) { return x.kind === 'option'; }).forEach(function (x) {

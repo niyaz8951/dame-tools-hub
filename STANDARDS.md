@@ -215,7 +215,7 @@ Goal: everything a user makes is saved against a project, can be found again, do
 - **Product options** stay one company-wide tree (section 2g), opened from the Projects page.
 - **Download project (Excel)** (`pr_export`, `pr-xlsx.js`): sheets **Project Information**, then per product **Specs-<Product>** (every converted specification of that product, one under the other: Sr / Specifications / Compliance / Remarks / Answer from / Filled by, PART rows black, section rows blue) and **Notes-<Product>** (every datasheet table of that product). No Product Options or History sheet (owner's rule, 5 Oct 2026); history stays on the project page.
 - **History** (`pr_log`): created, details changed, specification converted, filled compliance uploaded, datasheet notes saved, record removed, answer approved / not taken, project downloaded; each with who and when. Never deleted.
-- Removing a compliance record takes it out of the project (the clauses stay in the library); removing a datasheet table deletes it.
+- Removing a compliance record takes it out of the project (the clauses stay in the library); removing a datasheet table deletes it. **Delete project** (Edit details, creator or admin, `pr_delete`): its datasheet tables and history are deleted, its conversions leave the project and stay in the library, answers still waiting for review are withdrawn.
 - **Admin page:** tabs Users, Compliance Library (one tile, Compliance review = the master library), Products (Product row mapping, Product options), Projects (numbers and a link to all projects), Who approves what, Tools and Team tiles (super user). A "Waiting for a decision" line at the top counts users to approve, answers to review and new datasheet rows to map (`pr_admin_summary`).
 - Database: tables `pr_lists`, `pr_projects`, `pr_notes`, `pr_log`; functions `pr_options`, `pr_list`, `pr_save`, `pr_get`, `pr_export`, `pr_note_save`, `pr_note_get`, `pr_run_get`, `pr_run_save_line`, `pr_delete_record`, `pr_submit_answers` (any approved user, own projects), `pr_review_list`, `pr_review_decide` (Compliance Maker editors), `pr_admin_summary` (admins). Demo mirror in `api.js` (storage key `dame_hub_demo_db_v9`).
 - **Database folder:** `db/schema.sql` is the only SQL file; no dated one-off files. `db/README.md` says how to run it, the order of its parts and who may do what.
@@ -237,8 +237,16 @@ Daikin colours with day and night mode. Never hard-code a colour in a tool; use 
 | `--text` / `--text-soft` | #12283A / #5A6F80 | #E6F0F7 / #9DB4C6 | text |
 | `--ok` `--warn` `--danger` (+ `-bg`) | | | status only, always with a text label |
 
+- **Look and feel (design pass, 5 Oct 2026).** Clarity first, content before chrome, one clear action per screen. The rules:
+  - The font is the device's own system font (`--font`: San Francisco on Apple, Segoe UI on Windows, Roboto on Android). Headings are tight and heavy (h1 30px / 700), body 15px (16px on a phone).
+  - Surfaces are quiet: hairline borders, soft shadows (`--shadow`, `--shadow-lift` for things that float), radius 16px for cards, 18px for tiles, 10px for controls. The top bar is translucent glass (`--glass` + blur) and keeps clear of the notch (`env(safe-area-inset-*)`).
+  - Movement is short and has a purpose: 0.2 s with `--ease`; buttons and tiles press in slightly; menus, toasts and sheets ease in. `prefers-reduced-motion` turns all of it off.
+  - Tabs are a segmented control (`.tabs` / `.tab`): the chosen one is a raised chip. It scrolls sideways when it does not fit.
+  - On a phone (640px and less): buttons are at least 44px high, fields are 16px text (no zoom on focus), grids are one column, a tile is a row with its icon on the left.
+  - **No browser dialogs.** Use `Hub.confirm(text, { title, ok, danger })`, `Hub.ask(text, { title, hint, ok, type })` and `Hub.tell(text, { title })`; they return Promises and show a sheet (bottom of the screen on a phone, centre on a computer; Esc or a click outside cancels, Enter confirms). The title asks the question and names the thing ("Delete Tower A?"), the text says what happens, the button says the action ("Delete project"), red when it destroys something. The older Quicktools tools still use the browser's `confirm` in a few places.
+  - **Dates** are written one way: `Hub.date(iso)` = 5 Oct 2026, `Hub.date(iso, true)` = 5 Oct 2026, 16:20.
 - Theme switch is the sun/moon button from `Hub.themeButton()`; choice is remembered, first visit follows the PC setting.
-- Font: Segoe UI / system stack. Radius 12px cards, 8px controls.
+- Font: the system stack in `--font`. Radius 16px cards, 10px controls (`--radius`, `--radius-sm`).
 - Use the shared classes: `page`, `page-head`, `card`, `grid`, `tile`, `btn` (`ghost`, `danger`, `sm`), `field`, `input`, `check`, `table-wrap` + `table`, `badge`, `notice`, `tabs`, `empty`.
 - Do not use the Daikin logo or trademark artwork unless the owner supplies an approved file.
 

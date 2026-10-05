@@ -25,7 +25,7 @@
 
   var CSS = [
     '.cf { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }',
-    '.cf-top { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border); }',
+    '.cf-top { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px; background: var(--surface); border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }',
     '.cf-top h2 { flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }',
     '.cf-count { font-size: 13px; color: var(--text-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }',
     '.cf-bar { height: 4px; background: var(--surface-2); } .cf-bar i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }',
@@ -34,9 +34,9 @@
     '.cf-where { display: flex; gap: 6px; flex-wrap: wrap; }',
     '.cf-where span { font-size: 12px; font-weight: 650; padding: 3px 10px; border-radius: 999px; }',
     '.cf-where .p { background: var(--text); color: var(--bg); } .cf-where .s { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); }',
-    '.cf-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; display: grid; grid-template-columns: auto 1fr; gap: 12px; }',
+    '.cf-card { background: var(--surface); border: 1px solid color-mix(in srgb, var(--border) 55%, transparent); border-radius: 18px; box-shadow: var(--shadow); padding: 20px; display: grid; grid-template-columns: auto 1fr; gap: 12px; }',
     '.cf-sr { min-width: 34px; height: 34px; padding: 0 8px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--brand); font-weight: 700; }',
-    '.cf-spec { font-size: 18px; line-height: 1.55; overflow-wrap: anywhere; }',
+    '.cf-spec { font-size: 19px; line-height: 1.5; letter-spacing: -.01em; overflow-wrap: anywhere; }',
     '.cf-spec .hl-red { color: var(--danger); } .cf-spec .hl-redbold { color: var(--danger); font-weight: 700; } .cf-spec .hl-underline { text-decoration: underline; } .cf-spec .hl-colon { color: var(--warn); font-weight: 700; }',
     '.cf-label { font-size: 13px; font-weight: 650; margin-bottom: 6px; }',
     '.cf-chips { display: flex; flex-wrap: wrap; gap: 8px; }',
@@ -136,6 +136,7 @@
       chipBox = el('div', { 'class': 'cf-chips' }, (o.choices || []).map(function (c) {
         return el('button', { type: 'button', 'class': 'cf-chip', text: c, 'aria-pressed': 'false', onclick: function () {
           comp.value = comp.value.trim().toLowerCase() === c.toLowerCase() ? '' : c;      // a second tap takes the answer off
+          try { if (navigator.vibrate) navigator.vibrate(8); } catch (e) { /* no haptics */ }
           chips(); commit();
         } });
       }));
@@ -178,11 +179,14 @@
       else if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); nextOpen(); }
     }
     function close() {
-      document.removeEventListener('keydown', key);
+      document.removeEventListener('keydown', key); document.removeEventListener('visibilitychange', hide); window.removeEventListener('pagehide', commit);
       try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) { /* not in full screen */ }
       root.remove(); document.body.classList.remove('cf-open'); open = null;
       if (o.onClose) o.onClose();
     }
+    // the phone is put down or another app comes up: what is typed is saved first
+    function hide() { if (document.visibilityState === 'hidden') commit(); }
+    document.addEventListener('visibilitychange', hide); window.addEventListener('pagehide', commit);
     document.addEventListener('keydown', key);
     document.body.appendChild(root); document.body.classList.add('cf-open'); open = root;
     // real full screen where the browser has it (a phone browser or the installed app already fills the screen)

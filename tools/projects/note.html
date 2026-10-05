@@ -80,7 +80,7 @@
   var el = Hub.el, $ = function (id) { return document.getElementById(id); };
   var id = Hub.param("id"), note = null, narrow = window.matchMedia("(max-width: 560px)");
 
-  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); }
+  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : Hub.date(iso); }
   function bare(name) { return String(name || "").split(", ").map(function (n) { return n.replace(/\.[A-Za-z0-9]{1,5}$/, ""); }).join(", ") || "Datasheet"; }
   function differs(r) { return !!(r.marks && r.marks.some(Boolean)); }
 

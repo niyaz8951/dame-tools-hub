@@ -222,12 +222,15 @@
       saveBtn = el("button", { "class": "btn sm", type: "button", text: "Save", disabled: true, onclick: function () { call(Api.adminSetUser(Hub.token(), payload()), "Saved " + u.username); } });
       actions.appendChild(saveBtn);
       actions.appendChild(el("button", { "class": "btn ghost sm", type: "button", text: "Reset password", onclick: function () {
-        var pw = window.prompt("New password for " + u.username + " (at least 8 characters):");
-        if (pw) call(Api.adminResetPassword(Hub.token(), u.id, pw), "Password reset for " + u.username);
+        Hub.ask("New password for " + u.full_name, { title: "Reset password", hint: "At least 8 characters. Tell " + u.username + " the new password yourself; the site sends nothing.", ok: "Reset password", placeholder: "New password" }).then(function (pw) {
+          if (pw) call(Api.adminResetPassword(Hub.token(), u.id, pw), "Password reset for " + u.username);
+        });
       } }));
       if (u.status !== "approved" && u.id !== me.id && Hub.isSuper(me)) {
         actions.appendChild(el("button", { "class": "btn danger sm", type: "button", text: "Delete", onclick: function () {
-          if (window.confirm("Delete " + u.username + " permanently?")) call(Api.adminDeleteUser(Hub.token(), u.id), "Deleted " + u.username);
+          Hub.confirm("The account is removed for good. Projects and answers this person made stay.", { title: "Delete " + u.username + "?", ok: "Delete account", danger: true }).then(function (yes) {
+            if (yes) call(Api.adminDeleteUser(Hub.token(), u.id), "Deleted " + u.username);
+          });
         } }));
       }
     }

@@ -71,6 +71,7 @@
     prList: function (t) { return rpc("pr_list", { p_token: t }); },
     prSave: function (t, d) { return rpc("pr_save", { p_token: t, p_id: d.id || null, p_name: d.name, p_client_type: d.clientType, p_client_name: d.clientName, p_region: d.region }); },
     prGet: function (t, id) { return rpc("pr_get", { p_token: t, p_id: id }); },
+    prDelete: function (t, id) { return rpc("pr_delete", { p_token: t, p_id: id }); },
     prExport: function (t, id) { return rpc("pr_export", { p_token: t, p_id: id }); },
     prNoteSave: function (t, d) { return rpc("pr_note_save", { p_token: t, p_project_id: d.projectId, p_product_id: d.productId, p_file_names: d.fileNames || "", p_columns: d.columns, p_rows: d.rows }); },
     prNoteGet: function (t, id) { return rpc("pr_note_get", { p_token: t, p_note_id: id }); },
@@ -608,6 +609,14 @@
         prLog(db, p.id, u, "Project details changed", "");
       }
       return { ok: true, id: p.id };
+    }),
+    prDelete: demo(function (db, t, id) {
+      var u = sessionUser(db, t), p = prProject(db, u, id);
+      db.cm.runs.forEach(function (r) { if (r.project_id === p.id) { (r.rows || []).forEach(function (x) { if (x.review === "pending") x.review = ""; }); r.project_id = null; } });
+      db.pr.notes = db.pr.notes.filter(function (n) { return n.project_id !== p.id; });
+      db.pr.log = db.pr.log.filter(function (g) { return g.project_id !== p.id; });
+      db.pr.projects = db.pr.projects.filter(function (x) { return x.id !== p.id; });
+      return { ok: true };
     }),
     prGet: demo(function (db, t, id) { var u = sessionUser(db, t); return prDetail(db, u, prProject(db, u, id)); }),
     prExport: demo(function (db, t, id) {

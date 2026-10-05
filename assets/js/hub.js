@@ -63,6 +63,9 @@
     add("meta", { name: "apple-mobile-web-app-capable", content: "yes" });
     add("meta", { name: "apple-mobile-web-app-title", content: "DAME Tools" });
     add("meta", { name: "apple-mobile-web-app-status-bar-style", content: "default" });
+    // let the page reach under the notch and the home bar; the top bar and the sheets keep clear of them
+    var vp = document.querySelector('meta[name="viewport"]');
+    if (vp && vp.content.indexOf("viewport-fit") < 0) vp.content += ", viewport-fit=cover";
   })();
   var installEvent = null;                                  // Chrome and Edge offer the install themselves
   window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); installEvent = e; });
@@ -70,8 +73,8 @@
   function installApp() {
     if (installEvent) { installEvent.prompt(); installEvent = null; return; }
     var ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    window.alert(ios ? "To put DAME Tools on your home screen: tap the Share button of Safari, then \"Add to Home Screen\"."
-                     : "To install DAME Tools: open the browser menu (three dots) and choose \"Add to Home screen\" or \"Install app\".");
+    tellSheet(ios ? "Tap the Share button of Safari, then \"Add to Home Screen\"."
+                  : "Open the browser menu (three dots) and choose \"Add to Home screen\" or \"Install app\".", { title: "Install DAME Tools" });
   }
 
   // ---------- helpers ----------
@@ -92,6 +95,47 @@
     t.textContent = msg; t.className = "toast" + (isError ? " error" : ""); t.hidden = false;
     clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 3500);
   }
+  /* Sheets: the site's own dialogs instead of the browser's confirm / prompt / alert boxes.
+       Hub.confirm("Delete this table?", { ok: "Delete", danger: true })  -> Promise of true / false
+       Hub.ask("New password", { ok: "Reset", type: "password", hint })   -> Promise of the text, or null
+       Hub.tell("Text", { title })                                        -> Promise, when closed
+     A sheet slides up from the bottom on a phone and sits in the middle on a computer.
+     Esc and a click outside cancel; Enter confirms. */
+  function sheet(message, o, kind) {
+    o = o || {};
+    return new Promise(function (resolve) {
+      var last = document.activeElement, input = null;
+      function done(v) { document.removeEventListener("keydown", key, true); back.remove(); if (last && last.focus) last.focus(); resolve(v); }
+      function yes() { done(kind === "ask" ? input.value : true); }
+      function no() { done(kind === "ask" ? null : false); }
+      function key(e) {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); no(); }
+        else if (e.key === "Enter" && (kind !== "ask" || e.target === input)) { e.preventDefault(); yes(); }
+      }
+      if (kind === "ask") input = el("input", { "class": "input", type: o.type || "text", placeholder: o.placeholder || "", autocomplete: "off", "aria-label": message });
+      var okBtn = el("button", { type: "button", "class": "btn" + (o.danger ? " solid-danger" : ""), text: o.ok || (kind === "tell" ? "OK" : "Continue"), onclick: yes });
+      var box = el("div", { "class": "hub-sheet", role: "alertdialog", "aria-modal": "true", "aria-label": o.title || message }, [
+        o.title ? el("h2", { text: o.title }) : null, el("p", { text: message }),
+        o.hint ? el("p", { "class": "hub-sheet-hint", text: o.hint }) : null, input,
+        el("div", { "class": "hub-sheet-actions" }, [kind === "tell" ? null : el("button", { type: "button", "class": "btn ghost", text: o.cancel || "Cancel", onclick: no }), okBtn])
+      ]);
+      var back = el("div", { "class": "hub-sheet-back", onclick: function (e) { if (e.target === back) no(); } }, [box]);
+      document.body.appendChild(back);
+      document.addEventListener("keydown", key, true);
+      (input || okBtn).focus();
+    });
+  }
+  function confirmSheet(message, o) { return sheet(message, o, "confirm"); }
+  function askSheet(message, o) { return sheet(message, o, "ask"); }
+  function tellSheet(message, o) { return sheet(message, o, "tell"); }
+
+  /* One way to write a date everywhere: 5 Oct 2026, or 5 Oct 2026, 16:20. */
+  function fmtDate(iso, time) {
+    var d = new Date(iso); if (!iso || isNaN(d)) return "";
+    var s = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    return time ? s + ", " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : s;
+  }
+
   function url(path) { return ROOT + (path || ""); }
   function go(path) { window.location.href = url(path); }
 
@@ -310,7 +354,7 @@
   function param(name) { try { return new URLSearchParams(window.location.search).get(name) || ""; } catch (e) { return ""; } }
 
   window.Hub = {
-    setBack: setBack, param: param,
+    setBack: setBack, param: param, confirm: confirmSheet, ask: askSheet, tell: tellSheet, date: fmtDate,
     ICON: ICON, el: el, toast: toast, url: url, go: go,
     token: token, setToken: setToken, logout: logout,
     requireLogin: requireLogin, themeButton: themeButton, avatar: avatar, renderTopbar: renderTopbar,

@@ -106,7 +106,7 @@
   var el = Hub.el, $ = function (id) { return document.getElementById(id); };
   var form = $("pr-new"), projects = [], all = false;
 
-  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); }
+  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : Hub.date(iso); }
   function fill(select, values, first) {
     select.textContent = ""; select.appendChild(el("option", { value: "", text: first }));
     values.forEach(function (v) { select.appendChild(el("option", { value: v, text: v })); });

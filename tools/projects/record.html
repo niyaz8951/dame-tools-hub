@@ -96,7 +96,7 @@
   var el = Hub.el, $ = function (id) { return document.getElementById(id); };
   var runId = Hub.param("run"), run = null, lines = [];
 
-  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); }
+  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : Hub.date(iso); }
   function bare(name) { return String(name || "").replace(/\.[A-Za-z0-9]{1,5}$/, "") || "Pasted text"; }
   // what the row holds now: the project's own answer, or the library's
   function shown(l) { return l.own ? { c: l.compliance, r: l.remarks } : { c: l.lib_compliance, r: l.lib_remarks }; }
@@ -167,6 +167,7 @@
       }, function (err) { state.className = "state err"; state.textContent = "Not saved"; Hub.toast(err.message, true); });
     }
     comp.addEventListener("change", save); rem.addEventListener("change", save);
+    comp.addEventListener("blur", save); rem.addEventListener("blur", save);
     return tr;
   }
 

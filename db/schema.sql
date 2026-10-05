@@ -2174,6 +2174,23 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- Delete a whole project (its creator, or an admin). Its datasheet tables and history go with
+-- it. Its conversions leave the project but stay in the library and its conversion history,
+-- as when one record is removed; answers still waiting for review are withdrawn.
+create or replace function public.pr_delete(p_token text, p_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; p public.pr_projects;
+begin
+  u := public.app__session_user(p_token);
+  p := public.pr__project(u, p_id);
+  update public.cm_run_lines rl set review = ''
+    from public.cm_runs r where r.id = rl.run_id and r.project_id = p.id and rl.review = 'pending';
+  update public.cm_runs set project_id = null where project_id = p.id;
+  delete from public.pr_projects where id = p.id;       -- pr_notes and pr_log go with it
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- A user's filled compliance for one conversion of his project.
 --   p_rows: [{ "spec", "compliance", "remarks" }, ...] read from the filled Excel
 -- Each answer is stored on the matching line of the conversion (same text rule as the library).
