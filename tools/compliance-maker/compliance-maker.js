@@ -910,7 +910,7 @@
     var sel = window.CMLibrary && window.CMLibrary.selection();
     var band = sel ? 'Product : ' + sel.productName + '     Factory : ' + sel.factoryName : '';
     var blob = window.xlsxWriter.build(currentRows, re, splitRuns,
-      { bandText: band, partial: currentPartial, sheet2: window.CMRows ? window.CMRows.sheet() : null });
+      { bandText: band, partial: currentPartial, projectName: window.PRPick && window.PRPick.current() ? window.PRPick.current().name : '', sheet2: window.CMRows ? window.CMRows.sheet() : null });
     downloadBlob(blob, currentName + '.xlsx');
   });
 

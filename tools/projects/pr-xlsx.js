@@ -1,8 +1,9 @@
 /* ============================================================
    Projects - Excel writer with several sheets.
    PRXlsx.build(sheets) -> Blob of an .xlsx
-     sheets: [{ name, widths: [chars...], rows: [[cell...]], bold: [rowIndex...] }]
-     A cell is text or a number. Rows listed in "bold" are heading rows.
+     sheets: [{ name, widths: [chars...], rows: [[cell...]], bold: [rowIndex...], part: [...], sect: [...] }]
+     A cell is text or a number. Rows listed in "bold" are heading rows; "part" rows are the
+     black PART rows and "sect" rows the blue section rows of a converted specification.
      The first row of every sheet stays in view when scrolling.
    PRXlsx.save(blob, fileName) starts the download.
    Colours below are written into the Excel file; they are not page colours.
@@ -48,23 +49,29 @@
 
   function styles() {
     return HEAD + '<styleSheet ' + NS + '>' +
-      '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>' +
-      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
-      '<fill><patternFill patternType="solid"><fgColor rgb="FF0097E0"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+      '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>' +
+      '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+      '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FF0097E0"/><bgColor indexed="64"/></patternFill></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FF000000"/><bgColor indexed="64"/></patternFill></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FFBDE5F8"/><bgColor indexed="64"/></patternFill></fill></fills>' +
       '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>' +
       '<border><left style="thin"><color rgb="FFBFC9D1"/></left><right style="thin"><color rgb="FFBFC9D1"/></right><top style="thin"><color rgb="FFBFC9D1"/></top><bottom style="thin"><color rgb="FFBFC9D1"/></bottom><diagonal/></border></borders>' +
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-      '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+      '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
       '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
       '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+      '<xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
+      '<xf numFmtId="0" fontId="2" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
       '</cellXfs></styleSheet>';
   }
 
   function sheetXml(sheet) {
-    var bold = {}; (sheet.bold || [0]).forEach(function (i) { bold[i] = 1; });
+    var bold = {}; (sheet.bold || [0]).forEach(function (i) { bold[i] = 2; });
+    (sheet.part || []).forEach(function (i) { bold[i] = 3; }); (sheet.sect || []).forEach(function (i) { bold[i] = 4; });
     var cols = (sheet.widths || []).map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('');
     var body = sheet.rows.map(function (row, r) {
-      var style = bold[r] ? 2 : 1;
+      var style = bold[r] || 1;
       return '<row r="' + (r + 1) + '">' + row.map(function (v, c) {
         var ref = col(c) + (r + 1);
         if (v == null || v === '') return row.length > 1 || bold[r] ? '<c r="' + ref + '" s="' + style + '"/>' : '';

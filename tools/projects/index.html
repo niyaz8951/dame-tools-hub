@@ -47,6 +47,7 @@
     </div>
     <div class="row">
       <a class="btn ghost" id="pr-review" href="review.html" hidden>Compliance review</a>
+      <a class="btn ghost" id="pr-options" href="../product-options/index.html?from=projects" hidden>Product Options</a>
       <button type="button" class="btn" id="pr-add">Add New Project</button>
     </div>
   </div>
@@ -188,6 +189,7 @@
   Hub.requireLogin({ tool: "projects" }).then(function (profile) {
     var t = Hub.token();
     if (Hub.canEdit(profile, "compliance-maker") || Hub.isAdmin(profile.user)) $("pr-review").hidden = false;
+    if (profile.categories.some(function (c) { return c.allowed && c.tools.some(function (x) { return x.id === "product-options" && x.status === "live"; }); })) $("pr-options").hidden = false;
     Api.prOptions(t).then(function (o) {
       fill(form.elements.clientType, o.client_types || [], "Choose a client type");
       fill(form.elements.region, o.regions || [], "Choose a region");

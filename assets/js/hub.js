@@ -149,6 +149,7 @@
       document.documentElement.removeAttribute("data-loading");
       // an edit screen opened from the Admin page goes back to the Admin page
       if (param("from") === "admin" && isAdmin(profile.user)) setBack("Admin", url("admin.html"));
+      if (param("from") === "projects") setBack("Projects", url("tools/projects/"));
       setTimeout(autoBack, 0);                              // after the page's own code has run
       if (sget(sessionStorage, NO_ACCESS_KEY)) { sset(sessionStorage, NO_ACCESS_KEY, null); toast("That page is not available for your account."); }
       return profile;

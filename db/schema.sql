@@ -1894,7 +1894,8 @@ insert into public.app_tools (id, category_id, name, description, path, status, 
    'Open a project to convert specifications and read datasheets. Everything is saved under it.',
    'tools/projects/', 'live', 5)
 on conflict (id) do nothing;
-update public.app_tools set project_tool = true where id in ('compliance-maker', 'datasheet-notes');
+-- Tools opened from the Projects page instead of their team tile.
+update public.app_tools set project_tool = true where id in ('compliance-maker', 'datasheet-notes', 'product-options');
 
 -- ---------- helpers ----------
 create or replace function public.pr__is_admin(u public.app_users) returns boolean
@@ -2072,7 +2073,10 @@ begin
   select * into n from public.pr_notes where id = p_note_id;
   if n.id is null then perform public.app__fail('That table no longer exists.'); end if;
   perform public.pr__project(u, n.project_id);
-  return jsonb_build_object('id', n.id, 'file_names', n.file_names, 'columns', n.columns, 'rows', n.rows);
+  return jsonb_build_object('id', n.id, 'file_names', n.file_names, 'columns', n.columns, 'rows', n.rows,
+    'created_at', n.created_at, 'user', public.pr__name(n.user_id), 'project_id', n.project_id,
+    'project', (select name from public.pr_projects where id = n.project_id),
+    'product', (select name from public.cm_products where id = n.product_id));
 end $$;
 
 -- Remove one saved record from a project: p_kind 'run' (a conversion and the answers on it) or 'note'.
@@ -2184,6 +2188,70 @@ begin
        where n.project_id = p.id), '[]'::jsonb));
 end $$;
 
+-- One compliance record of a project, to read and fill on the website: every row of the
+-- converted specification in order, the project's own answer and the library's answer.
+create or replace function public.pr_run_get(p_token text, p_run_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; r public.cm_runs; p public.pr_projects;
+begin
+  u := public.app__session_user(p_token);
+  select * into r from public.cm_runs where id = p_run_id;
+  if r.id is null or r.project_id is null then perform public.app__fail('That compliance record is not in a project.'); end if;
+  p := public.pr__project(u, r.project_id);
+  return jsonb_build_object(
+    'run', jsonb_build_object('id', r.id, 'file_name', r.file_name, 'created_at', r.created_at, 'user', public.pr__name(r.user_id),
+             'product', (select name from public.cm_products where id = r.product_id),
+             'factory', (select name from public.cm_factories where id = r.factory_id),
+             'project_id', p.id, 'project', p.name, 'client', p.client_name),
+    'lines', coalesce((
+      select jsonb_agg(jsonb_build_object('seq', rl.seq, 'type', rl.type, 'sr', rl.sr, 'spec', rl.spec_text,
+               'can', rl.line_id is not null, 'own', (rl.compliance <> '' or rl.remarks <> ''),
+               'compliance', rl.compliance, 'remarks', rl.remarks, 'review', rl.review,
+               'by', case when rl.answered_by is not null then public.pr__name(rl.answered_by) else '' end,
+               'lib_compliance', case when l.status = 'answered' then l.compliance else '' end,
+               'lib_remarks', case when l.status = 'answered' then l.remarks else '' end) order by rl.seq)
+        from public.cm_run_lines rl left join public.cm_lines l on l.id = rl.line_id
+       where rl.run_id = r.id), '[]'::jsonb));
+end $$;
+
+-- Save the answer typed on the website for one row of a record. Same rule as the filled Excel:
+-- equal to the library answer = nothing more to do; anything else waits for review.
+-- Both fields empty takes the project's own answer away (the library answer shows again).
+create or replace function public.pr_run_save_line(p_token text, p_run_id uuid, p_seq int, p_compliance text, p_remarks text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; r public.cm_runs; rl public.cm_run_lines; l public.cm_lines;
+  c text := left(trim(coalesce(p_compliance, '')), 200); m text := left(trim(coalesce(p_remarks, '')), 4000);
+  v_review text := '';
+begin
+  u := public.app__session_user(p_token);
+  select * into r from public.cm_runs where id = p_run_id;
+  if r.id is null or r.project_id is null then perform public.app__fail('That compliance record is not in a project.'); end if;
+  perform public.pr__project(u, r.project_id);
+  select * into rl from public.cm_run_lines where run_id = r.id and seq = p_seq;
+  if rl.run_id is null or rl.line_id is null then perform public.app__fail('That row cannot be answered.'); end if;
+  select * into l from public.cm_lines where id = rl.line_id;
+  if c = '' and m = '' then
+    update public.cm_run_lines set compliance = '', remarks = '', answered_by = null, answered_at = null,
+           review = '', reviewed_by = null, reviewed_at = null
+     where run_id = r.id and seq = p_seq;
+  else
+    v_review := case when l.status = 'answered' and l.compliance = c and l.remarks = m then '' else 'pending' end;
+    update public.cm_run_lines set compliance = c, remarks = m, answered_by = u.id, answered_at = now(),
+           review = v_review, reviewed_by = null, reviewed_at = null
+     where run_id = r.id and seq = p_seq;
+  end if;
+  -- one history line per person, record and hour, not one per row
+  if not exists (select 1 from public.pr_log g where g.project_id = r.project_id and g.user_id = u.id
+                    and g.action = 'Compliance filled online' and g.detail = coalesce(nullif(r.file_name, ''), 'pasted text')
+                    and g.created_at > now() - interval '1 hour') then
+    perform public.pr__log(r.project_id, u.id, 'Compliance filled online', coalesce(nullif(r.file_name, ''), 'pasted text'));
+  end if;
+  return jsonb_build_object('ok', true, 'review', v_review);
+end $$;
+
 -- ---------- review (editors of the Compliance Maker: admins, the super user, key users) ----------
 
 -- Answers users filled in their projects, for review. p_status: pending | approved | rejected.
@@ -2191,20 +2259,23 @@ create or replace function public.pr_review_list(
   p_token text, p_status text default 'pending', p_limit int default 100, p_offset int default 0)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
-declare v_status text := case when p_status in ('pending', 'approved', 'rejected') then p_status else 'pending' end;
+declare v_status text := case when p_status in ('pending', 'approved', 'rejected', 'all') then p_status else 'pending' end;   -- all = every answer filled in a project
 begin
   perform public.app__require_editor(p_token, 'compliance-maker');
   return jsonb_build_object(
     'counts', (select jsonb_build_object('pending', count(*) filter (where review = 'pending'),
                                          'approved', count(*) filter (where review = 'approved'),
                                          'rejected', count(*) filter (where review = 'rejected'))
-                 from public.cm_run_lines where review <> ''),
-    'total', (select count(*) from public.cm_run_lines where review = v_status),
+                 from public.cm_run_lines where review <> '')
+              || jsonb_build_object('all', (select count(*) from public.cm_run_lines rl join public.cm_runs r on r.id = rl.run_id
+                                             where r.project_id is not null and (rl.compliance <> '' or rl.remarks <> ''))),
+    'total', (select count(*) from public.cm_run_lines rl join public.cm_runs r on r.id = rl.run_id
+               where rl.review = v_status or (v_status = 'all' and r.project_id is not null and (rl.compliance <> '' or rl.remarks <> ''))),
     'items', coalesce((
       select jsonb_agg(x.j order by x.rn) from (
         select row_number() over (order by pj.name, r.created_at, rl.seq) as rn,
                jsonb_build_object('run', rl.run_id, 'seq', rl.seq, 'sr', rl.sr, 'spec', rl.spec_text,
-                 'compliance', rl.compliance, 'remarks', rl.remarks,
+                 'compliance', rl.compliance, 'remarks', rl.remarks, 'review', rl.review,
                  'by', public.pr__name(rl.answered_by), 'at', rl.answered_at,
                  'project', coalesce(pj.name, '(removed from its project)'), 'client', coalesce(pj.client_name, ''),
                  'region', coalesce(pj.region, ''),
@@ -2219,7 +2290,7 @@ begin
           join public.cm_factories fa on fa.id = r.factory_id
           left join public.pr_projects pj on pj.id = r.project_id
           left join public.cm_lines l on l.id = rl.line_id
-         where rl.review = v_status
+         where rl.review = v_status or (v_status = 'all' and r.project_id is not null and (rl.compliance <> '' or rl.remarks <> ''))
          order by rn
          limit least(greatest(coalesce(p_limit, 100), 1), 300) offset greatest(coalesce(p_offset, 0), 0)
       ) x), '[]'::jsonb));

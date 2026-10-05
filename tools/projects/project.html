@@ -25,6 +25,8 @@
   .pj-table .act { text-align: right; white-space: nowrap; }
   .pj-table .act .btn + .btn { margin-left: 6px; }
   .pj-file { font-weight: 600; overflow-wrap: anywhere; }
+  a.pj-link { display: block; color: var(--brand); text-decoration: none; }
+  a.pj-link:hover { text-decoration: underline; }
   .pj-group td { background: var(--surface-2); font-weight: 650; }
   .pj-badges { display: flex; gap: 6px; flex-wrap: wrap; }
   .pj-log { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow: auto; }
@@ -83,7 +85,7 @@
 
       <section class="card stack" aria-labelledby="h-runs">
         <h2 id="h-runs">Compliance records</h2>
-        <p class="small muted">One record per converted specification, grouped by product. Fill the downloaded Excel, then upload it here: your answers are kept in the project and new ones go to the library team for review.</p>
+        <p class="small muted">One record per converted specification, grouped by product. Click a name to read it and fill Compliance and Remarks online, or upload the Excel you filled. Your answers are kept in the project; new ones go to the library team for review.</p>
         <div class="notice" id="pj-up-msg" role="status" aria-live="polite" hidden></div>
         <div class="empty" id="pj-runs-empty" hidden>No specification converted in this project yet. Open the Compliance Maker above.</div>
         <div class="table-wrap" id="pj-runs-wrap" hidden>
@@ -97,7 +99,7 @@
 
       <section class="card stack" aria-labelledby="h-notes">
         <h2 id="h-notes">Datasheet notes</h2>
-        <p class="small muted">One table per datasheet run. These stay in the project; they are not part of the compliance library.</p>
+        <p class="small muted">One table per datasheet run. Click a name to view it. These stay in the project; they are not part of the compliance library.</p>
         <div class="empty" id="pj-notes-empty" hidden>No datasheet read in this project yet. Open Datasheet Notes above.</div>
         <div class="table-wrap" id="pj-notes-wrap" hidden>
           <table class="table pj-table">
@@ -128,6 +130,7 @@
     var d = new Date(iso); if (isNaN(d)) return "";
     return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) + (time ? ", " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
   }
+  function bare(names) { return String(names || "").split(", ").map(function (n) { return n.replace(/\.[A-Za-z0-9]{1,5}$/, ""); }).join(", "); }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
   function hasTool(toolId) { return profile.categories.some(function (c) { return c.allowed && c.tools.some(function (t) { return t.id === toolId && t.status === "live"; }); }); }
   function fail(err) { Hub.toast((err && err.message) || String(err), true); }
@@ -151,12 +154,14 @@
       !r.from_library && !r.answered ? el("span", { "class": "small muted", text: "Not filled yet" }) : null
     ]);
     return el("tr", {}, [
-      el("td", {}, [el("div", { "class": "pj-file", text: r.file_name || "Pasted text" }), el("div", { "class": "small muted", text: r.factory + " factory · " + when(r.created_at, true) })]),
+      el("td", {}, [el("a", { "class": "pj-file pj-link", href: "record.html?run=" + encodeURIComponent(r.id), title: "Read and fill online", text: bare(r.file_name) || "Pasted text" }),
+        el("div", { "class": "small muted", text: r.factory + " factory · " + when(r.created_at, true) })]),
       el("td", { "data-label": "Lines", text: String(r.lines) }),
       el("td", {}, [badges]),
       el("td", { "data-label": "By", "class": "small", text: r.user }),
       el("td", { "class": "act" }, [
-        el("button", { type: "button", "class": "btn sm", text: "Upload filled Excel", onclick: function () { uploadFor = r; $("pj-file").click(); } }),
+        el("a", { "class": "btn sm", href: "record.html?run=" + encodeURIComponent(r.id), text: "Open" }),
+        el("button", { type: "button", "class": "btn ghost sm", text: "Upload filled Excel", onclick: function () { uploadFor = r; $("pj-file").click(); } }),
         el("button", { type: "button", "class": "btn danger sm", text: "Remove", onclick: function () {
           if (!window.confirm("Remove this compliance record from the project? Its clauses stay in the library.")) return;
           Api.prDeleteRecord(Hub.token(), "run", r.id).then(function () { Hub.toast("Record removed."); load(); }, fail);
@@ -167,12 +172,14 @@
 
   function noteRow(n) {
     return el("tr", {}, [
-      el("td", {}, [el("div", { "class": "pj-file", text: n.file_names || "Datasheet" }), el("div", { "class": "small muted", text: when(n.created_at, true) })]),
+      el("td", {}, [el("a", { "class": "pj-file pj-link", href: "note.html?id=" + encodeURIComponent(n.id), title: "View the table", text: bare(n.file_names) || "Datasheet" }),
+        el("div", { "class": "small muted", text: when(n.created_at, true) })]),
       el("td", { "data-label": "Product", text: n.product }),
       el("td", { "data-label": "Size", text: plural(n.units, "unit", "units") + ", " + plural(n.rows, "row", "rows") }),
       el("td", { "data-label": "By", "class": "small", text: n.user }),
       el("td", { "class": "act" }, [
-        el("button", { type: "button", "class": "btn sm", text: "Download Excel", onclick: function (e) {
+        el("a", { "class": "btn sm", href: "note.html?id=" + encodeURIComponent(n.id), text: "View" }),
+        el("button", { type: "button", "class": "btn ghost sm", text: "Download Excel", onclick: function (e) {
           var b = e.currentTarget; b.disabled = true;
           Api.prNoteGet(Hub.token(), n.id).then(function (t) {
             var name = t.columns.length === 1 ? t.columns[0] : data.project.name + " - " + t.columns.length + " units";
@@ -311,52 +318,39 @@
         ["Created by", p.created_by], ["Created", when(p.created_at, true)], ["Last changed by", p.updated_by], ["Last changed", when(p.updated_at, true)],
         ["Compliance records", x.runs.length], ["Datasheet tables", x.notes.length], ["Downloaded", when(new Date().toISOString(), true)]];
 
-      var comp = [["Product", "Factory", "Specification file", "Sr", "Specifications", "Compliance", "Remarks", "Answer from", "Answered by"]];
-      x.compliance.forEach(function (c) {
-        var r = runs[c.run] || {};
-        comp.push([r.product || "", r.factory || "", r.file_name || "Pasted text", c.sr, c.spec, c.compliance, c.remarks, c.source, c.by]);
-      });
-      if (comp.length === 1) comp.push(["No compliance record in this project yet."]);
-
-      // Datasheet notes: every saved table under its own heading rows; section names repeated so the sheet can be filtered
-      var notes = [], bold = [], width = 0, opts = {}, optRows = [["Product", "Section", "Component", "Value", "Units"]];
-      x.tables.forEach(function (t, k) {
-        if (k) notes.push([]);
-        bold.push(notes.length);
-        notes.push([t.product + " - " + (t.file_names || "datasheet") + " - " + when(t.created_at, true)]);
-        bold.push(notes.length);
-        notes.push(["Section", "Component"].concat(t.columns, ["Remarks"]));
-        width = Math.max(width, t.columns.length);
-        var sec = "";
-        t.rows.forEach(function (r) {
-          if (r.section) sec = r.section;
-          notes.push([sec, r.component].concat(r.cells || [], [""]));
-          if (r.kind === "sub") return;
-          (r.cells || []).forEach(function (v, u) {
-            v = String(v == null ? "" : v).trim(); if (!v || v === "-") return;
-            var key = [t.product, sec, r.component, v].join("\u0001");
-            (opts[key] = opts[key] || { row: [t.product, sec, r.component, v], units: [] }).units.push(t.columns[u]);
+      // One sheet per product: "Specs-AHU" holds every converted specification of that product,
+      // "Notes-AHU" every datasheet table. Sheet order: information, then product by product.
+      var sheets = [{ name: "Project Information", widths: [24, 60], rows: info }], products = [];
+      x.runs.forEach(function (r) { if (products.indexOf(r.product) < 0) products.push(r.product); });
+      x.tables.forEach(function (t) { if (products.indexOf(t.product) < 0) products.push(t.product); });
+      products.sort().forEach(function (product) {
+        var rows = [], bold = [], part = [], sect = [], first = true;
+        x.runs.filter(function (r) { return r.product === product; }).reverse().forEach(function (r) {      // oldest first
+          if (!first) rows.push([]); first = false;
+          bold.push(rows.length); rows.push([bare(r.file_name) || "Pasted text", r.factory + " factory, converted by " + r.user + ", " + when(r.created_at, true), "", "", "", ""]);
+          bold.push(rows.length); rows.push(["Sr", "Specifications", "Compliance", "Remarks", "Answer from", "Filled by"]);
+          x.compliance.filter(function (c) { return c.run === r.id; }).forEach(function (c) {
+            if (c.type === "part") part.push(rows.length); else if (c.type === "section") sect.push(rows.length);
+            rows.push([c.sr, c.spec, c.compliance, c.remarks, c.source, c.by]);
           });
         });
-      });
-      if (!notes.length) { notes.push(["No datasheet table in this project yet."]); bold = []; }
-      Object.keys(opts).forEach(function (k) {
-        var o = opts[k], seen = {}, units = o.units.filter(function (u) { return seen[u] ? false : (seen[u] = 1); });
-        optRows.push(o.row.concat([units.slice(0, 40).join(", ") + (units.length > 40 ? " and " + (units.length - 40) + " more" : "")]));
-      });
-      if (optRows.length === 1) optRows.push(["No datasheet table in this project yet."]);
+        if (rows.length) sheets.push({ name: "Specs-" + product, widths: [9, 90, 22, 44, 34, 20], rows: rows, bold: bold, part: part, sect: sect });
 
-      var hist = [["When", "Who", "What", "Detail"]];
-      x.log.slice().reverse().forEach(function (g) { hist.push([when(g.at, true), g.user, g.action, g.detail]); });
-
-      var widths = [24, 30]; for (var i = 0; i < width; i++) widths.push(28); widths.push(24);
-      PRXlsx.save(PRXlsx.build([
-        { name: "Project Information", widths: [24, 60], rows: info },
-        { name: "Compliance Records", widths: [16, 14, 30, 8, 80, 22, 40, 34, 20], rows: comp },
-        { name: "Datasheet Notes", widths: widths, rows: notes, bold: bold },
-        { name: "Product Options", widths: [16, 26, 32, 44, 50], rows: optRows },
-        { name: "History", widths: [22, 22, 32, 70], rows: hist }
-      ]), p.name + " - project data.xlsx");
+        var notes = [], nbold = [], width = 0;
+        x.tables.filter(function (t) { return t.product === product; }).forEach(function (t) {
+          if (notes.length) notes.push([]);
+          nbold.push(notes.length); notes.push([bare(t.file_names) || "Datasheet", when(t.created_at, true)]);
+          nbold.push(notes.length); notes.push(["Section", "Component"].concat(t.columns, ["Remarks"]));
+          width = Math.max(width, t.columns.length);
+          var sec = "";
+          t.rows.forEach(function (r) { if (r.section) sec = r.section; notes.push([sec, r.component].concat(r.cells || [], [""])); });
+        });
+        if (notes.length) {
+          var widths = [24, 30]; for (var i = 0; i < width; i++) widths.push(28); widths.push(24);
+          sheets.push({ name: "Notes-" + product, widths: widths, rows: notes, bold: nbold });
+        }
+      });
+      PRXlsx.save(PRXlsx.build(sheets), p.name + " - project data.xlsx");
       Hub.toast("Excel downloaded.");
       return load();
     }, fail).then(function () { btn.disabled = false; });

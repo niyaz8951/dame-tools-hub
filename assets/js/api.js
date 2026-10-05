@@ -74,6 +74,8 @@
     prExport: function (t, id) { return rpc("pr_export", { p_token: t, p_id: id }); },
     prNoteSave: function (t, d) { return rpc("pr_note_save", { p_token: t, p_project_id: d.projectId, p_product_id: d.productId, p_file_names: d.fileNames || "", p_columns: d.columns, p_rows: d.rows }); },
     prNoteGet: function (t, id) { return rpc("pr_note_get", { p_token: t, p_note_id: id }); },
+    prRunGet: function (t, id) { return rpc("pr_run_get", { p_token: t, p_run_id: id }); },
+    prRunSaveLine: function (t, d) { return rpc("pr_run_save_line", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_compliance: d.compliance || "", p_remarks: d.remarks || "" }); },
     prDeleteRecord: function (t, kind, id) { return rpc("pr_delete_record", { p_token: t, p_kind: kind, p_id: id }); },
     prSubmitAnswers: function (t, runId, rows) { return rpc("pr_submit_answers", { p_token: t, p_run_id: runId, p_rows: rows }); },
     prReviewList: function (t, d) { return rpc("pr_review_list", { p_token: t, p_status: (d && d.status) || "pending", p_limit: (d && d.limit) || 100, p_offset: (d && d.offset) || 0 }); },
@@ -83,7 +85,7 @@
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v8", mem = null;
+  var KEY = "dame_hub_demo_db_v9", mem = null;
   function seed() {
     return {
       users: [
@@ -101,7 +103,7 @@
         { id: "projects", category_id: "general", name: "Projects", description: "Open a project to convert specifications and read datasheets. Everything is saved under it.", path: "tools/projects/", status: "live", sort: 5 },
         { id: "compliance-maker", project_tool: true, category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10, editable: true },
         { id: "datasheet-notes", project_tool: true, category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: true },
-        { id: "product-options", category_id: "general", name: "Product Options", description: "See the sections, options and notes each factory offers, built from the datasheets run so far.", path: "tools/product-options/", status: "live", sort: 17, editable: true },
+        { id: "product-options", project_tool: true, category_id: "general", name: "Product Options", description: "See the sections, options and notes each factory offers, built from the datasheets run so far.", path: "tools/product-options/", status: "live", sort: 17, editable: true },
         { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
         { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 },
@@ -608,7 +610,34 @@
     prNoteGet: demo(function (db, t, id) {
       var u = sessionUser(db, t), n = db.pr.notes.filter(function (x) { return x.id === id; })[0];
       if (!n) fail("That table no longer exists."); prProject(db, u, n.project_id);
-      return { id: n.id, file_names: n.file_names, columns: n.columns, rows: n.rows };
+      var np = db.pr.projects.filter(function (x) { return x.id === n.project_id; })[0];
+      return { id: n.id, file_names: n.file_names, columns: n.columns, rows: n.rows, created_at: n.created_at, user: prName(db, n.user_id),
+               project_id: n.project_id, project: np ? np.name : "", product: prProductName(db, n.product_id) };
+    }),
+    prRunGet: demo(function (db, t, id) {
+      var u = sessionUser(db, t), r = db.cm.runs.filter(function (x) { return x.id === id; })[0];
+      if (!r || !r.project_id) fail("That compliance record is not in a project.");
+      var p = prProject(db, u, r.project_id);
+      return { run: { id: r.id, file_name: r.file_name, created_at: r.created_at, user: r.user, product: r.product, factory: r.factory, project_id: p.id, project: p.name, client: p.client_name },
+        lines: (r.rows || []).map(function (x) {
+          var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0], ans = l && l.status === "answered";
+          return { seq: x.seq, type: x.type, sr: x.sr, spec: x.spec, can: !!x.line_id, own: !!(x.compliance || x.remarks), compliance: x.compliance, remarks: x.remarks, review: x.review,
+                   by: x.answered_by ? prName(db, x.answered_by) : "", lib_compliance: ans ? l.compliance : "", lib_remarks: ans ? l.remarks : "" };
+        }) };
+    }),
+    prRunSaveLine: demo(function (db, t, d) {
+      var u = sessionUser(db, t), r = db.cm.runs.filter(function (x) { return x.id === d.run; })[0];
+      if (!r || !r.project_id) fail("That compliance record is not in a project.");
+      prProject(db, u, r.project_id);
+      var x = (r.rows || []).filter(function (y) { return y.seq === d.seq; })[0];
+      if (!x || !x.line_id) fail("That row cannot be answered.");
+      var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0], c = String(d.compliance || "").trim().slice(0, 200), m = String(d.remarks || "").trim().slice(0, 4000);
+      x.compliance = c; x.remarks = m; x.reviewed_by = null; x.reviewed_at = null;
+      if (!c && !m) { x.answered_by = null; x.answered_at = null; x.review = ""; }
+      else { x.answered_by = u.id; x.answered_at = new Date().toISOString(); x.review = l && l.status === "answered" && l.compliance === c && l.remarks === m ? "" : "pending"; }
+      var name = r.file_name || "pasted text", hour = new Date(Date.now() - 3600000).toISOString();
+      if (!db.pr.log.some(function (g) { return g.project_id === r.project_id && g.user_id === u.id && g.action === "Compliance filled online" && g.detail === name && g.at > hour; })) prLog(db, r.project_id, u, "Compliance filled online", name);
+      return { ok: true, review: x.review };
     }),
     prDeleteRecord: demo(function (db, t, kind, id) {
       var u = sessionUser(db, t), rec;
@@ -641,14 +670,16 @@
     }),
     prReviewList: demo(function (db, t, d) {
       editor(db, t, "compliance-maker");
-      var st = d && ["pending", "approved", "rejected"].indexOf(d.status) >= 0 ? d.status : "pending", counts = { pending: 0, approved: 0, rejected: 0 }, items = [];
+      var st = d && ["pending", "approved", "rejected", "all"].indexOf(d.status) >= 0 ? d.status : "pending", counts = { pending: 0, approved: 0, rejected: 0, all: 0 }, items = [];
       db.cm.runs.slice().reverse().forEach(function (r) {
         var p = db.pr.projects.filter(function (x) { return x.id === r.project_id; })[0];
         (r.rows || []).forEach(function (x) {
-          if (!x.review) return; counts[x.review]++;
-          if (x.review !== st) return;
+          var filled = !!(p && (x.compliance || x.remarks));
+          if (filled) counts.all++;
+          if (x.review) counts[x.review]++;
+          if (!(x.review === st || (st === "all" && filled))) return;
           var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0] || {};
-          items.push({ run: r.id, seq: x.seq, sr: x.sr, spec: x.spec, compliance: x.compliance, remarks: x.remarks, by: prName(db, x.answered_by), at: x.answered_at,
+          items.push({ run: r.id, seq: x.seq, sr: x.sr, spec: x.spec, compliance: x.compliance, remarks: x.remarks, review: x.review, by: prName(db, x.answered_by), at: x.answered_at,
             project: p ? p.name : "(removed from its project)", client: p ? p.client_name : "", region: p ? p.region : "", product: r.product, factory: r.factory, file_name: r.file_name,
             lib_compliance: l.compliance || "", lib_remarks: l.remarks || "", lib_answered: l.status === "answered",
             reviewed_by: x.reviewed_by ? prName(db, x.reviewed_by) : "", reviewed_at: x.reviewed_at || null });
