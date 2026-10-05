@@ -29,7 +29,7 @@
   .lib .meta { font-size: 12px; color: var(--text-soft); margin-top: 4px; }
   /* The library reads like a converted specification: a dark PART row, a blue section row,
      the clause label in the Sr column, and the same word highlights. Colours come from the theme. */
-  .lib { table-layout: fixed; min-width: 860px; }
+  .lib { table-layout: fixed; min-width: 1080px; }
   .lib tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
   .lib tr.sect td { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); font-weight: 650; }
   .lib tr.sect .src { font-weight: 400; font-size: 12px; color: var(--text-soft); margin-left: 10px; }
@@ -97,7 +97,7 @@
       </div>
       <div class="table-wrap">
         <table class="table lib">
-          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:160px">Compliance</th><th style="width:24%">Remarks</th><th style="width:130px">Filled by</th><th style="width:128px"></th></tr></thead>
+          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:150px">Compliance</th><th style="width:19%">Remarks</th><th style="width:17%">Internal Comments</th><th style="width:110px">Filled by</th><th style="width:128px"></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -105,7 +105,7 @@
         <span class="small muted" id="pageInfo"></span>
         <span class="row"><button class="btn ghost sm" type="button" id="prev">Previous</button><button class="btn ghost sm" type="button" id="next">Next</button></span>
       </div>
-      <p class="small muted">Answers save by themselves when you leave a box. Clearing both boxes puts the line back under "To answer".</p>
+      <p class="small muted">Answers save by themselves when you leave a box. Clearing Compliance and Remarks puts the line back under "To answer". Internal Comments are for the library team only: they are never written into a user's compliance sheet.</p>
       <datalist id="answers">
         <option value="Comply"></option><option value="Not Comply"></option><option value="Comply with Remarks"></option>
         <option value="Noted"></option><option value="Not Applicable"></option><option value="In Contractor's Scope"></option>
@@ -116,7 +116,7 @@
     <section id="tab-upload" class="stack" hidden>
       <div class="card stack">
         <h2>Upload a filled compliance</h2>
-        <p class="muted">Use an Excel file with <b>Specifications</b>, <b>Compliance</b> and <b>Remarks</b> columns, for example a sheet downloaded from the Compliance Maker and filled in. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once. A clause that already has an answer in the library is never overwritten: it is skipped.</p>
+        <p class="muted">Use an Excel file with the columns <b>Sr</b>, <b>Specifications</b>, <b>Compliance</b>, <b>Remarks</b> and <b>Internal Comments</b>, the same for every product: a PART row, then each section with its number in Sr, then its clauses. <a href="sample-compliance-upload.xlsx" download>Download the sample file</a>. A sheet downloaded from the Compliance Maker or from this library and filled in works too. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once. A clause that already has an answer in the library is never overwritten: it is skipped.</p>
         <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose an Excel file or drop one here">
           <b>Choose an .xlsx file or drop it here</b>
           <div class="small muted">Nothing is saved until you press Add to library.</div>
@@ -126,10 +126,10 @@
         <div id="upPreview" class="stack" hidden>
           <div class="result">
             <div class="stat"><b id="pRows">0</b><span>rows read</span></div>
-            <div class="stat"><b id="pAns">0</b><span>with an answer</span></div>
-            <div class="stat"><b id="pSkip">0</b><span>without an answer (ignored)</span></div>
+            <div class="stat"><b id="pAns">0</b><span>with an answer or a comment</span></div>
+            <div class="stat"><b id="pSkip">0</b><span>empty (ignored)</span></div>
           </div>
-          <div class="table-wrap"><table class="table"><thead><tr><th>Specification</th><th>Compliance</th><th>Remarks</th></tr></thead><tbody id="pRowsBody"></tbody></table></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>Sr</th><th>Specification</th><th>Compliance</th><th>Remarks</th><th>Internal Comments</th></tr></thead><tbody id="pRowsBody"></tbody></table></div>
           <p class="small muted" id="pMore"></p>
           <div id="pReplace" class="notice" role="status" hidden></div>
           <div class="row"><button class="btn" type="button" id="btnImport">Add to library</button><button class="btn ghost" type="button" id="btnCancel">Cancel</button></div>
@@ -201,22 +201,23 @@
   function lineRow(l) {
     var comp = el("input", { "class": "input", list: "answers", value: l.compliance || "", maxlength: "200", "aria-label": "Compliance" });
     var rem = el("textarea", { "class": "input", maxlength: "4000", "aria-label": "Remarks" }); rem.value = l.remarks || "";
+    var note = el("textarea", { "class": "input", maxlength: "4000", "aria-label": "Internal Comments" }); note.value = l.comments || "";
     var state = el("span", { "class": "state", "aria-live": "polite" });
-    var saved = { c: l.compliance || "", r: l.remarks || "" };
+    var saved = { c: l.compliance || "", r: l.remarks || "", n: l.comments || "" };
     function save() {
-      var c = comp.value.trim(), r = rem.value.trim();
-      if (c === saved.c && r === saved.r) return;
+      var c = comp.value.trim(), r = rem.value.trim(), n = note.value.trim();
+      if (c === saved.c && r === saved.r && n === saved.n) return;
       state.textContent = "Saving..."; state.className = "state";
-      Api.cmAdminSaveAnswer(Hub.token(), l.id, c, r).then(function () {
+      Api.cmAdminSaveAnswer(Hub.token(), l.id, c, r, n).then(function () {
         var was = !!(saved.c || saved.r), now = !!(c || r);
-        saved = { c: c, r: r }; state.textContent = "Saved"; state.className = "state ok";
+        saved = { c: c, r: r, n: n }; state.textContent = "Saved"; state.className = "state ok";
         if (was !== now) {       // keep the three counters right without reloading the page of lines
           var open = +$("sOpen").textContent + (now ? -1 : 1), done = +$("sDone").textContent + (now ? 1 : -1);
           setCounts({ all: +$("sAll").textContent, open: open, answered: done, review: +$("sReview").textContent });
         }
       }, function (err) { state.textContent = "Not saved"; state.className = "state err"; fail(err); });
     }
-    comp.addEventListener("change", save); rem.addEventListener("change", save);
+    comp.addEventListener("change", save); rem.addEventListener("change", save); note.addEventListener("change", save);
     var del = el("button", { "class": "btn danger sm", type: "button", text: "Delete", title: "Remove this line from the library",
       onclick: function () {
         if (!window.confirm("Delete this line from the library? Use this for junk lines only.")) return;
@@ -255,7 +256,7 @@
     return el("tr", {}, [
       el("td", { "class": "sr " + kind, text: l.sr || "" }),
       el("td", { "class": "spec" }, [text, el("div", { "class": "meta", text: meta }), users.firstChild ? users : null]),
-      el("td", {}, [comp]), el("td", {}, [rem]),
+      el("td", {}, [comp]), el("td", {}, [rem]), el("td", {}, [note]),
       el("td", { "class": "who", text: who.join(", ") }),
       el("td", { style: "text-align:right;white-space:nowrap" }, [state, " ", del])
     ]);
@@ -276,13 +277,13 @@
                 : $("fStatus").value === "review" ? "No answer from a user is waiting for this factory."
                 : $("fSearch").value ? "No lines match that search."
                 : $("fStatus").value === "open" ? "Nothing left to answer for this factory." : "No lines here.";
-        body.appendChild(el("tr", {}, [el("td", { colspan: "6", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
+        body.appendChild(el("tr", {}, [el("td", { colspan: "7", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
       }
       layout(res.lines).forEach(function (it) {
-        if (it.kind === "part") body.appendChild(el("tr", { "class": "part" }, [el("td"), el("td", { colspan: "5", text: it.text })]));
+        if (it.kind === "part") body.appendChild(el("tr", { "class": "part" }, [el("td"), el("td", { colspan: "6", text: it.text })]));
         else if (it.kind === "section") body.appendChild(el("tr", { "class": "sect" }, [
           el("td", { "class": "sr", text: it.sr }),
-          el("td", { colspan: "5" }, [it.text, el("span", { "class": "src", text: [it.topic, it.source ? "from " + it.source : ""].filter(Boolean).join(" · ") })])]));
+          el("td", { colspan: "6" }, [it.text, el("span", { "class": "src", text: [it.topic, it.source ? "from " + it.source : ""].filter(Boolean).join(" · ") })])]));
         else body.appendChild(lineRow(it.line));
       });
       $("pageInfo").textContent = total ? "Showing " + (offset + 1) + " to " + Math.min(offset + PAGE, total) + " of " + total : "";
@@ -298,7 +299,7 @@
   function layout(lines) {
     var out = [], part = null, block = null;
     lines.forEach(function (l) {
-      if (l.part !== part) { part = l.part; block = null; out.push({ kind: "part", part: partName(l.part), text: partName(l.part).toUpperCase() }); }
+      if (l.part !== part) { part = l.part; block = null; out.push({ kind: "part", part: partName(l.part), text: partName(l.part).toUpperCase().replace(/^(PART \d+) /, "$1 - ") }); }
       var b = (l.section || "").toLowerCase() + "|" + (l.home_run || "") + "|" + (l.section_sr || "");
       if (b !== block) {
         block = b;
@@ -306,7 +307,7 @@
                    text: l.section || "(no section heading)", source: l.file_name || "" });
       }
       out.push({ kind: "line", line: l, part: partName(l.part), topic: l.topic || "", section: l.section || "", sr: l.sr || "", type: l.row_type || "",
-                 spec: l.spec_text, compliance: l.compliance || "", remarks: l.remarks || "" });
+                 spec: l.spec_text, compliance: l.compliance || "", remarks: l.remarks || "", comments: l.comments || "" });
     });
     return out;
   }
@@ -361,25 +362,36 @@
   // ---------- upload ----------
   function show(box, text, kind) { box.textContent = text; box.className = "notice " + (kind || "error"); box.hidden = !text; }
   function resetUpload() { pending = null; $("upPreview").hidden = true; $("upResult").hidden = true; show($("upMsg"), ""); $("file").value = ""; }
-  // Find the header row (Specifications / Compliance / Remarks) and read the rows under it.
+  /* Find the header row (Sr / Specifications / Compliance / Remarks / Internal Comments; Sr and
+     Internal Comments may be missing) and read the clauses under it. PART rows and section rows
+     are not clauses: they give each clause its Part, section and section number, so a new clause
+     lands in the right place of the library. */
   function readSheet(rows) {
-    var head = -1, cs = -1, cc = -1, cr = -1;
+    var head = -1, cs = -1, cc = -1, cr = -1, ci = -1, cn = -1;
     for (var i = 0; i < Math.min(rows.length, 40) && head < 0; i++) {
-      var cells = rows[i].map(function (c) { return String(c == null ? "" : c).trim().toLowerCase(); });
-      var s = -1, c = -1, r = -1;
-      cells.forEach(function (v, k) {
+      var s = -1, c = -1, r = -1, k2 = -1, n = -1;
+      rows[i].forEach(function (v, k) {
+        v = String(v == null ? "" : v).trim().toLowerCase();
         if (s < 0 && /^specifications?$/.test(v)) s = k;
         else if (c < 0 && /^compliance$/.test(v)) c = k;
         else if (r < 0 && /^remarks?$/.test(v)) r = k;
+        else if (k2 < 0 && /^internal comments?$/.test(v)) k2 = k;
+        else if (n < 0 && /^sr\.?( ?no\.?)?$/.test(v)) n = k;
       });
-      if (s >= 0 && c >= 0) { head = i; cs = s; cc = c; cr = r; }
+      if (s >= 0 && c >= 0) { head = i; cs = s; cc = c; cr = r; ci = k2; cn = n; }
     }
-    if (head < 0) throw new Error("This sheet has no Specifications and Compliance column headings. Use a sheet downloaded from the Compliance Maker, or add those headings in the first row.");
-    var out = [];
+    if (head < 0) throw new Error("This sheet has no Specifications and Compliance column headings. Use the sample file, or a sheet downloaded from the Compliance Maker.");
+    function cell(row, k) { return k >= 0 ? String(row[k] == null ? "" : row[k]).trim() : ""; }
+    var out = [], part = 0, section = "", sectionSr = "";
     rows.slice(head + 1).forEach(function (row) {
-      var spec = String(row[cs] == null ? "" : row[cs]).trim();
+      var spec = cell(row, cs), sr = cell(row, cn), c = cell(row, cc), r = cell(row, cr), note = cell(row, ci);
       if (!spec) return;
-      out.push({ spec: spec, compliance: String(row[cc] == null ? "" : row[cc]).trim(), remarks: cr >= 0 ? String(row[cr] == null ? "" : row[cr]).trim() : "" });
+      var pm = /^PART\s+([0-9]|I{1,3})\b/i.exec(spec);
+      if (pm && !c && !r) { part = { I: 1, II: 2, III: 3 }[pm[1].toUpperCase()] || +pm[1] || 0; section = ""; sectionSr = ""; return; }
+      if (/^\d+(\.\d+)+\.?$/.test(sr) && !c && !r && !note) { section = spec.slice(0, 120); sectionSr = sr.replace(/\.$/, ""); return; }
+      var label = sr.replace(/[.)]\s*$/, "");
+      out.push({ spec: spec, compliance: c, remarks: r, comments: note, sr: label,
+                 type: /^[A-Za-z]{1,2}$/.test(label) ? "letter" : /^\d+$/.test(label) ? "number" : "text", part: part, section: section, section_sr: sectionSr });
     });
     return out;
   }
@@ -387,12 +399,12 @@
     resetUpload(); if (!file) return;
     if (!/\.xlsx$/i.test(file.name)) { show($("upMsg"), "Please choose an .xlsx file. Older .xls files need to be saved as .xlsx first."); return; }
     HubXlsx.read(file).then(function (rows) {
-      var all = readSheet(rows), ans = all.filter(function (r) { return r.compliance || r.remarks; });
-      if (!ans.length) { show($("upMsg"), "No filled rows were found. Fill in Compliance or Remarks for at least one row."); return; }
+      var all = readSheet(rows), ans = all.filter(function (r) { return r.compliance || r.remarks || r.comments; });
+      if (!ans.length) { show($("upMsg"), "No filled rows were found. Fill in Compliance, Remarks or Internal Comments for at least one row."); return; }
       pending = { fileName: file.name, rows: ans, read: all.length };
       $("pRows").textContent = all.length; $("pAns").textContent = ans.length; $("pSkip").textContent = all.length - ans.length;
       var body = $("pRowsBody"); body.textContent = "";
-      ans.slice(0, 8).forEach(function (r) { body.appendChild(el("tr", {}, [el("td", { text: r.spec }), el("td", { text: r.compliance }), el("td", { text: r.remarks })])); });
+      ans.slice(0, 8).forEach(function (r) { body.appendChild(el("tr", {}, [el("td", { text: r.sr }), el("td", { text: r.spec }), el("td", { text: r.compliance }), el("td", { text: r.remarks }), el("td", { text: r.comments })])); });
       $("pMore").textContent = ans.length > 8 ? "First 8 of " + ans.length + " filled rows shown." : "";
       $("upPreview").hidden = false;
       countReplaced(pending);
@@ -408,7 +420,7 @@
       if (pending !== p) return;                       // cancelled or another file chosen meanwhile
       var have = {}, mine = {}, fresh = 0, same = 0, repl = 0;
       (res.lines || []).forEach(function (l) { if (l.compliance || l.remarks) have[norm(l.spec_text)] = l; });
-      p.rows.forEach(function (r) { var k = norm(r.spec); if (k.length >= 8) mine[k] = r; });
+      p.rows.forEach(function (r) { var k = norm(r.spec); if (k.length >= 8 && (r.compliance || r.remarks)) mine[k] = r; });
       Object.keys(mine).forEach(function (k) {
         var old = have[k], r = mine[k];
         if (!old) fresh++;

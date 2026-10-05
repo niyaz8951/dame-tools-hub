@@ -558,12 +558,13 @@
        { kind: 'part',    part, text }                                  black row
        { kind: 'section', part, topic, section, sr, text, source }      blue row
        { kind: 'line',    part, topic, section, sr, type, spec, compliance, remarks }
-     Columns: Part | Topic | Section | Sr | Specifications | Compliance | Remarks | Source file.
-     runsOf(text) -> highlight runs (same as the preview). The header names Specifications /
-     Compliance / Remarks are what the library upload looks for, so this file can be filled and
-     uploaded back. */
+     One format for every product (owner's sample, 5 Oct 2026):
+       Sr | Specifications | Compliance | Remarks | Internal Comments
+     A PART row has no Sr ("PART 1 - GENERAL"), a section row has its number in Sr, a clause its
+     label ("A."). runsOf(text) -> highlight runs (same as the preview). The library upload reads
+     this same layout, so the file can be filled and uploaded back. */
   function buildLibrary(items, runsOf) {
-    var HEAD = ['Part', 'Topic', 'Section', 'Sr', 'Specifications', 'Compliance', 'Remarks', 'Source file'];
+    var HEAD = ['Sr', 'Specifications', 'Compliance', 'Remarks', 'Internal Comments'];
     var out = ['<row r="1" ht="22" customHeight="1">' + HEAD.map(function (h, i) { return inlineStrCell(colLetter(i + 1) + '1', 0, h); }).join('') + '</row>'];
     function c(col, n, style, text) {
       return text === '' || text == null ? '<c r="' + colLetter(col) + n + '" s="' + style + '"/>' : inlineStrCell(colLetter(col) + n, style, String(text));
@@ -571,16 +572,15 @@
     items.forEach(function (it, i) {
       var n = i + 2, row;
       if (it.kind === 'part') {
-        row = c(1, n, 1, it.part) + c(2, n, 1, '') + c(3, n, 1, '') + c(4, n, 1, '') + c(5, n, 1, it.text) + c(6, n, 1, '') + c(7, n, 1, '') + c(8, n, 1, '');
+        row = c(1, n, 1, '') + c(2, n, 1, it.text) + c(3, n, 1, '') + c(4, n, 1, '') + c(5, n, 1, '');
       } else if (it.kind === 'section') {
-        row = c(1, n, 2, it.part) + c(2, n, 2, it.topic) + c(3, n, 2, it.section) + c(4, n, 3, it.sr) + c(5, n, 2, it.text) +
-              c(6, n, 2, '') + c(7, n, 2, '') + c(8, n, 2, it.source);
+        row = c(1, n, 3, it.sr) + c(2, n, 2, it.text) + c(3, n, 2, '') + c(4, n, 2, '') + c(5, n, 2, '');
       } else {
         var srStyle = it.type === 'letter' && /^[A-Z]/.test(it.sr || '') ? 5 : it.type === 'number' ? 6 : 7;
         var runs = runsOf ? runsOf(it.spec) : null;
-        row = c(1, n, 4, it.part) + c(2, n, 4, it.topic) + c(3, n, 4, it.section) + c(4, n, srStyle, it.sr) +
-              (runs && runs.length > 1 ? richStrCell('E' + n, 4, runs) : c(5, n, 4, it.spec)) +
-              c(6, n, 4, it.compliance) + c(7, n, 4, it.remarks) + c(8, n, 8, '');
+        row = c(1, n, srStyle, it.sr ? it.sr + '.' : '') +
+              (runs && runs.length > 1 ? richStrCell('B' + n, 4, runs) : c(2, n, 4, it.spec)) +
+              c(3, n, 4, it.compliance) + c(4, n, 4, it.remarks) + c(5, n, 4, it.comments);
       }
       out.push('<row r="' + n + '">' + row + '</row>');
     });
@@ -590,9 +590,9 @@
         '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
         '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
         '<sheetFormatPr defaultRowHeight="15"/>' +
-        '<cols>' + [16, 22, 28, 7, 80, 18, 44, 28].map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' +
+        '<cols>' + [8, 80, 22, 46, 46].map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' +
         '<sheetData>' + out.join('') + '</sheetData>' +
-        '<autoFilter ref="A1:H' + last + '"/>' +
+        '<autoFilter ref="A1:E' + last + '"/>' +
         '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
         '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +
       '</worksheet>';

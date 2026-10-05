@@ -51,7 +51,7 @@
     cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines, p_project_id: d.projectId || null }); },
     cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 100, p_offset: d.offset || 0,
       p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "", p_client_type: d.clientType || "", p_client_name: d.clientName || "" }); },
-    cmAdminSaveAnswer: function (t, id, c, r) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r }); },
+    cmAdminSaveAnswer: function (t, id, c, r, comments) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r, p_comments: comments == null ? null : comments }); },
     cmAdminDeleteLine: function (t, id) { return rpc("cm_admin_delete_line", { p_token: t, p_line_id: id }); },
     cmAdminImport: function (t, d) { return rpc("cm_admin_import", { p_token: t, p_factory_id: d.factoryId, p_file_name: d.fileName || "", p_rows: d.rows }); },
     cmAdminRuns: function (t, d) { return rpc("cm_admin_runs", { p_token: t, p_limit: (d && d.limit) || 50, p_offset: (d && d.offset) || 0 }); },
@@ -423,35 +423,44 @@
                client_types: Object.keys(types).sort(), client_names: Object.keys(names).sort(),
                total: list.length, lines: list.slice(off, off + (d.limit || 50)) };
     }),
-    cmAdminSaveAnswer: demo(function (db, t, id, c, r) {
+    cmAdminSaveAnswer: demo(function (db, t, id, c, r, comments) {
       var a = editor(db, t, "compliance-maker"), l = db.cm.lines.filter(function (x) { return x.id === id; })[0]; if (!l) fail("That line no longer exists.");
+      if (comments != null) l.comments = String(comments).trim().slice(0, 4000);
+      if ((l.compliance || "") === (c || "").trim() && (l.remarks || "") === (r || "").trim()) return { ok: true, status: l.status };   // only the comments changed
       l.compliance = (c || "").trim(); l.remarks = (r || "").trim(); l.status = (l.compliance || l.remarks) ? "answered" : "open";
       l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "admin";
       return { ok: true, status: l.status };
     }),
     cmAdminDeleteLine: demo(function (db, t, id) { editor(db, t, "compliance-maker"); db.cm.lines = db.cm.lines.filter(function (x) { return x.id !== id; }); return { ok: true }; }),
     cmAdminImport: demo(function (db, t, d) {
-      var a = editor(db, t, "compliance-maker"), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, kept = 0, n = 0;
+      var a = editor(db, t, "compliance-maker"), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, kept = 0, n = 0, n0 = 0, runId = "r" + Date.now();
       if (!d.rows || !d.rows.length) fail("No rows were found in that file.");
       d.rows.forEach(function (row) {
-        var c = (row.compliance || "").trim(), r = (row.remarks || "").trim(), k = cmNorm(row.spec);
-        if ((c || r) && k.length >= 8) uniq[k] = { spec: String(row.spec).trim(), c: c, r: r };
+        var c = (row.compliance || "").trim(), r = (row.remarks || "").trim(), cm = (row.comments || "").trim(), k = cmNorm(row.spec);
+        if ((c || r || cm) && k.length >= 8) uniq[k] = { spec: String(row.spec).trim(), c: c, r: r, cm: cm, row: row, ord: n0++ };
       });
       Object.keys(uniq).forEach(function (k) {
-        n++; var v = uniq[k], l = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === k; })[0];
-        if (!l) { added++; l = { id: "l" + Date.now() + "_" + n, factory_id: f.id, norm_text: k, spec_text: v.spec, times_seen: 0, last_seen_at: "" }; db.cm.lines.push(l); }
+        var v = uniq[k], has = !!(v.c || v.r), l = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === k; })[0];
+        if (has) n++;
+        if (l && v.cm && !l.comments) l.comments = v.cm;                    // internal comments only where the line has none
+        if (!l) {
+          l = { id: "l" + Date.now() + "_" + v.ord, factory_id: f.id, norm_text: k, spec_text: v.spec, times_seen: 0, last_seen_at: "", compliance: "", remarks: "", status: "open", comments: v.cm,
+                part: +v.row.part || 0, section: v.row.section || "", sr: v.row.sr || "", row_type: v.row.type || "text", section_sr: v.row.section_sr || "", home_run: runId, home_seq: v.ord, file_name: d.fileName || "" };
+          db.cm.lines.push(l); if (!has) return; added++;
+        }
+        else if (!has) return;
         else if (l.status === "answered") { if (l.compliance !== v.c || l.remarks !== v.r) kept++; return; }   // an answered line keeps its answer
         else updated++;
         l.compliance = v.c; l.remarks = v.r; l.status = "answered"; l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "upload";
       });
-      db.cm.runs.unshift({ id: "r" + Date.now(), kind: "library-upload", created_at: new Date().toISOString(), user: a.full_name, username: a.username, product: f.product, factory: f.name, source: "xlsx", file_name: d.fileName || "", line_count: d.rows.length, unique_count: n, matched_count: added + updated });
+      db.cm.runs.unshift({ id: runId, kind: "library-upload", created_at: new Date().toISOString(), user: a.full_name, username: a.username, product: f.product, factory: f.name, source: "xlsx", file_name: d.fileName || "", line_count: d.rows.length, unique_count: n, matched_count: added + updated });
       return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, kept: kept, unchanged: n - added - updated - kept, skipped: d.rows.length - n };
     }),
     cmAdminRuns: demo(function (db, t) { editor(db, t, "compliance-maker"); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
     cmAdminExport: demo(function (db, t, factoryId) {
       editor(db, t, "compliance-maker"); var f = cmFactory(db, factoryId);
       return { lines: cmLibraryOrder(db.cm.lines.filter(function (x) { return x.factory_id === f.id; })).map(function (x) {
-        return { spec_text: x.spec_text, compliance: x.compliance, remarks: x.remarks, times_seen: x.times_seen,
+        return { spec_text: x.spec_text, compliance: x.compliance, remarks: x.remarks, comments: x.comments || "", times_seen: x.times_seen,
                  part: x.part || 0, section: x.section || "", topic: cmTopic(x.section),
                  sr: x.sr || "", row_type: x.row_type || "", section_sr: x.section_sr || "", home_run: x.home_run || null, file_name: x.file_name || "" };
       }) };

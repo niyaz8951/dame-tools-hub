@@ -708,6 +708,8 @@ alter table public.cm_lines add column if not exists home_seq   int;
 alter table public.cm_lines add column if not exists sr         text not null default '';
 alter table public.cm_lines add column if not exists row_type   text not null default '';
 alter table public.cm_lines add column if not exists section_sr text not null default '';
+-- Internal Comments: notes for the library team only. Never written into a user's compliance sheet.
+alter table public.cm_lines add column if not exists comments   text not null default '';
 
 alter table public.cm_products   enable row level security;
 alter table public.cm_factories  enable row level security;
@@ -1027,7 +1029,7 @@ begin
       select jsonb_agg(x.j order by x.rn) from (
         select row_number() over (order by o.ord) as rn,
                jsonb_build_object('id', l.id, 'spec_text', l.spec_text, 'compliance', l.compliance,
-                 'remarks', l.remarks, 'status', l.status, 'times_seen', l.times_seen,
+                 'remarks', l.remarks, 'comments', l.comments, 'status', l.status, 'times_seen', l.times_seen,
                  'last_seen_at', l.last_seen_at, 'answered_at', l.answered_at,
                  'answer_source', l.answer_source,
                  'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section),
@@ -1053,18 +1055,28 @@ begin
       ) x), '[]'::jsonb));
 end $$;
 
--- Fill in (or clear) the answer for one library line.
+-- Fill in (or clear) the answer for one library line. p_comments = the Internal Comments;
+-- null leaves them as they are. The comments alone do not make a line "answered".
+drop function if exists public.cm_admin_save_answer(text, uuid, text, text);
 create or replace function public.cm_admin_save_answer(
-  p_token text, p_line_id uuid, p_compliance text, p_remarks text)
+  p_token text, p_line_id uuid, p_compliance text, p_remarks text, p_comments text default null)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
   a public.app_users;
   v_c text := left(trim(coalesce(p_compliance, '')), 200);
   v_r text := left(trim(coalesce(p_remarks, '')), 4000);
-  l public.cm_lines;
+  l public.cm_lines; o public.cm_lines;
 begin
   a := public.app__require_editor(p_token, 'compliance-maker');
+  select * into o from public.cm_lines where id = p_line_id;
+  if o.id is null then perform public.app__fail('That line no longer exists.'); end if;
+  if p_comments is not null then
+    update public.cm_lines set comments = left(trim(p_comments), 4000) where id = p_line_id;
+  end if;
+  if (o.compliance, o.remarks) is not distinct from (v_c, v_r) then      -- only the comments changed
+    return jsonb_build_object('ok', true, 'status', o.status);
+  end if;
   update public.cm_lines
      set compliance = v_c, remarks = v_r,
          status = case when v_c <> '' or v_r <> '' then 'answered' else 'open' end,
@@ -1087,12 +1099,15 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
--- Load a filled compliance sheet into the library.
---   p_rows: [{ "spec": "...", "compliance": "Comply", "remarks": "..." }, ...]
--- Only rows that carry an answer are taken. Each distinct clause becomes a new library line or
--- fills a line that has no answer yet; when the same clause appears twice in the file the last
--- one wins. A line that already has an answer is NEVER overwritten (owner's rule, 5 Oct 2026):
--- the file's answer for it is skipped and counted as "kept". An editor changes it by hand.
+-- Load a filled compliance sheet into the library. One format for every product:
+--   Sr | Specifications | Compliance | Remarks | Internal Comments
+--   p_rows: [{ "spec", "compliance", "remarks", "comments", "sr", "type", "part", "section", "section_sr" }, ...]
+--   (the page works out part / section / type from the PART rows, section rows and Sr of the sheet)
+-- Rows with an answer or an internal comment are taken; when the same clause appears twice in
+-- the file the last one wins. A new clause becomes a library line in its Part and section. A
+-- line with no answer yet is filled. A line that already has an answer is NEVER overwritten
+-- (owner's rule, 5 Oct 2026): the file's answer for it is skipped and counted as "kept"; an
+-- editor changes it by hand. Internal comments are filled only where the line has none.
 create or replace function public.cm_admin_import(
   p_token text, p_factory_id text, p_file_name text, p_rows jsonb)
 returns jsonb
@@ -1115,44 +1130,59 @@ begin
   values ('library-upload', a.id, f.product_id, f.id, 'xlsx', left(coalesce(p_file_name, ''), 200), v_total)
   returning id into v_run;
 
-  with src as (
-    select e.ord,
-           left(coalesce(e.val->>'spec', ''), 6000) as spec,
-           left(trim(coalesce(e.val->>'compliance', '')), 200) as c,
-           left(trim(coalesce(e.val->>'remarks', '')), 4000)   as r
-      from jsonb_array_elements(p_rows) with ordinality as e(val, ord)
-  ), uniq as (
-    select distinct on (public.cm__norm(spec)) public.cm__norm(spec) as norm, trim(spec) as spec, c, r
-      from src
-     where (c <> '' or r <> '') and length(public.cm__norm(spec)) >= 8
-     order by public.cm__norm(spec), ord desc
-  ), old as (
-    select l.norm_hash, (l.status = 'answered') as answered, l.compliance, l.remarks from public.cm_lines l
-     where l.factory_id = f.id and l.norm_hash in (select md5(norm) from uniq)
-  ), up as (
-    insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, compliance, remarks,
-                                 status, first_run_id, answered_by, answered_at, answer_source, times_seen)
-    select f.product_id, f.id, md5(q.norm), q.norm, q.spec, q.c, q.r, 'answered', v_run, a.id, now(), 'upload', 0
-      from uniq q
-    on conflict (factory_id, norm_hash) do update
-       set compliance = excluded.compliance, remarks = excluded.remarks, status = 'answered',
-           answered_by = excluded.answered_by, answered_at = now(), answer_source = 'upload'
-     where public.cm_lines.status <> 'answered'          -- an answered line keeps its answer
-    returning id, norm_hash, compliance, remarks
-  ), logged as (
-    insert into public.cm_answer_log (line_id, compliance, remarks, source, run_id, user_id)
-    select id, compliance, remarks, 'upload', v_run, a.id from up
-    returning 1
-  )
-  select (select count(*) from uniq),
-         (select count(*) from up where norm_hash not in (select norm_hash from old)),
-         (select count(*) from up where norm_hash in (select norm_hash from old)),
-         (select count(*) from uniq q join old o on o.norm_hash = md5(q.norm)
-           where o.answered and (o.compliance, o.remarks) is distinct from (q.c, q.r)),
-         (select count(*) from logged)
-    into v_unique, v_added, v_updated, v_kept, v_total;   -- last value only forces the log insert to run
+  create temp table if not exists cm__import_tmp (
+    norm text, spec text, c text, r text, cm text, sr text, row_type text, part int, section text, section_sr text, ord int,
+    was_there boolean, was_answered boolean, old_c text, old_r text) on commit drop;
+  truncate cm__import_tmp;
+  insert into cm__import_tmp (norm, spec, c, r, cm, sr, row_type, part, section, section_sr, ord)
+  select distinct on (public.cm__norm(x.spec)) public.cm__norm(x.spec), trim(x.spec), x.c, x.r, x.cm, x.sr, x.row_type, x.part, x.section, x.section_sr, x.ord
+    from (select e.ord::int as ord,
+                 left(coalesce(e.val->>'spec', ''), 6000) as spec,
+                 left(trim(coalesce(e.val->>'compliance', '')), 200) as c,
+                 left(trim(coalesce(e.val->>'remarks', '')), 4000)   as r,
+                 left(trim(coalesce(e.val->>'comments', '')), 4000)  as cm,
+                 left(trim(coalesce(e.val->>'sr', '')), 20) as sr,
+                 case when e.val->>'type' in ('letter', 'number', 'text') then e.val->>'type' else 'text' end as row_type,
+                 case when (e.val->>'part') ~ '^[0-9]$' then (e.val->>'part')::int else 0 end as part,
+                 left(trim(coalesce(e.val->>'section', '')), 120) as section,
+                 left(trim(coalesce(e.val->>'section_sr', '')), 20) as section_sr
+            from jsonb_array_elements(p_rows) with ordinality as e(val, ord)) x
+   where (x.c <> '' or x.r <> '' or x.cm <> '') and length(public.cm__norm(x.spec)) >= 8
+   order by public.cm__norm(x.spec), x.ord desc;
+  update cm__import_tmp t set was_there = true, was_answered = (l.status = 'answered'), old_c = l.compliance, old_r = l.remarks
+    from public.cm_lines l where l.factory_id = f.id and l.norm_hash = md5(t.norm);
 
-  v_total := jsonb_array_length(p_rows);
+  -- new clauses
+  insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, compliance, remarks, comments,
+                               status, first_run_id, answered_by, answered_at, answer_source, times_seen,
+                               part, section, sr, row_type, section_sr, home_run, home_seq)
+  select f.product_id, f.id, md5(t.norm), t.norm, t.spec, t.c, t.r, t.cm,
+         case when t.c <> '' or t.r <> '' then 'answered' else 'open' end, v_run,
+         case when t.c <> '' or t.r <> '' then a.id end, case when t.c <> '' or t.r <> '' then now() end,
+         case when t.c <> '' or t.r <> '' then 'upload' else '' end, 0,
+         t.part, t.section, t.sr, t.row_type, t.section_sr, v_run, t.ord
+    from cm__import_tmp t where t.was_there is not true
+  on conflict (factory_id, norm_hash) do nothing;
+  -- lines with no answer yet are filled; answered lines keep their answer
+  update public.cm_lines l
+     set compliance = t.c, remarks = t.r, status = 'answered', answered_by = a.id, answered_at = now(), answer_source = 'upload'
+    from cm__import_tmp t
+   where l.factory_id = f.id and l.norm_hash = md5(t.norm) and t.was_there and t.was_answered is not true and (t.c <> '' or t.r <> '');
+  -- internal comments only where the line has none
+  update public.cm_lines l set comments = t.cm
+    from cm__import_tmp t
+   where l.factory_id = f.id and l.norm_hash = md5(t.norm) and t.was_there and t.cm <> '' and l.comments = '';
+  insert into public.cm_answer_log (line_id, compliance, remarks, source, run_id, user_id)
+  select l.id, t.c, t.r, 'upload', v_run, a.id
+    from cm__import_tmp t join public.cm_lines l on l.factory_id = f.id and l.norm_hash = md5(t.norm)
+   where (t.c <> '' or t.r <> '') and (t.was_there is not true or t.was_answered is not true);
+
+  select count(*) filter (where c <> '' or r <> ''),
+         count(*) filter (where was_there is not true and (c <> '' or r <> '')),
+         count(*) filter (where was_there and was_answered is not true and (c <> '' or r <> '')),
+         count(*) filter (where was_answered and (c <> '' or r <> '') and (old_c, old_r) is distinct from (c, r))
+    into v_unique, v_added, v_updated, v_kept from cm__import_tmp;
+
   update public.cm_runs set unique_count = v_unique, matched_count = v_added + v_updated where id = v_run;
   return jsonb_build_object('ok', true, 'rows', v_total, 'unique_lines', v_unique,
                             'added', v_added, 'updated', v_updated, 'kept', v_kept,
@@ -1193,7 +1223,7 @@ begin
   f := public.cm__factory(p_factory_id);
   return jsonb_build_object('lines', coalesce((
     select jsonb_agg(jsonb_build_object('spec_text', l.spec_text, 'compliance', l.compliance,
-                                        'remarks', l.remarks, 'times_seen', l.times_seen,
+                                        'remarks', l.remarks, 'comments', l.comments, 'times_seen', l.times_seen,
                                         'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section),
                                         'sr', l.sr, 'row_type', l.row_type, 'section_sr', l.section_sr,
                                         'home_run', l.home_run, 'file_name', o.file_name)
