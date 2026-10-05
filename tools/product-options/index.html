@@ -63,6 +63,32 @@
   .po-model > summary { cursor: pointer; padding: 10px 14px; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; list-style: none; }
   .po-model > .po-tree { margin: 0 14px 12px 23px; }
   .po-root .hint { font-weight: 400; font-size: 13px; flex: 1 1 100%; margin: 0; }
+  /* FCU: one table per series, one column per model */
+  .po-matrix-box { padding: 0 14px 14px; }
+  .po-matrix-box > .hint { margin: 0 0 8px; }
+  .po-matrix-wrap { max-height: 72vh; overflow: auto; }
+  .po-matrix { table-layout: fixed; }
+  .po-matrix th, .po-matrix td { vertical-align: top; padding: 8px 12px; overflow-wrap: anywhere; }
+  .po-matrix thead th { position: sticky; top: 0; z-index: 2; white-space: normal; }
+  .po-matrix th.unit { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); }
+  .po-matrix th.unit small { display: block; font-weight: 400; color: var(--text-soft); }
+  .po-matrix td.comp, .po-matrix thead th:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--border); }
+  .po-matrix thead th:first-child { z-index: 3; background: var(--surface-2); }
+  .po-matrix td.comp { font-weight: 600; padding-left: 22px; }
+  .po-matrix tr.sec td { background: var(--surface-2); font-weight: 650; border-top: 2px solid var(--border); }
+  .po-matrix tr.sub td { padding-left: 22px; font-size: 12px; font-weight: 650; color: var(--text-soft); padding-top: 10px; padding-bottom: 2px; border-bottom: 0; }
+  .po-matrix tr.off td { opacity: .6; }
+  .po-matrix td.diff { font-weight: 600; }
+  .po-matrix td.d1 { background: var(--warn-bg); }
+  .po-matrix td.d2 { background: color-mix(in srgb, var(--brand) 26%, var(--surface)); }
+  .po-matrix td.d3 { background: var(--ok-bg); }
+  .po-matrix td.d4 { background: var(--danger-bg); }
+  .po-matrix td.d5 { background: color-mix(in srgb, var(--brand-sky) 50%, var(--surface)); }
+  .po-cellv + .po-cellv { margin-top: 3px; }
+  .po-cellv small { color: var(--text-soft); font-size: 12px; white-space: nowrap; }
+  .po-cellv.off { text-decoration: line-through; opacity: .7; }
+  .po-matrix .po-tools { gap: 10px; }
+  .po-matrix .po-form { min-width: 0; }
   .po-add { margin: 10px 0 0 27px; }
   @media (max-width: 560px) {
     .po-row { grid-template-columns: 1fr; }
@@ -104,6 +130,7 @@
           <div class="po-facts" id="po-facts"></div>
         </div>
         <div class="row">
+          <label class="check" id="po-only-wrap" hidden><input type="checkbox" id="po-only"> Only rows that differ</label>
           <label class="check" id="po-edit-wrap" hidden><input type="checkbox" id="po-edit"> Edit</label>
           <button type="button" class="btn ghost sm" id="po-open">Expand all</button>
           <button type="button" class="btn ghost sm" id="po-close">Collapse all</button>

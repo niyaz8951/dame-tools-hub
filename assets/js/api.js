@@ -431,7 +431,7 @@
     }),
     cmAdminDeleteLine: demo(function (db, t, id) { editor(db, t, "compliance-maker"); db.cm.lines = db.cm.lines.filter(function (x) { return x.id !== id; }); return { ok: true }; }),
     cmAdminImport: demo(function (db, t, d) {
-      var a = editor(db, t, "compliance-maker"), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, n = 0;
+      var a = editor(db, t, "compliance-maker"), f = cmFactory(db, d.factoryId), uniq = {}, added = 0, updated = 0, kept = 0, n = 0;
       if (!d.rows || !d.rows.length) fail("No rows were found in that file.");
       d.rows.forEach(function (row) {
         var c = (row.compliance || "").trim(), r = (row.remarks || "").trim(), k = cmNorm(row.spec);
@@ -440,11 +440,12 @@
       Object.keys(uniq).forEach(function (k) {
         n++; var v = uniq[k], l = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === k; })[0];
         if (!l) { added++; l = { id: "l" + Date.now() + "_" + n, factory_id: f.id, norm_text: k, spec_text: v.spec, times_seen: 0, last_seen_at: "" }; db.cm.lines.push(l); }
-        else if (l.compliance !== v.c || l.remarks !== v.r) updated++; else return;
+        else if (l.status === "answered") { if (l.compliance !== v.c || l.remarks !== v.r) kept++; return; }   // an answered line keeps its answer
+        else updated++;
         l.compliance = v.c; l.remarks = v.r; l.status = "answered"; l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "upload";
       });
       db.cm.runs.unshift({ id: "r" + Date.now(), kind: "library-upload", created_at: new Date().toISOString(), user: a.full_name, username: a.username, product: f.product, factory: f.name, source: "xlsx", file_name: d.fileName || "", line_count: d.rows.length, unique_count: n, matched_count: added + updated });
-      return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, unchanged: n - added - updated, skipped: d.rows.length - n };
+      return { ok: true, rows: d.rows.length, unique_lines: n, added: added, updated: updated, kept: kept, unchanged: n - added - updated - kept, skipped: d.rows.length - n };
     }),
     cmAdminRuns: demo(function (db, t) { editor(db, t, "compliance-maker"); return { total: db.cm.runs.length, runs: db.cm.runs.slice(0, 50) }; }),
     cmAdminExport: demo(function (db, t, factoryId) {
@@ -717,6 +718,7 @@
         var c = String(d.compliance == null ? x.compliance : d.compliance).trim(), m = String(d.remarks == null ? x.remarks : d.remarks).trim();
         if (!c && !m) fail("An approved answer cannot be empty.");
         var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0];
+        if (l && l.status === "answered" && (l.compliance !== c || l.remarks !== m)) fail("The library already has an answer for this clause, so it was kept. Change it in the Compliance and Remarks boxes if it needs correcting.");
         if (l) { l.compliance = c; l.remarks = m; l.status = "answered"; l.answered_by = a.full_name; l.answered_at = now; l.answer_source = "approved"; }
         db.cm.runs.forEach(function (rr) { (rr.rows || []).forEach(function (y) {
           if (y.line_id === x.line_id && y.review === "pending" && (y === x || (y.compliance === c && y.remarks === m))) { y.review = "approved"; y.reviewed_by = a.id; y.reviewed_at = now; }

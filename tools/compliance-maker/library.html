@@ -116,7 +116,7 @@
     <section id="tab-upload" class="stack" hidden>
       <div class="card stack">
         <h2>Upload a filled compliance</h2>
-        <p class="muted">Use an Excel file with <b>Specifications</b>, <b>Compliance</b> and <b>Remarks</b> columns, for example a sheet downloaded from the Compliance Maker and filled in. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once.</p>
+        <p class="muted">Use an Excel file with <b>Specifications</b>, <b>Compliance</b> and <b>Remarks</b> columns, for example a sheet downloaded from the Compliance Maker and filled in. Rows with an answer are added to the library for <b id="upScope"></b>; each clause is kept once. A clause that already has an answer in the library is never overwritten: it is skipped.</p>
         <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose an Excel file or drop one here">
           <b>Choose an .xlsx file or drop it here</b>
           <div class="small muted">Nothing is saved until you press Add to library.</div>
@@ -138,7 +138,8 @@
           <div class="notice ok" id="upResultMsg"></div>
           <div class="result">
             <div class="stat"><b id="rAdded">0</b><span>new lines</span></div>
-            <div class="stat"><b id="rUpdated">0</b><span>answers updated</span></div>
+            <div class="stat"><b id="rUpdated">0</b><span>open lines answered</span></div>
+            <div class="stat"><b id="rKept">0</b><span>already answered, kept as they are</span></div>
             <div class="stat"><b id="rSame">0</b><span>already the same</span></div>
             <div class="stat"><b id="rSkipped">0</b><span>rows skipped</span></div>
           </div>
@@ -244,7 +245,9 @@
         el("div", {}, [el("b", { text: a.by }), " · " + a.project + " · " + a.client + " (" + a.client_type + ")" + (a.at ? " · " + fmt(a.at) : "")]),
         el("div", { text: (a.compliance || "(no compliance)") + (a.remarks ? " - " + a.remarks : "") }),
         wait ? el("div", { "class": "row" }, [
-          el("button", { "class": "btn sm", type: "button", text: "Use this answer", onclick: function (e) { decide("approve", e.currentTarget); } }),
+          // a clause that already has a library answer keeps it: the user's answer can only be turned down, or typed in by hand
+          (l.compliance || l.remarks) ? el("span", { "class": "meta", text: "The library already has an answer. It is kept." })
+            : el("button", { "class": "btn sm", type: "button", text: "Use this answer", onclick: function (e) { decide("approve", e.currentTarget); } }),
           el("button", { "class": "btn ghost sm", type: "button", text: "Do not take", onclick: function (e) { decide("reject", e.currentTarget); } })])
              : el("div", { "class": "meta", text: a.review === "approved" ? "Taken into the library" : a.review === "rejected" ? "Not taken, project only" : "Same as the library" })
       ]));
@@ -412,10 +415,10 @@
         else if ((old.compliance || "") === r.compliance && (old.remarks || "") === r.remarks) same++;
         else repl++;
       });
-      box.textContent = repl ? repl + (repl === 1 ? " answer already in the library will be replaced" : " answers already in the library will be replaced") +
-                               " by this file. " + fresh + " new answers, " + same + " already the same."
-                             : "No answer already in the library will be replaced. " + fresh + " new answers, " + same + " already the same.";
-      box.className = "notice " + (repl ? "warn" : "ok"); box.hidden = false;
+      box.textContent = repl ? repl + (repl === 1 ? " clause already has a different answer in the library. It is kept; this file's answer for it is skipped" : " clauses already have a different answer in the library. They are kept; this file's answers for them are skipped") +
+                               ". " + fresh + " new answers, " + same + " already the same."
+                             : "Nothing in the library is overwritten. " + fresh + " new answers, " + same + " already the same.";
+      box.className = "notice " + (repl ? "warn" : "ok"); box.hidden = false;   // an answered line is never overwritten by an upload
     }, function (err) {
       if (pending !== p) return;
       box.textContent = "Could not check which answers this file replaces: " + (err && err.message ? err.message : err);
@@ -435,7 +438,7 @@
     Api.cmAdminImport(Hub.token(), { factoryId: factoryId(), fileName: pending.fileName, rows: pending.rows }).then(function (res) {
       btn.disabled = false; var name = pending.fileName, ignored = pending.read - pending.rows.length; resetUpload();
       $("upResultMsg").textContent = name + " added to the library for " + scopeName() + ".";
-      $("rAdded").textContent = res.added; $("rUpdated").textContent = res.updated; $("rSame").textContent = res.unchanged; $("rSkipped").textContent = res.skipped + ignored;
+      $("rAdded").textContent = res.added; $("rUpdated").textContent = res.updated; $("rKept").textContent = res.kept || 0; $("rSame").textContent = res.unchanged; $("rSkipped").textContent = res.skipped + ignored;
       $("upResult").hidden = false; offset = 0; loadLines();
     }, function (err) { btn.disabled = false; show($("upMsg"), err.message); });
   });

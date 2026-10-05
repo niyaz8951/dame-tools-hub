@@ -8,14 +8,16 @@
    Editors (admins, and users with "Can edit" for product-options)
    get the Edit switch: add / change / delete special options and
    notes, take a value or a row out of the tree and bring it back.
-   FCU: the values come per unit model (tree.models), so the tree is
-   series > model > section > component, each model with the values
-   its units had (owner's rule, 2 Oct 2026). A trailing N on the
+   FCU: the values come per unit model (tree.models). Each series is
+   one table: rows = section > component, one column per model with
+   the values its units had, differences from the first model
+   highlighted (owner's rules, 2 and 5 Oct 2026; seriesTable). A trailing N on the
    Unit Model is a motor variant of the same model (FWW1600TAN is
    filed under FWW1600TA; the database does that), so the Unit Model
    row inside a model lists the variants seen. Special options and
-   notes are per section or row, not per model: they are drawn once
-   under "All models". AHU trees have no models and stay as before.
+   notes are per section or row, not per model: they sit in the last
+   column of every series table, where editors add them.
+   AHU trees have no models and stay as before.
    ============================================================ */
 (function () {
   'use strict';
@@ -278,6 +280,101 @@
     return { wrap: wrap, drawn: drawn, rows: nRows, values: nVals, keys: keys };
   }
 
+  /* FCU: one table per series. Rows = section > component, one column per model, so the models
+     can be compared at a glance (owner's rule, 5 Oct 2026). The first model is the reference: a
+     cell whose values differ from it is highlighted, one colour per different set of values, as
+     in Datasheet Notes. The last column holds the special options and notes of the row (they are
+     for every model) and, with Edit on, the buttons to add them and to leave the row out.
+     The Component column stays in view when the table scrolls sideways. */
+  function seriesTable(sr, secs, q, words, edit, only) {
+    var srHit = !!q && words.every(function (w) { return low(sr.name).indexOf(w) >= 0; });
+    var names = sr.models.map(function (m) { return m.model; });
+    // a search for a model name keeps that model's column only
+    var cols = q && !srHit ? sr.models.filter(function (m) { return words.every(function (w) { return low(m.model).indexOf(w) >= 0; }); }) : [];
+    var modelHit = cols.length > 0;
+    if (!modelHit) cols = sr.models;
+    var out = { node: null, rows: 0, values: 0, keys: {}, sections: [], models: cols.length, differ: 0 };
+    var body = el('tbody'), nCols = cols.length + 2;
+
+    secs.forEach(function (s) {
+      var lines = [], secHit = srHit || modelHit || (q && words.every(function (w) { return low(s.name).indexOf(w) >= 0; }));
+      s.rows.forEach(function (r) {
+        if (r.off && !edit) return;
+        var cells = cols.map(function (m) { return r.values.filter(function (v) { return v.model === m.model && (edit || !v.hidden); }); });
+        var inSeries = r.values.some(function (v) { return names.indexOf(v.model) >= 0 && (edit || !v.hidden); });
+        if (!inSeries) return;                                       // this series never had the row
+        if (!r.off) { out.keys[r.key] = 1; cells.forEach(function (c) { out.values += c.filter(function (v) { return !v.hidden; }).length; }); }
+        // compare with the first model: same set of values = same mark
+        var sig = cells.map(function (c) { return c.filter(function (v) { return !v.hidden; }).map(function (v) { return low(v.v).replace(/\s+/g, ' '); }).sort().join('\u0001'); });
+        var seen = {}, next = 0, marks = sig.map(function (g, i) { if (i === 0 || g === sig[0]) return 0; if (!seen[g]) seen[g] = ++next; return seen[g]; });
+        if (/\|unit model$/.test(r.key)) marks = marks.map(function () { return 0; });   // the model name differs by definition
+        var differs = marks.some(Boolean);
+        if (differs && !r.off) out.differ++;
+        if (only && !differs) return;
+        // the search looks at this series' own values, not at what other series printed in the row
+        if (q && !secHit && !matches(q, s, { sub: r.sub, name: r.name, values: [].concat.apply([], cells), extras: r.extras })) return;
+        lines.push({ r: r, cells: cells, marks: marks, differs: differs });
+      });
+      if (lines.length || s.rows.some(function (r) { return r.values.some(function (v) { return names.indexOf(v.model) >= 0; }); })) out.sections.push(s.name);
+      if (!lines.length) return;
+
+      // section row: its name, and the special options and notes of the whole section
+      var sx = el('div', { 'class': 'po-vals' }), sctx = { where: s.name, anchor: function () { return sx; } };
+      extraNodes(s.extras, sctx, edit).forEach(function (n) { sx.appendChild(n); });
+      if (edit) sx.appendChild(el('div', { 'class': 'po-tools' }, [
+        xbtn('+ Special option for the section', function () { openForm(sx, { kind: 'option', section: s.name, key: '', where: s.name }); }),
+        xbtn('+ Note for the section', function () { openForm(sx, { kind: 'note', section: s.name, key: '', where: s.name }); })]));
+      body.appendChild(el('tr', { 'class': 'sec' }, [el('td', { colspan: String(nCols - 1), text: s.name }), el('td', {}, [sx])]));
+
+      var sub = '';
+      lines.forEach(function (ln) {
+        var r = ln.r;
+        if (r.sub !== sub) { sub = r.sub; if (sub) body.appendChild(el('tr', { 'class': 'sub' }, [el('td', { colspan: String(nCols), text: sub })])); }
+        var xcell = el('div', { 'class': 'po-vals' }), ctx = { where: s.name + ' > ' + r.name, anchor: function () { return xcell; } };
+        extraNodes(r.extras, ctx, edit).forEach(function (n) { xcell.appendChild(n); });
+        if (edit) xcell.appendChild(el('div', { 'class': 'po-tools' }, [
+          xbtn('+ Special option', function () { openForm(xcell, { kind: 'option', section: s.name, key: r.key, where: ctx.where }); }),
+          xbtn('+ Note', function () { openForm(xcell, { kind: 'note', section: s.name, key: r.key, where: ctx.where }); }),
+          xbtn(r.off ? 'Bring row back' : 'Leave out row', function (e) {
+            busy(e.currentTarget, Api.poAdminSetHidden(window.Hub.token(), { factoryId: tree.factory.id, key: r.key, hidden: !r.off }),
+                 r.off ? 'Row is back in the tree.' : 'Row left out for every ' + tree.factory.product + ' factory.');
+          }, !r.off)]));
+        var tr = el('tr', { 'class': (r.off ? 'off' : '') + (ln.differs ? ' differs' : '') || null }, [el('td', { 'class': 'comp', text: r.name + (r.off ? ' (left out)' : '') })]);
+        ln.cells.forEach(function (vals, i) {
+          var mk = ln.marks[i], td = el('td', { 'class': mk ? 'diff d' + ((mk - 1) % 5 + 1) : null, title: mk ? 'Differs from ' + cols[0].model : null });
+          var xk = cols[i].model + '|' + r.key, all = expanded[xk] || edit || vals.length <= 4;
+          if (!vals.length) td.appendChild(el('span', { 'class': 'muted', text: '-' }));
+          var rg = vals.length > 4 ? range(vals.filter(function (v) { return !v.hidden; })) : '';
+          if (rg) td.appendChild(el('div', { 'class': 'po-cellv', text: rg }));
+          (all ? vals : (rg ? [] : vals.slice(0, 4))).forEach(function (v) {
+            var line = el('div', { 'class': 'po-cellv' + (v.hidden ? ' off' : '') }, [el('span', { text: v.v }),
+              vals.length > 1 ? el('small', { text: ' ' + times(v.n), title: 'A datasheet run again is counted again.' }) : null]);
+            if (edit) line.appendChild(xbtn(v.hidden ? 'Bring back' : 'Take out', function (e) {
+              busy(e.currentTarget, Api.poAdminSetHidden(window.Hub.token(), { factoryId: tree.factory.id, key: r.key, valueKey: v.k, model: v.model || '', hidden: !v.hidden }), v.hidden ? 'Value is back in the tree.' : 'Value taken out.');
+            }));
+            td.appendChild(line);
+          });
+          if (!edit && vals.length > 4) td.appendChild(el('button', { type: 'button', 'class': 'po-more', text: all ? 'Show fewer' : (rg ? 'Show all ' + vals.length : '+ ' + (vals.length - 4) + ' more'),
+            onclick: function () { expanded[xk] = !all; render(); } }));
+          tr.appendChild(td);
+        });
+        tr.appendChild(el('td', {}, [xcell]));
+        body.appendChild(tr); out.rows++;
+      });
+    });
+
+    var head = el('tr', {}, [el('th', { text: 'Section / component' })]
+      .concat(cols.map(function (m) { return el('th', { 'class': 'unit' }, [el('div', { text: m.model }), el('small', { text: units(m.units) })]); }),
+              [el('th', { text: 'Special options and notes' })]));
+    var colW = cols.length > 8 ? 150 : 190, narrow = window.matchMedia('(max-width: 560px)').matches, lead = narrow ? [130] : [230], extraW = edit ? 300 : 240;
+    var colgroup = el('colgroup', {}, lead.concat(cols.map(function () { return colW; }), [extraW]).map(function (w) { return el('col', { style: 'width:' + w + 'px' }); }));
+    var table = el('table', { 'class': 'table po-matrix', style: 'min-width:' + (lead[0] + colW * cols.length + extraW) + 'px' }, [colgroup, el('thead', {}, [head]), body]);
+    out.node = el('div', { 'class': 'po-matrix-box' }, [
+      cols.length > 1 ? el('p', { 'class': 'hint', text: cols[0].model + ' is the reference. A cell with other values than it is highlighted, one colour for each different set of values.' }) : null,
+      el('div', { 'class': 'table-wrap po-matrix-wrap', tabindex: '0', role: 'region', 'aria-label': 'Series ' + sr.name + ', models side by side' }, [table])]);
+    return out;
+  }
+
   /* models grouped by series, in the order the database gives (series, then most units first) */
   function seriesList() {
     var out = [], by = {};
@@ -303,49 +400,38 @@
       var g = drawSections(secs, q, edit, '', false);
       drawn = g.drawn; nRows = g.rows; nVals = g.values; parts.push(g.wrap);
     } else {
-      var words = q ? q.split(/\s+/) : [];
+      var words = q ? q.split(/\s+/) : [], only = $('po-only').checked, inTable = {};
       series.forEach(function (sr) {
-        var srHit = q && words.every(function (w) { return low(sr.name).indexOf(w) >= 0; });
-        var box = el('div', { 'class': 'po-models' }), shownModels = 0;
-        sr.models.forEach(function (m) {
-          var mHit = srHit || (q && words.every(function (w) { return low(m.model).indexOf(w) >= 0; }));
-          var g = drawSections(secs, mHit ? '' : q, edit, m.model, false);
-          nVals += g.values;
-          Object.keys(g.keys).forEach(function (k) { distinct[k] = 1; });   // a component counts once, however many models have it
-          if (!g.drawn) return;
-          shownModels++; drawn += g.drawn;
-          var mk = 'model:' + low(m.model);
-          var d = el('details', { 'class': 'po-model', open: q ? true : closed[mk] === false }, [   // models start closed
-            el('summary', {}, [el('span', { text: m.model }), el('span', { 'class': 'count', text: units(m.units) })]),
-            g.wrap
-          ]);
-          d.addEventListener('toggle', function () { if (!q) closed[mk] = !d.open; });
-          box.appendChild(d);
-        });
-        if (!shownModels) return;
+        var g = seriesTable(sr, secs, q, words, edit, only);
+        nVals += g.values;
+        Object.keys(g.keys).forEach(function (k) { distinct[k] = 1; });   // a component counts once, however many models have it
+        g.sections.forEach(function (n) { inTable[low(n)] = 1; });
+        if (!g.rows) return;
+        drawn += g.rows;
         var sk = 'series:' + low(sr.name);
         var sd = el('details', { 'class': 'po-series', open: q ? true : !closed[sk] }, [
           el('summary', {}, [el('span', { text: 'Series ' + sr.name }), el('span', { 'class': 'count',
-            text: shownModels + (shownModels === 1 ? ' model' : ' models') + ' · ' + units(sr.units) })]),
-          box
+            text: g.models + (g.models === 1 ? ' model' : ' models') + ' · ' + units(sr.units) + (g.differ ? ' · ' + g.differ + (g.differ === 1 ? ' row differs' : ' rows differ') + ' between models' : '') })]),
+          g.node
         ]);
         sd.addEventListener('toggle', function () { if (!q) closed[sk] = !sd.open; });
         parts.push(sd);
       });
       nRows = Object.keys(distinct).length;
-      // special options and notes are per section or row, for every model
-      var x = drawSections(secs, q, edit, '', true);
+      // sections that have only special options and notes (no datasheet values in any series)
+      var x = drawSections(secs.filter(function (s) { return !inTable[low(s.name)]; }), q, edit, '', true);
       if (x.drawn) {
         drawn += x.drawn;
         var xk = 'series:all';
         var xd = el('details', { 'class': 'po-series all', open: q ? true : !closed[xk] }, [
-          el('summary', {}, [el('span', { text: 'All models' }), el('span', { 'class': 'count', text: 'special options and notes' })]),
+          el('summary', {}, [el('span', { text: 'Other sections' }), el('span', { 'class': 'count', text: 'special options and notes' })]),
           x.wrap
         ]);
         xd.addEventListener('toggle', function () { if (!q) closed[xk] = !xd.open; });
         parts.push(xd);
       }
     }
+    $('po-only-wrap').hidden = !modelMode();
 
     var facts = $('po-facts'); facts.textContent = '';
     [modelMode() ? series.length + (series.length === 1 ? ' series' : ' series') + ', ' + tree.models.length + (tree.models.length === 1 ? ' model' : ' models') : secs.length + (secs.length === 1 ? ' section' : ' sections'),
@@ -372,7 +458,7 @@
     if (drawn || edit) {
       host.appendChild(el('div', { 'class': 'po-root' }, [
         el('span', { text: tree.factory.product }), el('span', { 'class': 'badge', text: tree.factory.name + ' factory' }),
-        modelMode() ? el('span', { 'class': 'hint', text: 'Series > model > section. A model shows the values its units had on the datasheets run so far.' }) : null]));
+        modelMode() ? el('span', { 'class': 'hint', text: 'One table per series, one column per model, with the values its units had on the datasheets run so far. Scroll sideways to see every model.' }) : null]));
       parts.forEach(function (n) { host.appendChild(n); });
     }
     if (edit && !q) host.appendChild(addSection(secs));
@@ -412,6 +498,7 @@
   var timer;
   search.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(render, 150); });
   $('po-edit').addEventListener('change', render);
+  $('po-only').addEventListener('change', render);
   function setAll(open) {
     if (!tree) return;
     build().forEach(function (s) { closed[low(s.name)] = !open; });

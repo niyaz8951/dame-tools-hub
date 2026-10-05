@@ -1089,8 +1089,10 @@ end $$;
 
 -- Load a filled compliance sheet into the library.
 --   p_rows: [{ "spec": "...", "compliance": "Comply", "remarks": "..." }, ...]
--- Only rows that carry an answer are taken. Each distinct clause becomes (or updates)
--- one library line; when the same clause appears twice in the file the last one wins.
+-- Only rows that carry an answer are taken. Each distinct clause becomes a new library line or
+-- fills a line that has no answer yet; when the same clause appears twice in the file the last
+-- one wins. A line that already has an answer is NEVER overwritten (owner's rule, 5 Oct 2026):
+-- the file's answer for it is skipped and counted as "kept". An editor changes it by hand.
 create or replace function public.cm_admin_import(
   p_token text, p_factory_id text, p_file_name text, p_rows jsonb)
 returns jsonb
@@ -1099,7 +1101,7 @@ declare
   a public.app_users;
   f public.cm_factories;
   v_run uuid;
-  v_total int; v_unique int; v_added int; v_updated int;
+  v_total int; v_unique int; v_added int; v_updated int; v_kept int;
 begin
   a := public.app__require_editor(p_token, 'compliance-maker');
   f := public.cm__factory(p_factory_id);
@@ -1125,7 +1127,7 @@ begin
      where (c <> '' or r <> '') and length(public.cm__norm(spec)) >= 8
      order by public.cm__norm(spec), ord desc
   ), old as (
-    select l.norm_hash from public.cm_lines l
+    select l.norm_hash, (l.status = 'answered') as answered, l.compliance, l.remarks from public.cm_lines l
      where l.factory_id = f.id and l.norm_hash in (select md5(norm) from uniq)
   ), up as (
     insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, compliance, remarks,
@@ -1135,8 +1137,7 @@ begin
     on conflict (factory_id, norm_hash) do update
        set compliance = excluded.compliance, remarks = excluded.remarks, status = 'answered',
            answered_by = excluded.answered_by, answered_at = now(), answer_source = 'upload'
-     where public.cm_lines.compliance is distinct from excluded.compliance
-        or public.cm_lines.remarks    is distinct from excluded.remarks
+     where public.cm_lines.status <> 'answered'          -- an answered line keeps its answer
     returning id, norm_hash, compliance, remarks
   ), logged as (
     insert into public.cm_answer_log (line_id, compliance, remarks, source, run_id, user_id)
@@ -1146,14 +1147,16 @@ begin
   select (select count(*) from uniq),
          (select count(*) from up where norm_hash not in (select norm_hash from old)),
          (select count(*) from up where norm_hash in (select norm_hash from old)),
+         (select count(*) from uniq q join old o on o.norm_hash = md5(q.norm)
+           where o.answered and (o.compliance, o.remarks) is distinct from (q.c, q.r)),
          (select count(*) from logged)
-    into v_unique, v_added, v_updated, v_total;   -- last value only forces the log insert to run
+    into v_unique, v_added, v_updated, v_kept, v_total;   -- last value only forces the log insert to run
 
   v_total := jsonb_array_length(p_rows);
   update public.cm_runs set unique_count = v_unique, matched_count = v_added + v_updated where id = v_run;
   return jsonb_build_object('ok', true, 'rows', v_total, 'unique_lines', v_unique,
-                            'added', v_added, 'updated', v_updated,
-                            'unchanged', v_unique - v_added - v_updated,
+                            'added', v_added, 'updated', v_updated, 'kept', v_kept,
+                            'unchanged', v_unique - v_added - v_updated - v_kept,
                             'skipped', v_total - v_unique);
 end $$;
 
@@ -2345,6 +2348,11 @@ begin
     v_c := left(trim(coalesce(p_compliance, rl.compliance)), 200);
     v_r := left(trim(coalesce(p_remarks, rl.remarks)), 4000);
     if v_c = '' and v_r = '' then perform public.app__fail('An approved answer cannot be empty.'); end if;
+    -- a library line that already has an answer is never overwritten from a project
+    if exists (select 1 from public.cm_lines l where l.id = rl.line_id and l.status = 'answered'
+                  and (l.compliance, l.remarks) is distinct from (v_c, v_r)) then
+      perform public.app__fail('The library already has an answer for this clause, so it was kept. Change it in the Compliance and Remarks boxes if it needs correcting.');
+    end if;
     update public.cm_lines set compliance = v_c, remarks = v_r, status = 'answered',
            answered_by = a.id, answered_at = now(), answer_source = 'approved'
      where id = rl.line_id;
