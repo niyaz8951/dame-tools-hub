@@ -72,6 +72,8 @@
     prSave: function (t, d) { return rpc("pr_save", { p_token: t, p_id: d.id || null, p_name: d.name, p_client_type: d.clientType, p_client_name: d.clientName, p_region: d.region }); },
     prGet: function (t, id) { return rpc("pr_get", { p_token: t, p_id: id }); },
     prDelete: function (t, id) { return rpc("pr_delete", { p_token: t, p_id: id }); },
+    prShareGet: function (t, id) { return rpc("pr_share_get", { p_token: t, p_id: id }); },
+    prShareSet: function (t, id, userIds) { return rpc("pr_share_set", { p_token: t, p_id: id, p_user_ids: userIds || [] }); },
     prExport: function (t, id) { return rpc("pr_export", { p_token: t, p_id: id }); },
     prNoteSave: function (t, d) { return rpc("pr_note_save", { p_token: t, p_project_id: d.projectId, p_product_id: d.productId, p_file_names: d.fileNames || "", p_columns: d.columns, p_rows: d.rows }); },
     prNoteGet: function (t, id) { return rpc("pr_note_get", { p_token: t, p_note_id: id }); },
@@ -235,7 +237,7 @@
   // ---- project helpers (mirror pr__project, pr__log, pr__name in schema.sql) ----
   function prProject(db, u, id) {
     var p = db.pr.projects.filter(function (x) { return x.id === id; })[0];
-    if (!p || !(isAdminRole(u) || p.created_by === u.id)) fail("That project is not available. Choose a project first.");
+    if (!p || !(isAdminRole(u) || p.created_by === u.id || (p.members || []).indexOf(u.id) >= 0)) fail("That project is not available. Choose a project first.");
     return p;
   }
   function prLog(db, projectId, u, action, detail) { db.pr.log.push({ project_id: projectId, user_id: u.id, action: action, detail: String(detail || "").slice(0, 400), at: new Date().toISOString() }); }
@@ -247,13 +249,16 @@
     runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.review === "pending") pending++; }); if (r.created_at > last) last = r.created_at; });
     notes.forEach(function (n) { if (n.created_at > last) last = n.created_at; });
     return { id: p.id, name: p.name, client_type: p.client_type, client_name: p.client_name, region: p.region, created_at: p.created_at,
-             created_by: prName(db, p.created_by), mine: p.created_by === u.id, compliance: runs.length, notes: notes.length, pending: pending, last_at: last };
+             created_by: prName(db, p.created_by), mine: p.created_by === u.id, shared_with_me: (p.members || []).indexOf(u.id) >= 0, members: (p.members || []).length, compliance: runs.length, notes: notes.length, pending: pending, last_at: last };
   }
+  function prCanShare(u, p) { return isAdminRole(u) || (p.created_by === u.id && (u.edit_tools || []).length > 0); }   // mirrors pr__can_share
   function prDetail(db, u, p) {
     function n(rows, test) { return (rows || []).filter(test).length; }
     return {
       project: { id: p.id, name: p.name, client_type: p.client_type, client_name: p.client_name, region: p.region, created_at: p.created_at,
                  created_by: prName(db, p.created_by), updated_at: p.updated_at, updated_by: prName(db, p.updated_by) },
+      access: { owner: p.created_by === u.id, can_share: prCanShare(u, p), can_delete: p.created_by === u.id || isAdminRole(u),
+                members: (p.members || []).map(function (m) { return prName(db, m); }).sort() },
       runs: prRuns(db, p).map(function (r) {
         return { id: r.id, created_at: r.created_at, user: r.user, product_id: r.product_id, product: r.product, factory: r.factory, source: r.source, file_name: r.file_name,
                  lines: r.line_count, from_library: r.matched_count,
@@ -591,7 +596,7 @@
     prOptions: demo(function (db, t) { sessionUser(db, t); return { client_types: db.pr.client_types, regions: db.pr.regions }; }),
     prList: demo(function (db, t) {
       var u = sessionUser(db, t), all = isAdminRole(u);
-      return { all: all, projects: db.pr.projects.filter(function (p) { return all || p.created_by === u.id; }).map(function (p) { return prCard(db, u, p); })
+      return { all: all, projects: db.pr.projects.filter(function (p) { return all || p.created_by === u.id || (p.members || []).indexOf(u.id) >= 0; }).map(function (p) { return prCard(db, u, p); })
         .sort(function (a, b) { return String(b.last_at).localeCompare(String(a.last_at)); }) };
     }),
     prSave: demo(function (db, t, d) {
@@ -612,8 +617,27 @@
       }
       return { ok: true, id: p.id };
     }),
+    prShareGet: demo(function (db, t, id) {
+      var u = sessionUser(db, t), p = prProject(db, u, id), can = prCanShare(u, p);
+      function card(x) { return { id: x.id, name: x.full_name, username: x.username, team: x.team_note || "" }; }
+      return { can_share: can, owner: prName(db, p.created_by),
+        members: db.users.filter(function (x) { return (p.members || []).indexOf(x.id) >= 0; }).map(card).sort(function (a, b) { return a.name.localeCompare(b.name); }),
+        users: can ? db.users.filter(function (x) { return x.status === "approved" && x.id !== p.created_by; }).map(card).sort(function (a, b) { return a.name.localeCompare(b.name); }) : [] };
+    }),
+    prShareSet: demo(function (db, t, id, ids) {
+      var u = sessionUser(db, t), p = prProject(db, u, id);
+      if (!prCanShare(u, p)) fail("Sharing a project needs an admin, or the project's creator with edit rights.");
+      var old = p.members || [], now = db.users.filter(function (x) { return (ids || []).indexOf(x.id) >= 0 && x.status === "approved" && x.id !== p.created_by; }).map(function (x) { return x.id; });
+      function names(list) { return list.map(function (m) { return prName(db, m); }).sort().join(", "); }
+      var added = now.filter(function (m) { return old.indexOf(m) < 0; }), removed = old.filter(function (m) { return now.indexOf(m) < 0; });
+      p.members = now;
+      if (added.length) prLog(db, p.id, u, "Shared with", names(added));
+      if (removed.length) prLog(db, p.id, u, "Sharing ended for", names(removed));
+      return { ok: true, members: now.length };
+    }),
     prDelete: demo(function (db, t, id) {
       var u = sessionUser(db, t), p = prProject(db, u, id);
+      if (!(p.created_by === u.id || isAdminRole(u))) fail("Only the person who created this project, or an admin, can delete it.");
       db.cm.runs.forEach(function (r) { if (r.project_id === p.id) { (r.rows || []).forEach(function (x) { if (x.review === "pending") x.review = ""; }); r.project_id = null; } });
       db.pr.notes = db.pr.notes.filter(function (n) { return n.project_id !== p.id; });
       db.pr.log = db.pr.log.filter(function (g) { return g.project_id !== p.id; });

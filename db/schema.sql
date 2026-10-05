@@ -1913,6 +1913,18 @@ create table if not exists public.pr_notes (
 );
 create index if not exists pr_notes_project_idx on public.pr_notes (project_id, created_at desc);
 
+-- People a project is shared with. A member works in the project like its creator
+-- (add, fill, read, download); only the creator or an admin deletes it or changes who it is shared with.
+create table if not exists public.pr_members (
+  project_id uuid not null references public.pr_projects(id) on delete cascade,
+  user_id    uuid not null references public.app_users(id) on delete cascade,
+  added_by   uuid references public.app_users(id) on delete set null,
+  added_at   timestamptz not null default now(),
+  primary key (project_id, user_id)
+);
+alter table public.pr_members enable row level security;
+create index if not exists pr_members_user_idx on public.pr_members (user_id);
+
 create table if not exists public.pr_log (
   id         bigint generated always as identity primary key,
   project_id uuid not null references public.pr_projects(id) on delete cascade,
@@ -1968,18 +1980,27 @@ update public.app_tools set project_tool = true where id in ('compliance-maker',
 create or replace function public.pr__is_admin(u public.app_users) returns boolean
 language sql immutable as $$ select u.role in ('admin', 'superuser'); $$;
 
--- The project, if this user may open it (its creator, an admin or the super user). Raises otherwise.
+-- The project, if this user may open it (its creator, someone it is shared with, an admin or the super user). Raises otherwise.
 create or replace function public.pr__project(u public.app_users, p_id uuid)
 returns public.pr_projects
 language plpgsql security definer set search_path = public, extensions as $$
 declare p public.pr_projects;
 begin
   select * into p from public.pr_projects where id = p_id;
-  if p.id is null or not (public.pr__is_admin(u) or p.created_by = u.id) then
+  if p.id is null or not (public.pr__is_admin(u) or p.created_by = u.id
+       or exists (select 1 from public.pr_members m where m.project_id = p.id and m.user_id = u.id)) then
     perform public.app__fail('That project is not available. Choose a project first.');
   end if;
   return p;
 end $$;
+
+-- Who may share a project: an admin or the super user (any project), and the project's creator
+-- when he has "Can edit" for at least one tool (a key user). Other users cannot share.
+create or replace function public.pr__can_share(u public.app_users, p public.pr_projects) returns boolean
+language sql stable security definer set search_path = public, extensions as $$
+  select public.pr__is_admin(u)
+      or (p.created_by = u.id and exists (select 1 from public.app_tool_editors e where e.user_id = u.id));
+$$;
 
 create or replace function public.pr__log(p_project uuid, p_user uuid, p_action text, p_detail text default '')
 returns void language sql security definer set search_path = public, extensions as $$
@@ -2018,6 +2039,8 @@ begin
              jsonb_build_object('id', p.id, 'name', p.name, 'client_type', p.client_type, 'client_name', p.client_name,
                'region', p.region, 'created_at', p.created_at, 'created_by', public.pr__name(p.created_by),
                'mine', p.created_by = u.id,
+               'shared_with_me', exists (select 1 from public.pr_members m where m.project_id = p.id and m.user_id = u.id),
+               'members', (select count(*) from public.pr_members m where m.project_id = p.id),
                'compliance', (select count(*) from public.cm_runs r where r.project_id = p.id),
                'notes', (select count(*) from public.pr_notes n where n.project_id = p.id),
                'pending', (select count(*) from public.cm_run_lines rl join public.cm_runs r on r.id = rl.run_id
@@ -2027,6 +2050,7 @@ begin
                       coalesce((select max(n.created_at) from public.pr_notes n where n.project_id = p.id), p.created_at))) as j
         from public.pr_projects p
        where public.pr__is_admin(u) or p.created_by = u.id
+          or exists (select 1 from public.pr_members m where m.project_id = p.id and m.user_id = u.id)
     ) x), '[]'::jsonb));
 end $$;
 
@@ -2078,6 +2102,11 @@ begin
     'project', jsonb_build_object('id', p.id, 'name', p.name, 'client_type', p.client_type, 'client_name', p.client_name,
        'region', p.region, 'created_at', p.created_at, 'created_by', public.pr__name(p.created_by),
        'updated_at', p.updated_at, 'updated_by', public.pr__name(p.updated_by)),
+    -- what this person may do here, and who the project is shared with
+    'access', jsonb_build_object('owner', p.created_by = u.id, 'can_share', public.pr__can_share(u, p),
+                'can_delete', (p.created_by = u.id or public.pr__is_admin(u)),
+                'members', coalesce((select jsonb_agg(au.full_name order by au.full_name) from public.pr_members m
+                                       join public.app_users au on au.id = m.user_id where m.project_id = p.id), '[]'::jsonb)),
     'runs', coalesce((
       select jsonb_agg(jsonb_build_object('id', r.id, 'created_at', r.created_at, 'user', public.pr__name(r.user_id),
                'product_id', r.product_id, 'product', pd.name, 'factory', fa.name, 'source', r.source, 'file_name', r.file_name,
@@ -2189,11 +2218,62 @@ declare u public.app_users; p public.pr_projects;
 begin
   u := public.app__session_user(p_token);
   p := public.pr__project(u, p_id);
+  if not (p.created_by = u.id or public.pr__is_admin(u)) then
+    perform public.app__fail('Only the person who created this project, or an admin, can delete it.');
+  end if;
   update public.cm_run_lines rl set review = ''
     from public.cm_runs r where r.id = rl.run_id and r.project_id = p.id and rl.review = 'pending';
   update public.cm_runs set project_id = null where project_id = p.id;
   delete from public.pr_projects where id = p.id;       -- pr_notes and pr_log go with it
   return jsonb_build_object('ok', true);
+end $$;
+
+-- Sharing: who the project is shared with, and the people it can be shared with.
+create or replace function public.pr_share_get(p_token text, p_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; p public.pr_projects; v_can boolean;
+begin
+  u := public.app__session_user(p_token);
+  p := public.pr__project(u, p_id);
+  v_can := public.pr__can_share(u, p);
+  return jsonb_build_object('can_share', v_can, 'owner', public.pr__name(p.created_by),
+    'members', coalesce((select jsonb_agg(jsonb_build_object('id', au.id, 'name', au.full_name, 'username', au.username,
+                                    'added_by', public.pr__name(m.added_by), 'at', m.added_at) order by au.full_name)
+                           from public.pr_members m join public.app_users au on au.id = m.user_id where m.project_id = p.id), '[]'::jsonb),
+    -- approved people other than the creator; only sent to someone who may share
+    'users', case when v_can then coalesce((select jsonb_agg(jsonb_build_object('id', au.id, 'name', au.full_name, 'username', au.username,
+                                    'team', au.team_note) order by au.full_name)
+                           from public.app_users au where au.status = 'approved' and au.id <> p.created_by), '[]'::jsonb)
+                  else '[]'::jsonb end);
+end $$;
+
+-- Set who the project is shared with (the whole list). Admins, or the creator when he is a key user.
+create or replace function public.pr_share_set(p_token text, p_id uuid, p_user_ids uuid[])
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; p public.pr_projects; v_ids uuid[]; v_added text; v_removed text;
+begin
+  u := public.app__session_user(p_token);
+  p := public.pr__project(u, p_id);
+  if not public.pr__can_share(u, p) then
+    perform public.app__fail('Sharing a project needs an admin, or the project''s creator with edit rights.');
+  end if;
+  if coalesce(array_length(p_user_ids, 1), 0) > 200 then perform public.app__fail('A project can be shared with at most 200 people.'); end if;
+  select coalesce(array_agg(au.id), '{}'::uuid[]) into v_ids from public.app_users au
+   where au.id = any(coalesce(p_user_ids, '{}'::uuid[])) and au.status = 'approved' and au.id <> p.created_by;
+  select string_agg(au.full_name, ', ' order by au.full_name) into v_removed
+    from public.pr_members m join public.app_users au on au.id = m.user_id
+   where m.project_id = p.id and not (m.user_id = any(v_ids));
+  select string_agg(au.full_name, ', ' order by au.full_name) into v_added
+    from public.app_users au where au.id = any(v_ids)
+     and not exists (select 1 from public.pr_members m where m.project_id = p.id and m.user_id = au.id);
+  delete from public.pr_members m where m.project_id = p.id and not (m.user_id = any(v_ids));
+  insert into public.pr_members (project_id, user_id, added_by)
+  select p.id, x, u.id from unnest(v_ids) x on conflict do nothing;
+  if v_added is not null then perform public.pr__log(p.id, u.id, 'Shared with', v_added); end if;
+  if v_removed is not null then perform public.pr__log(p.id, u.id, 'Sharing ended for', v_removed); end if;
+  return jsonb_build_object('ok', true, 'members', coalesce(array_length(v_ids, 1), 0));
 end $$;
 
 -- A user's filled compliance for one conversion of his project.

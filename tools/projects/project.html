@@ -32,6 +32,12 @@
   .pj-meter-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
   .pj-meter-bar.sm { height: 6px; max-width: 150px; margin: 6px 0 4px; }
   .pj-meter-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--ok); transition: width .5s var(--ease); }
+  .pj-share-sheet { max-width: 460px; }
+  .pj-people { display: grid; gap: 2px; max-height: min(46vh, 380px); overflow-y: auto; margin: 0 -8px; }
+  .pj-person { display: flex; align-items: center; gap: 12px; padding: 9px 8px; border-radius: 10px; cursor: pointer; }
+  .pj-person:hover { background: var(--surface-2); }
+  .pj-person input { width: 20px; height: 20px; flex: none; accent-color: var(--brand); }
+  .pj-person b { display: block; font-weight: 600; } .pj-person small { color: var(--text-soft); font-size: 13px; overflow-wrap: anywhere; }
   .pj-table td { vertical-align: top; }
   .pj-table .act { text-align: right; white-space: nowrap; }
   .pj-table .act .btn + .btn { margin-left: 6px; }
@@ -72,6 +78,7 @@
       </div>
       <div class="row">
         <button type="button" class="btn" id="pj-export">Download project (Excel)</button>
+        <button type="button" class="btn ghost" id="pj-share" hidden>Share</button>
         <button type="button" class="btn ghost" id="pj-edit">Edit details</button>
       </div>
     </div>
@@ -278,6 +285,10 @@
     $("pj-client").textContent = p.client_name;
     var facts = $("pj-facts"); facts.textContent = "";
     [p.client_type, p.region, "Created by " + p.created_by + ", " + when(p.created_at)].forEach(function (t) { facts.appendChild(el("span", { "class": "badge", text: t })); });
+    var acc = data.access || {}, members = acc.members || [];
+    if (members.length) facts.appendChild(el("span", { "class": "badge brand", title: members.join(", "),
+      text: "Shared with " + (members.length <= 2 ? members.join(" and ") : members.slice(0, 2).join(", ") + " and " + (members.length - 2) + " more") }));
+    $("pj-share").hidden = !acc.can_share; $("pj-delete").hidden = !acc.can_delete;
 
     var tiles = $("pj-tiles"); tiles.textContent = "";
     [tile("compliance-maker", "Add a specification", "PDF or pasted text in, clauses ready to fill.", Hub.ICON.checklist, data.runs.length, "specification", "specifications", "add-spec.html?project=" + encodeURIComponent(id)),
@@ -356,6 +367,44 @@
     $("pj-save").disabled = true;
     Api.prSave(Hub.token(), d).then(function () { form.hidden = true; Hub.toast("Details saved."); return load(); },
       function (err) { msg.textContent = err.message; msg.hidden = false; }).then(function () { $("pj-save").disabled = false; });
+  });
+
+  /* ---------- share the project with other people ---------- */
+  $("pj-share").addEventListener("click", function () {
+    var btn = this; btn.disabled = true;
+    Api.prShareGet(Hub.token(), id).then(function (s) {
+      btn.disabled = false;
+      var picked = {}; s.members.forEach(function (m) { picked[m.id] = 1; });
+      var list = el("div", { "class": "pj-people" }), find = el("input", { "class": "input", type: "search", placeholder: "Find a person", autocomplete: "off", "aria-label": "Find a person" });
+      var count = el("p", { "class": "hub-sheet-hint" }), save = el("button", { type: "button", "class": "btn", text: "Save" });
+      function tally() { var n = Object.keys(picked).length; count.textContent = n ? "Shared with " + plural(n, "person", "people") + ". They can add, fill and download in this project; they cannot delete it." : "Not shared. Only " + s.owner + " and the admins can open this project."; }
+      function draw() {
+        var q = find.value.trim().toLowerCase(); list.textContent = "";
+        var rows = s.users.filter(function (u) { return !q || (u.name + " " + u.username + " " + u.team).toLowerCase().indexOf(q) >= 0; });
+        rows.sort(function (a, b) { return (picked[b.id] ? 1 : 0) - (picked[a.id] ? 1 : 0) || a.name.localeCompare(b.name); });
+        rows.forEach(function (u) {
+          var cb = el("input", { type: "checkbox" }); cb.checked = !!picked[u.id];
+          cb.addEventListener("change", function () { if (cb.checked) picked[u.id] = 1; else delete picked[u.id]; tally(); });
+          list.appendChild(el("label", { "class": "pj-person" }, [cb, el("span", {}, [el("b", { text: u.name }), el("small", { text: u.username + (u.team ? " · " + u.team : "") })])]));
+        });
+        if (!rows.length) list.appendChild(el("p", { "class": "hub-sheet-hint", text: s.users.length ? "Nobody matches." : "There is nobody else to share with yet." }));
+      }
+      find.addEventListener("input", draw);
+      var box = el("div", { "class": "hub-sheet pj-share-sheet", role: "dialog", "aria-modal": "true", "aria-label": "Share " + data.project.name }, [
+        el("h2", { text: "Share " + data.project.name }), count, find, list,
+        el("div", { "class": "hub-sheet-actions" }, [el("button", { type: "button", "class": "btn ghost", text: "Cancel", onclick: close }), save])]);
+      var back = el("div", { "class": "hub-sheet-back", onclick: function (e) { if (e.target === back) close(); } }, [box]);
+      function key(e) { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }
+      function close() { document.removeEventListener("keydown", key, true); back.remove(); btn.focus(); }
+      save.addEventListener("click", function () {
+        save.disabled = true;
+        Api.prShareSet(Hub.token(), id, Object.keys(picked)).then(function (res) {
+          close(); Hub.toast(res.members ? "Shared with " + plural(res.members, "person", "people") + "." : "Sharing ended."); load();
+        }, function (err) { save.disabled = false; fail(err); });
+      });
+      document.addEventListener("keydown", key, true);
+      document.body.appendChild(back); tally(); draw(); find.focus();
+    }, function (err) { btn.disabled = false; fail(err); });
   });
 
   /* ---------- upload a filled compliance Excel ---------- */

@@ -43,7 +43,7 @@
     <div>
       <p class="small"><a href="../../dashboard.html#general">&larr; General</a></p>
       <h1>Projects</h1>
-      <p id="pr-intro">Every compliance sheet and datasheet table is saved in a project. Open a project to work on it.</p>
+      <p id="pr-intro">Every specification and datasheet is saved in a project. You see the projects you created and the ones shared with you.</p>
     </div>
     <div class="row">
       <a class="btn ghost" id="pr-review" href="../compliance-maker/library.html?from=projects" hidden>Compliance review</a>
@@ -150,7 +150,8 @@
         !p.compliance && !p.notes ? el("span", { "class": "small muted", text: "Nothing saved yet" }) : null
       ]);
       var tr = el("tr", {}, [
-        el("td", {}, [el("a", { "class": "pr-name", href: href, text: p.name })]),
+        el("td", {}, [el("a", { "class": "pr-name", href: href, text: p.name }),
+          p.shared_with_me ? el("div", {}, [el("span", { "class": "badge brand", text: "Shared with you" })]) : p.members ? el("div", { "class": "small muted", text: "Shared with " + p.members + (p.members === 1 ? " person" : " people") }) : null]),
         el("td", {}, [el("div", { text: p.client_name }), el("div", { "class": "small muted", text: p.client_type })]),
         el("td", { "data-label": "Region", text: p.region }),
         el("td", {}, [counts]),

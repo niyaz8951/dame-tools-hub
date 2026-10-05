@@ -49,5 +49,7 @@ tool adds its part above "Permissions".
 | Remove product option values | yes | yes | yes (Product Options) | |
 | See every user's projects | yes | yes | | |
 | Create projects, save and download own project data | yes | yes | yes | yes |
+| Share a project with other users | yes (any project) | yes (any project) | yes (projects he created) | |
+| Work in a project shared with him | yes | yes | yes | yes |
 
 The super user is set once, in the SQL Editor: `select public.app_set_superuser('<username>');`
