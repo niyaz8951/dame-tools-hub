@@ -269,8 +269,12 @@
   }
   function autoBack() {
     var btn = document.getElementById("hubBack");
-    if (!btn || !btn.hidden) return;                       // the page set it already
     var link = document.querySelector(".hub-back a, main .page-head p.small > a, p.small > a#back, a.psy-back");
+    if (!btn) return;
+    if (!btn.hidden) {                                     // the page, or ?from=, set it already
+      if (param("from") && link && link.closest("p")) link.closest("p").hidden = true;   // one way back, not two
+      return;
+    }
     if (!link || link.closest("[hidden]")) return;
     var label = link.textContent.replace(/^[\s\u2190<-]+/, "").trim();
     if (!label) return;

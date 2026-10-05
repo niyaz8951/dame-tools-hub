@@ -15,7 +15,7 @@
 <script src="cm-highlight.js"></script>
 <style>
   .scope { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
-  .stats { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
   .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
   .stat b { display: block; font-size: 24px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
   .stat span { font-size: 13px; color: var(--text-soft); }
@@ -39,6 +39,11 @@
   .lib .hl-red { color: var(--danger); } .lib .hl-redbold { color: var(--danger); font-weight: 700; }
   .lib .hl-underline { text-decoration: underline; } .lib .hl-colon { color: var(--warn); font-weight: 700; }
   .lib textarea.input { min-height: 40px; height: 40px; resize: vertical; }
+  .lib td.who { font-size: 13px; overflow-wrap: anywhere; }
+  .lib .pa { margin-top: 8px; display: grid; gap: 6px; }
+  .lib .pa-item { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; overflow-wrap: anywhere; }
+  .lib .pa-item.wait { background: var(--warn-bg); }
+  .lib .pa-item .row { margin-top: 6px; }
   .lib .state { font-size: 12px; white-space: nowrap; min-width: 64px; }
   .lib .state.ok { color: var(--ok); } .lib .state.err { color: var(--danger); }
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -53,8 +58,8 @@
 <main class="page" style="max-width:1280px">
   <div class="page-head">
     <p class="small"><a href="./">&larr; Compliance Maker</a></p>
-    <h1>Compliance library</h1>
-    <p>Every clause converted by anyone lands here once, under its Part and section, in the order of the specification it came from. Fill in Compliance and Remarks, and the next conversion that contains the same clause gets them automatically.</p>
+    <h1>Compliance review</h1>
+    <p>The master compliance library. Every clause converted by anyone lands here once, under its Part and section, in the order of the specification it came from. Fill in Compliance and Remarks, and the next conversion that contains the same clause gets them automatically. Answers users filled in their projects are shown under the clause with their name.</p>
   </div>
 
   <div class="card stack">
@@ -66,6 +71,7 @@
       <div class="stat"><b id="sAll">0</b><span>unique lines</span></div>
       <div class="stat"><b id="sOpen">0</b><span>to answer</span></div>
       <div class="stat"><b id="sDone">0</b><span>answered</span><div class="bar"><i id="sBar"></i></div></div>
+      <div class="stat"><b id="sReview">0</b><span>filled by users, to review</span></div>
     </div>
   </div>
 
@@ -80,16 +86,18 @@
     <section id="tab-lines" class="stack">
       <div class="filters">
         <select class="input" id="fStatus" aria-label="Show">
-          <option value="open">To answer</option><option value="answered">Answered</option><option value="all">All lines</option>
+          <option value="open">To answer</option><option value="answered">Answered</option><option value="review">Filled by users, to review</option><option value="all">All lines</option>
         </select>
         <select class="input" id="fPart" aria-label="Part of the specification"><option value="">All parts</option></select>
         <select class="input" id="fTopic" aria-label="Topic"><option value="">All topics</option></select>
+        <select class="input" id="fClientType" aria-label="Client type"><option value="">All client types</option></select>
+        <select class="input" id="fClient" aria-label="Client name"><option value="">All clients</option></select>
         <input class="input grow" id="fSearch" type="search" placeholder="Search clause text" aria-label="Search clause text">
         <button class="btn ghost" type="button" id="btnExport">Download library (Excel)</button>
       </div>
       <div class="table-wrap">
         <table class="table lib">
-          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:170px">Compliance</th><th style="width:26%">Remarks</th><th style="width:128px"></th></tr></thead>
+          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:160px">Compliance</th><th style="width:24%">Remarks</th><th style="width:130px">Filled by</th><th style="width:128px"></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -178,7 +186,7 @@
     $("work").hidden = !on; $("stats").hidden = !on;
     $("upScope").textContent = scopeName();
     resetUpload();
-    $("fPart").value = ""; $("fTopic").value = "";
+    $("fPart").value = ""; $("fTopic").value = ""; $("fClientType").value = ""; $("fClient").value = "";
     if (on) { offset = 0; loadLines(); }
   }
   $("product").addEventListener("change", function () { fillFactories(); scopeChanged(); });
@@ -186,7 +194,7 @@
 
   // ---------- lines ----------
   function setCounts(c) {
-    $("sAll").textContent = c.all; $("sOpen").textContent = c.open; $("sDone").textContent = c.answered;
+    $("sAll").textContent = c.all; $("sOpen").textContent = c.open; $("sDone").textContent = c.answered; $("sReview").textContent = c.review || 0;
     $("sBar").style.width = (c.all ? Math.round(c.answered / c.all * 100) : 0) + "%";
   }
   function lineRow(l) {
@@ -203,7 +211,7 @@
         saved = { c: c, r: r }; state.textContent = "Saved"; state.className = "state ok";
         if (was !== now) {       // keep the three counters right without reloading the page of lines
           var open = +$("sOpen").textContent + (now ? -1 : 1), done = +$("sDone").textContent + (now ? 1 : -1);
-          setCounts({ all: +$("sAll").textContent, open: open, answered: done });
+          setCounts({ all: +$("sAll").textContent, open: open, answered: done, review: +$("sReview").textContent });
         }
       }, function (err) { state.textContent = "Not saved"; state.className = "state err"; fail(err); });
     }
@@ -219,34 +227,59 @@
       return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text;
     }));
     var kind = l.row_type === "letter" && /^[A-Z]/.test(l.sr || "") ? "letter" : l.row_type === "number" ? "number" : "";
+    // Answers users filled in their projects for this clause: who, which project and client, and
+    // a button to take a waiting one into the library (or leave it in its project only).
+    var who = [], users = el("div", { "class": "pa" });
+    if (l.answered_by && (l.compliance || l.remarks)) who.push(l.answered_by);
+    (l.project_answers || []).forEach(function (a) {
+      if (who.indexOf(a.by) < 0) who.push(a.by);
+      var wait = a.review === "pending";
+      function decide(decision, btn) {
+        btn.disabled = true;
+        Api.prReviewDecide(Hub.token(), { run: a.run, seq: a.seq, decision: decision }).then(function () {
+          Hub.toast(decision === "approve" ? "Taken into the library." : "Left in its project only."); loadLines();
+        }, function (err) { btn.disabled = false; fail(err); });
+      }
+      users.appendChild(el("div", { "class": "pa-item" + (wait ? " wait" : "") }, [
+        el("div", {}, [el("b", { text: a.by }), " · " + a.project + " · " + a.client + " (" + a.client_type + ")" + (a.at ? " · " + fmt(a.at) : "")]),
+        el("div", { text: (a.compliance || "(no compliance)") + (a.remarks ? " - " + a.remarks : "") }),
+        wait ? el("div", { "class": "row" }, [
+          el("button", { "class": "btn sm", type: "button", text: "Use this answer", onclick: function (e) { decide("approve", e.currentTarget); } }),
+          el("button", { "class": "btn ghost sm", type: "button", text: "Do not take", onclick: function (e) { decide("reject", e.currentTarget); } })])
+             : el("div", { "class": "meta", text: a.review === "approved" ? "Taken into the library" : a.review === "rejected" ? "Not taken, project only" : "Same as the library" })
+      ]));
+    });
     return el("tr", {}, [
       el("td", { "class": "sr " + kind, text: l.sr || "" }),
-      el("td", { "class": "spec" }, [text, el("div", { "class": "meta", text: meta })]),
+      el("td", { "class": "spec" }, [text, el("div", { "class": "meta", text: meta }), users.firstChild ? users : null]),
       el("td", {}, [comp]), el("td", {}, [rem]),
+      el("td", { "class": "who", text: who.join(", ") }),
       el("td", { style: "text-align:right;white-space:nowrap" }, [state, " ", del])
     ]);
   }
   function loadLines() {
     if (!factoryId()) return;
-    var req = factoryId() + "|" + offset + "|" + $("fPart").value + "|" + $("fTopic").value;
+    var req = factoryId() + "|" + offset + "|" + $("fPart").value + "|" + $("fTopic").value + "|" + $("fClientType").value + "|" + $("fClient").value + "|" + $("fStatus").value;
     loadLines.last = req;
     Api.cmAdminLines(Hub.token(), { factoryId: factoryId(), status: $("fStatus").value, search: $("fSearch").value.replace(/\s+/g, " ").trim(), limit: PAGE, offset: offset,
-                                     part: $("fPart").value, topic: $("fTopic").value }).then(function (res) {
+                                     part: $("fPart").value, topic: $("fTopic").value, clientType: $("fClientType").value, clientName: $("fClient").value }).then(function (res) {
       if (loadLines.last !== req) return;
-      total = res.total; setCounts(res.counts); fillGroups(res.groups || []);
+      total = res.total; setCounts(res.counts); fillGroups(res.groups || []); fillClients(res.client_types || [], res.client_names || []);
       var body = $("rows"); body.textContent = "";
       if (!res.lines.length) {
         var msg = res.counts.all === 0 ? "No lines yet for this factory. They appear here after the first conversion or upload."
+                : $("fClientType").value || $("fClient").value ? "No lines here for this client."
                 : $("fPart").value || $("fTopic").value ? "No lines here for this part and topic."
+                : $("fStatus").value === "review" ? "No answer from a user is waiting for this factory."
                 : $("fSearch").value ? "No lines match that search."
                 : $("fStatus").value === "open" ? "Nothing left to answer for this factory." : "No lines here.";
-        body.appendChild(el("tr", {}, [el("td", { colspan: "5", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
+        body.appendChild(el("tr", {}, [el("td", { colspan: "6", "class": "muted", style: "padding:28px;text-align:center", text: msg })]));
       }
       layout(res.lines).forEach(function (it) {
-        if (it.kind === "part") body.appendChild(el("tr", { "class": "part" }, [el("td"), el("td", { colspan: "4", text: it.text })]));
+        if (it.kind === "part") body.appendChild(el("tr", { "class": "part" }, [el("td"), el("td", { colspan: "5", text: it.text })]));
         else if (it.kind === "section") body.appendChild(el("tr", { "class": "sect" }, [
           el("td", { "class": "sr", text: it.sr }),
-          el("td", { colspan: "4" }, [it.text, el("span", { "class": "src", text: [it.topic, it.source ? "from " + it.source : ""].filter(Boolean).join(" · ") })])]));
+          el("td", { colspan: "5" }, [it.text, el("span", { "class": "src", text: [it.topic, it.source ? "from " + it.source : ""].filter(Boolean).join(" · ") })])]));
         else body.appendChild(lineRow(it.line));
       });
       $("pageInfo").textContent = total ? "Showing " + (offset + 1) + " to " + Math.min(offset + PAGE, total) + " of " + total : "";
@@ -294,6 +327,16 @@
     fill($("fTopic"), "All topics", Object.keys(topics).filter(Boolean).sort()
       .map(function (k) { return { value: k, text: k + tail(topics[k]) }; }));
   }
+  // Client type and client name: the clients of the projects that used this factory.
+  function fillClients(types, names) {
+    [[$("fClientType"), "All client types", types], [$("fClient"), "All clients", names]].forEach(function (x) {
+      var keep = x[0].value; x[0].textContent = ""; x[0].appendChild(el("option", { value: "", text: x[1] }));
+      x[2].forEach(function (v) { x[0].appendChild(el("option", { value: v, text: v })); });
+      x[0].value = keep; if (x[0].value !== keep) x[0].value = "";
+    });
+  }
+  $("fClientType").addEventListener("change", function () { $("fClient").value = ""; offset = 0; loadLines(); });
+  $("fClient").addEventListener("change", function () { offset = 0; loadLines(); });
   $("fPart").addEventListener("change", function () { $("fTopic").value = ""; offset = 0; loadLines(); });
   $("fTopic").addEventListener("change", function () { offset = 0; loadLines(); });
   $("fStatus").addEventListener("change", function () { offset = 0; loadLines(); });

@@ -966,12 +966,17 @@ language sql stable security definer set search_path = public, extensions as $$
 $$;
 
 -- p_part: null = every part, 0 = part not known, 1..3. p_topic: '' = every topic, or a cm__topic name.
+-- p_status: open | answered | all | review (lines with a project answer waiting for a decision).
+-- p_client_type / p_client_name: only lines met in a project of that client type / client.
+-- Each line carries the answers users filled in their projects (who, project, client), so the
+-- editor sees who filled what and can take an answer into the library.
 drop function if exists public.cm_admin_lines(text, text, text, text, int, int);
 drop function if exists public.cm_admin_lines(text, text, text, text, int, int, int, text);
 create or replace function public.cm_admin_lines(
   p_token text, p_factory_id text, p_status text default 'open',
   p_search text default '', p_limit int default 100, p_offset int default 0,
-  p_part int default null, p_topic text default '')
+  p_part int default null, p_topic text default '',
+  p_client_type text default '', p_client_name text default '')
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -979,13 +984,31 @@ declare
   v_like text := '%' || replace(replace(replace(trim(coalesce(p_search, '')), '\', '\\'), '%', '\%'), '_', '\_') || '%';
   v_limit int := least(greatest(coalesce(p_limit, 100), 1), 300);
   v_topic text := trim(coalesce(p_topic, ''));
+  v_ct text := trim(coalesce(p_client_type, ''));
+  v_cn text := trim(coalesce(p_client_name, ''));
+  v_ids uuid[];
 begin
   perform public.app__require_editor(p_token, 'compliance-maker');
   f := public.cm__factory(p_factory_id);
+  -- the lines that pass every filter, once, for the count and the page
+  select array_agg(l.id) into v_ids
+    from public.cm_lines l
+   where l.factory_id = f.id
+     and (p_status = 'all' or l.status = p_status
+          or (p_status = 'review' and exists (select 1 from public.cm_run_lines rl where rl.line_id = l.id and rl.review = 'pending')))
+     and (p_part is null or l.part = p_part)
+     and (v_topic = '' or public.cm__topic(l.section) = v_topic)
+     and l.spec_text ilike v_like
+     and ((v_ct = '' and v_cn = '') or exists (
+            select 1 from public.cm_run_lines rl
+              join public.cm_runs r on r.id = rl.run_id
+              join public.pr_projects pj on pj.id = r.project_id
+             where rl.line_id = l.id and (v_ct = '' or pj.client_type = v_ct) and (v_cn = '' or pj.client_name = v_cn)));
   return jsonb_build_object(
     'counts', (select jsonb_build_object('all', count(*),
                         'open', count(*) filter (where status = 'open'),
-                        'answered', count(*) filter (where status = 'answered'))
+                        'answered', count(*) filter (where status = 'answered'),
+                        'review', count(*) filter (where exists (select 1 from public.cm_run_lines rl where rl.line_id = cm_lines.id and rl.review = 'pending')))
                  from public.cm_lines where factory_id = f.id),
     -- every Part / topic of this factory with its line counts, for the two filters
     'groups', coalesce((
@@ -994,12 +1017,12 @@ begin
         from (select l.part, public.cm__topic(l.section) as topic, count(*) as n,
                      count(*) filter (where l.status = 'open') as o
                 from public.cm_lines l where l.factory_id = f.id group by 1, 2) g), '[]'::jsonb),
-    'total', (select count(*) from public.cm_lines l
-               where l.factory_id = f.id
-                 and (p_status = 'all' or l.status = p_status)
-                 and (p_part is null or l.part = p_part)
-                 and (v_topic = '' or public.cm__topic(l.section) = v_topic)
-                 and l.spec_text ilike v_like),
+    -- client types and client names of the projects that used this factory, for the two client filters
+    'client_types', coalesce((select jsonb_agg(distinct pj.client_type) from public.cm_runs r join public.pr_projects pj on pj.id = r.project_id
+                               where r.factory_id = f.id), '[]'::jsonb),
+    'client_names', coalesce((select jsonb_agg(distinct pj.client_name) from public.cm_runs r join public.pr_projects pj on pj.id = r.project_id
+                               where r.factory_id = f.id and (v_ct = '' or pj.client_type = v_ct)), '[]'::jsonb),
+    'total', coalesce(array_length(v_ids, 1), 0),
     'lines', coalesce((
       select jsonb_agg(x.j order by x.rn) from (
         select row_number() over (order by o.ord) as rn,
@@ -1010,13 +1033,21 @@ begin
                  'part', l.part, 'section', l.section, 'topic', public.cm__topic(l.section),
                  'sr', l.sr, 'row_type', l.row_type, 'section_sr', l.section_sr,
                  'home_run', l.home_run, 'file_name', o.file_name,
-                 'answered_by', (select au.full_name from public.app_users au where au.id = l.answered_by)) as j
+                 'answered_by', (select au.full_name from public.app_users au where au.id = l.answered_by),
+                 'project_answers', coalesce((
+                    select jsonb_agg(pa.j order by pa.k, pa.at desc) from (
+                      select case rl.review when 'pending' then 0 else 1 end as k, rl.answered_at as at,
+                             jsonb_build_object('run', rl.run_id, 'seq', rl.seq, 'compliance', rl.compliance, 'remarks', rl.remarks,
+                               'review', rl.review, 'by', public.pr__name(rl.answered_by), 'at', rl.answered_at,
+                               'project', pj.name, 'client', pj.client_name, 'client_type', pj.client_type, 'region', pj.region) as j
+                        from public.cm_run_lines rl
+                        join public.cm_runs r on r.id = rl.run_id
+                        join public.pr_projects pj on pj.id = r.project_id
+                       where rl.line_id = l.id and (rl.compliance <> '' or rl.remarks <> '')
+                       order by 1, 2 desc limit 6) pa), '[]'::jsonb)) as j
           from public.cm__library_order(f.id) o
           join public.cm_lines l on l.id = o.line_id
-         where (p_status = 'all' or l.status = p_status)
-           and (p_part is null or l.part = p_part)
-           and (v_topic = '' or public.cm__topic(l.section) = v_topic)
-           and l.spec_text ilike v_like
+         where l.id = any(coalesce(v_ids, '{}'::uuid[]))
          order by o.ord
          limit v_limit offset greatest(coalesce(p_offset, 0), 0)
       ) x), '[]'::jsonb));

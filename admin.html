@@ -57,16 +57,11 @@
   <!-- COMPLIANCE LIBRARY -->
   <section id="tab-library" hidden>
     <div class="grid">
-      <a class="tile" href="tools/projects/review.html?from=admin">
-        <span class="badge warn" id="reviewBadge" hidden></span>
-        <div class="tile-icon" id="icReview"></div><h3>Review and approval</h3>
-        <p>Answers users filled in their projects. Approve the good ones into the library.</p>
-        <div class="meta" id="reviewMeta">Nothing is waiting.</div>
-      </a>
       <a class="tile" href="tools/compliance-maker/library.html?from=admin">
-        <div class="tile-icon" id="icLibrary"></div><h3>Master compliance library</h3>
-        <p>Every clause by part, topic and section. Answer, correct, upload or download.</p>
-        <div class="meta">One library per factory</div>
+        <span class="badge warn" id="reviewBadge" hidden></span>
+        <div class="tile-icon" id="icLibrary"></div><h3>Compliance review</h3>
+        <p>The master library: every clause by part, topic and section, with the answers users filled in their projects. Answer, correct, upload or download.</p>
+        <div class="meta" id="reviewMeta">No user answer is waiting.</div>
       </a>
     </div>
   </section>
@@ -110,8 +105,8 @@
           <tr><td>Which team tiles a user can open, and "Can edit" for a tool</td><td>Super user, admins</td><td>Users tab</td></tr>
           <tr><td>Making someone an admin, changing or resetting an admin, deleting an account</td><td>Super user only</td><td>Users tab</td></tr>
           <tr><td>Tools and team tiles (add, hide, rename)</td><td>Super user only</td><td>Tools and Team tiles tabs</td></tr>
-          <tr><td>A project answer going into the master compliance library</td><td>Super user, admins, users with "Can edit" for Compliance Maker</td><td>Compliance Library &gt; Review and approval</td></tr>
-          <tr><td>Answers typed or uploaded straight into the library</td><td>Same people</td><td>Compliance Library &gt; Master compliance library</td></tr>
+          <tr><td>A project answer going into the master compliance library</td><td>Super user, admins, users with "Can edit" for Compliance Maker</td><td>Compliance Library &gt; Compliance review ("Use this answer")</td></tr>
+          <tr><td>Answers typed or uploaded straight into the library</td><td>Same people</td><td>Compliance Library &gt; Compliance review</td></tr>
           <tr><td>Which datasheet rows users see, and their wording</td><td>Super user, admins, users with "Can edit" for Datasheet Notes</td><td>Products &gt; Product row mapping</td></tr>
           <tr><td>Product options (remove a wrong value)</td><td>Super user, admins, users with "Can edit" for Product Options</td><td>Products &gt; Product options</td></tr>
           <tr><td>Seeing every user's projects and records</td><td>Super user, admins</td><td>Projects tab</td></tr>
@@ -291,7 +286,7 @@
   function summary() {
     return Api.prAdminSummary(Hub.token()).then(function (s) {
       badge("reviewCount", s.pending_answers); badge("reviewBadge", s.pending_answers); badge("rowsCount", s.new_rows); badge("rowsBadge", s.new_rows);
-      $("reviewMeta").textContent = s.pending_answers ? plural(s.pending_answers, "answer is", "answers are") + " waiting." : "Nothing is waiting.";
+      $("reviewMeta").textContent = s.pending_answers ? plural(s.pending_answers, "answer is", "answers are") + " waiting." : "No user answer is waiting.";
       $("rowsMeta").textContent = s.new_rows ? plural(s.new_rows, "new row", "new rows") + " to look at." : "No new rows to look at.";
       var wait = $("adWait"), items = []; wait.textContent = "";
       if (s.pending_users) items.push([plural(s.pending_users, "user", "users") + " to approve", "users"]);
@@ -337,7 +332,7 @@
 
   Hub.requireLogin({ admin: true }).then(function (p) {
     me = p.user;
-    $("icReview").innerHTML = Hub.ICON.checklist; $("icLibrary").innerHTML = Hub.ICON.book; $("icMap").innerHTML = Hub.ICON.table; $("icOptions").innerHTML = Hub.ICON.tree;
+    $("icLibrary").innerHTML = Hub.ICON.book; $("icMap").innerHTML = Hub.ICON.table; $("icOptions").innerHTML = Hub.ICON.tree;
     if (window.location.hash) openTab(window.location.hash.slice(1));
     if (Hub.isSuper(me)) {
       [].forEach.call(document.querySelectorAll("[data-super]"), function (n) { n.hidden = false; });

@@ -50,7 +50,7 @@
     cmOptions: function (t) { return rpc("cm_options", { p_token: t }); },
     cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines, p_project_id: d.projectId || null }); },
     cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 100, p_offset: d.offset || 0,
-      p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "" }); },
+      p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "", p_client_type: d.clientType || "", p_client_name: d.clientName || "" }); },
     cmAdminSaveAnswer: function (t, id, c, r) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r }); },
     cmAdminDeleteLine: function (t, id) { return rpc("cm_admin_delete_line", { p_token: t, p_line_id: id }); },
     cmAdminImport: function (t, d) { return rpc("cm_admin_import", { p_token: t, p_factory_id: d.factoryId, p_file_name: d.fileName || "", p_rows: d.rows }); },
@@ -392,15 +392,35 @@
         var k = x.part + "|" + x.topic, g = groups[k] || (groups[k] = { part: x.part, topic: x.topic, all: 0, open: 0 });
         g.all++; if (x.status === "open") g.open++;
       });
+      // answers users filled in their projects, per library line (mirrors project_answers in cm_admin_lines)
+      var pa = {}, types = {}, names = {};
+      db.cm.runs.forEach(function (r) {
+        var pj = db.pr.projects.filter(function (p) { return p.id === r.project_id; })[0];
+        if (!pj || r.factory !== f.name || r.product !== f.product) return;
+        types[pj.client_type] = 1; if (!d.clientType || pj.client_type === d.clientType) names[pj.client_name] = 1;
+        (r.rows || []).forEach(function (x) {
+          if (!x.line_id) return;
+          var e = pa[x.line_id] || (pa[x.line_id] = { list: [], clients: [] });
+          e.clients.push(pj);
+          if (x.compliance || x.remarks) e.list.push({ run: r.id, seq: x.seq, compliance: x.compliance, remarks: x.remarks, review: x.review, by: prName(db, x.answered_by), at: x.answered_at,
+            project: pj.name, client: pj.client_name, client_type: pj.client_type, region: pj.region });
+        });
+      });
+      all.forEach(function (x) {
+        x.project_answers = ((pa[x.id] || {}).list || []).sort(function (a, b) { return (a.review !== "pending") - (b.review !== "pending") || String(b.at).localeCompare(String(a.at)); }).slice(0, 6);
+      });
+      function waiting(x) { return x.project_answers.some(function (y) { return y.review === "pending"; }); }
       var list = all.filter(function (x) {
-        return (st === "all" || x.status === st) && x.spec_text.toLowerCase().indexOf(q) >= 0 &&
-               (wantPart === null || x.part === wantPart) && (!d.topic || x.topic === d.topic);
+        return (st === "all" || x.status === st || (st === "review" && waiting(x))) && x.spec_text.toLowerCase().indexOf(q) >= 0 &&
+               (wantPart === null || x.part === wantPart) && (!d.topic || x.topic === d.topic) &&
+               ((!d.clientType && !d.clientName) || ((pa[x.id] || {}).clients || []).some(function (pj) { return (!d.clientType || pj.client_type === d.clientType) && (!d.clientName || pj.client_name === d.clientName); }));
       });
       var orderOf = {}; cmLibraryOrder(all).forEach(function (x, k) { orderOf[x.id] = k; });
       list.sort(function (a, b) { return orderOf[a.id] - orderOf[b.id]; });
       var off = d.offset || 0;
       return { groups: Object.keys(groups).map(function (k) { return groups[k]; }).sort(function (a, b) { return (a.part === 0) - (b.part === 0) || a.part - b.part || a.topic.localeCompare(b.topic); }),
-               counts: { all: all.length, open: all.filter(function (x) { return x.status === "open"; }).length, answered: all.filter(function (x) { return x.status === "answered"; }).length },
+               counts: { all: all.length, open: all.filter(function (x) { return x.status === "open"; }).length, answered: all.filter(function (x) { return x.status === "answered"; }).length, review: all.filter(waiting).length },
+               client_types: Object.keys(types).sort(), client_names: Object.keys(names).sort(),
                total: list.length, lines: list.slice(off, off + (d.limit || 50)) };
     }),
     cmAdminSaveAnswer: demo(function (db, t, id, c, r) {
