@@ -257,6 +257,8 @@
       runs: prRuns(db, p).map(function (r) {
         return { id: r.id, created_at: r.created_at, user: r.user, product_id: r.product_id, product: r.product, factory: r.factory, source: r.source, file_name: r.file_name,
                  lines: r.line_count, from_library: r.matched_count,
+                 clauses: n(r.rows, function (x) { return !!x.line_id; }),
+                 filled: n(r.rows, function (x) { var l = x.line_id && db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0]; return !!x.line_id && !!(x.compliance || x.remarks || (l && l.status === "answered")); }),
                  answered: n(r.rows, function (x) { return x.compliance || x.remarks; }), pending: n(r.rows, function (x) { return x.review === "pending"; }),
                  approved: n(r.rows, function (x) { return x.review === "approved"; }), rejected: n(r.rows, function (x) { return x.review === "rejected"; }) };
       }),

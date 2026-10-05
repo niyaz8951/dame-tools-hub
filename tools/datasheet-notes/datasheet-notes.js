@@ -191,14 +191,14 @@
     function tell(text, kind) { if (no !== runNo) return; box.hidden = false; box.className = 'notice' + (kind ? ' ' + kind : ''); box.textContent = text; }
     box.hidden = true;
     if (!project || !grid || !grid.rows.length) return;
-    var rows = grid.rows.map(function (r) { return { section: r.section || '', component: r.component || '', cells: r.cells || [], marks: r.marks || null, kind: r.kind || 'row' }; });
+    var rows = grid.rows.map(function (r) { return { section: r.section || '', component: r.component || '', cells: r.cells || [], marks: r.marks || null, kind: r.kind || 'row', key: r.key || '' }; });
     if (JSON.stringify(rows).length > 11000000) {
       tell('This table is too large to save in the project (' + grid.columns.length + ' units). Download the Excel and keep it, or read the datasheets in smaller groups.', 'warn');
       return;
     }
     tell('Saving in ' + project.name + '…');
     window.Api.prNoteSave(window.Hub.token(), { projectId: project.id, productId: c.productId, fileNames: names.join(', '), columns: grid.columns, rows: rows }).then(function () {
-      tell('Saved in ' + project.name + '. You can download it again from the project page.', 'ok');
+      tell('Saved in ' + project.name + '. Go back to the project to see it beside the specification.', 'ok');
     }, function (err) {
       tell('The table was not saved in the project: ' + ((err && err.message) || err) + ' Download the Excel now and read the datasheet again later.', 'error');
     });

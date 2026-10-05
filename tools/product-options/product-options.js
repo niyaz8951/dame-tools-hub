@@ -549,6 +549,8 @@
   }).then(function (res) {
     products = res.products || [];
     var last = recall();
+    // opened from a datasheet row of a project: the address names the product, the factory and what to look for
+    if (window.Hub.param('product')) { last = { p: window.Hub.param('product'), f: window.Hub.param('factory') }; search.value = window.Hub.param('q'); }
     productSel.textContent = '';
     productSel.appendChild(option('', 'Choose a product'));
     products.forEach(function (p) { productSel.appendChild(option(p.id, p.name)); });

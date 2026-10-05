@@ -413,7 +413,7 @@
       }
       var cells = units.map(function (x, u) { return m.values[u] === undefined ? MISSING : fill(rule && rule.response, m.values[u], rule && rule.strip); });
       out.push({ section: first ? title : '', component: (rule && clean(rule.label || '')) || m.component, kind: 'row',
-                 cells: cells, marks: marks(cells) });
+                 cells: cells, marks: marks(cells), key: m.key });
     });
     return { columns: tags(units), rows: out };
   }

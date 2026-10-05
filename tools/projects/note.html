@@ -21,6 +21,8 @@
   .nt th.unit { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); white-space: normal; overflow-wrap: anywhere; }
   .nt td { vertical-align: top; overflow-wrap: anywhere; padding: 8px 12px; }
   .nt td.sec { font-weight: 650; }
+  .nt-row { font: inherit; text-align: left; color: var(--brand); background: none; border: 0; padding: 0; cursor: pointer; }
+  .nt-row:hover { text-decoration: underline; }
   .nt tr.first td { border-top: 2px solid var(--border); }
   .nt tr.sub td { background: var(--surface-2); font-weight: 650; }
   /* Section and Component stay in view when the table scrolls sideways */
@@ -67,13 +69,14 @@
           <tbody id="nt-body"></tbody>
         </table>
       </div>
-      <p class="hint">Rows and wording follow the row mapping at the time the datasheet was read. To change a value, read the datasheet again from the project.</p>
+      <p class="hint">Rows and wording follow the row mapping at the time the datasheet was read. To change a value, read the datasheet again from the project. Press a row name to see what the factory has offered for it.</p>
     </section>
   </div>
 </main>
 
 <script src="../datasheet-notes/ds-xlsx.js"></script>
 <script src="pr-xlsx.js"></script>
+<script src="pr-options.js"></script>
 <script>
 (function () {
   "use strict";
@@ -83,6 +86,13 @@
   function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : Hub.date(iso); }
   function bare(name) { return String(name || "").split(", ").map(function (n) { return n.replace(/\.[A-Za-z0-9]{1,5}$/, ""); }).join(", ") || "Datasheet"; }
   function differs(r) { return !!(r.marks && r.marks.some(Boolean)); }
+
+  /* A row name opens what the factory has offered for that row (pr-options.js). */
+  function rowName(r, section) {
+    return el("button", { type: "button", "class": "nt-row", text: r.component, title: "What the factory offers for this row", onclick: function () {
+      PROptions.open({ product: note.product, factory: PROptions.factoryOf(note.rows), key: r.key, section: section, component: r.component, values: r.cells });
+    } });
+  }
 
   function draw() {
     var q = $("nt-q").value.trim().toLowerCase(), only = $("nt-only").checked, units = note.columns.length;
@@ -105,7 +115,7 @@
           .concat(note.columns.map(function () { return el("td"); }))));
         secDone = true; sub = null;
       }
-      frag.appendChild(el("tr", { "class": secDone ? null : "first" }, [el("td", { "class": "sec", text: secDone ? "" : sec }), el("td", { text: r.component })]
+      frag.appendChild(el("tr", { "class": secDone ? null : "first" }, [el("td", { "class": "sec", text: secDone ? "" : sec }), el("td", {}, [rowName(r, sec)])]
         .concat((r.cells || []).map(function (v, u) {
           var mk = r.marks ? r.marks[u] : 0;
           return el("td", { text: v, "class": mk ? "diff d" + ((mk - 1) % 5 + 1) : null, title: mk ? "Differs from " + note.columns[0] : null });

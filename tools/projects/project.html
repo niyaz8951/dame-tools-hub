@@ -21,6 +21,17 @@
   .pj-tile.none { background: var(--surface-2); box-shadow: none; }
   .pj-tile.none h3, .pj-tile.none p, .pj-tile.none .meta { color: var(--text-soft); }
   .pj-tile.none .tile-icon { background: var(--surface); color: var(--text-soft); }
+  /* next step: one headline, one progress line, one button */
+  .pj-next { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; padding: 24px; }
+  .pj-next-text { flex: 1 1 320px; min-width: 0; display: grid; gap: 6px; }
+  .pj-eyebrow { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--brand); }
+  .pj-next h2 { font-size: 24px; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  .pj-next-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .pj-next-actions .btn { min-height: 46px; padding: 0 22px; font-size: 15px; border-radius: 12px; }
+  .pj-meter { display: grid; gap: 6px; margin-top: 8px; max-width: 460px; }
+  .pj-meter-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+  .pj-meter-bar.sm { height: 6px; max-width: 150px; margin: 6px 0 4px; }
+  .pj-meter-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--ok); transition: width .5s var(--ease); }
   .pj-table td { vertical-align: top; }
   .pj-table .act { text-align: right; white-space: nowrap; }
   .pj-table .act .btn + .btn { margin-left: 6px; }
@@ -79,10 +90,24 @@
           <span style="flex:1"></span><button type="button" class="btn danger" id="pj-delete">Delete project</button></div>
       </form>
 
+      <!-- where the project stands, and the one thing to do next -->
+      <section class="card pj-next" id="pj-next" aria-labelledby="pj-next-title">
+        <div class="pj-next-text">
+          <p class="pj-eyebrow" id="pj-next-eyebrow">Next step</p>
+          <h2 id="pj-next-title"></h2>
+          <p class="muted" id="pj-next-sub"></p>
+          <div class="pj-meter" id="pj-meter" hidden>
+            <div class="pj-meter-bar" role="img" id="pj-meter-bar"><i id="pj-meter-fill"></i></div>
+            <span class="small muted" id="pj-meter-text"></span>
+          </div>
+        </div>
+        <div class="pj-next-actions" id="pj-next-actions"></div>
+      </section>
+
       <section aria-labelledby="h-tools">
-        <h2 id="h-tools" style="margin-bottom:10px">Tools for this project</h2>
+        <h2 id="h-tools" style="margin-bottom:10px">Add to this project</h2>
         <div class="grid" id="pj-tiles"></div>
-        <p class="hint">Blue: the project already holds data from this tool. Grey: nothing saved from it yet. Open a tool from here and its work is saved in this project.</p>
+        <p class="hint">Blue: the project already holds this. Grey: nothing yet. Whatever you add here is saved in this project.</p>
       </section>
 
       <section class="card stack" aria-labelledby="h-runs">
@@ -92,11 +117,17 @@
         <div class="empty" id="pj-runs-empty" hidden>No specification converted in this project yet. Open the Compliance Maker above.</div>
         <div class="table-wrap" id="pj-runs-wrap" hidden>
           <table class="table pj-table">
-            <thead><tr><th>Specification</th><th>Lines</th><th>Answers</th><th>By</th><th></th></tr></thead>
+            <thead><tr><th>Specification</th><th style="width:190px">Filled</th><th>Answers</th><th>By</th><th></th></tr></thead>
             <tbody id="pj-runs"></tbody>
           </table>
         </div>
         <input type="file" id="pj-file" class="pj-pick" accept=".xlsx" tabindex="-1" aria-hidden="true">
+      </section>
+
+      <section class="card stack" id="pj-compare-card" aria-labelledby="h-compare" hidden>
+        <h2 id="h-compare">Specification beside datasheet</h2>
+        <p class="small muted">What the specification asks for, next to what each unit has, row by row.</p>
+        <div class="row" id="pj-compare"></div>
       </section>
 
       <section class="card stack" aria-labelledby="h-notes">
@@ -138,12 +169,52 @@
   function fail(err) { Hub.toast((err && err.message) || String(err), true); }
 
   /* ---------- draw ---------- */
-  function tile(toolId, name, text, icon, n, one, many) {
+  function pct(r) { return r.clauses ? Math.round(100 * (r.filled || 0) / r.clauses) : 0; }
+  function tile(toolId, name, text, icon, n, one, many, href) {
     if (!hasTool(toolId)) return null;
-    return el("a", { "class": "tile pj-tile " + (n ? "has" : "none"), href: "../" + toolId + "/index.html?project=" + encodeURIComponent(id) }, [
+    return el("a", { "class": "tile pj-tile " + (n ? "has" : "none"), href: href || "../" + toolId + "/index.html?project=" + encodeURIComponent(id) }, [
       el("div", { "class": "tile-icon", html: icon }), el("h3", { text: name }), el("p", { text: text }),
       el("div", { "class": "meta", text: n ? plural(n, one, many) + " saved" : "Nothing saved yet" })
     ]);
+  }
+
+  /* The one thing to do next, worked out from what the project holds. */
+  function nextStep() {
+    var runs = data.runs, clauses = 0, filled = 0, pending = 0;
+    runs.forEach(function (r) { clauses += r.clauses || 0; filled += r.filled || 0; pending += r.pending || 0; });
+    var open = runs.filter(function (r) { return (r.clauses || 0) > (r.filled || 0); }).sort(function (a, b) { return String(a.created_at).localeCompare(String(b.created_at)); })[0];
+    var title, sub, acts = [], eyebrow = "Next step";
+    function act(text, href, ghost) { acts.push(el("a", { "class": "btn" + (ghost ? " ghost" : ""), href: href, text: text })); }
+    var addSpec = "add-spec.html?project=" + encodeURIComponent(id), addSheet = "../datasheet-notes/index.html?project=" + encodeURIComponent(id);
+    if (!runs.length && !data.notes.length) {
+      title = "Add the specification"; sub = "Give the PDF or paste the text. The clauses come ready to fill, with the answers the company already has.";
+      if (hasTool("compliance-maker")) act("Add a specification", addSpec);
+      if (hasTool("datasheet-notes")) act("Read a datasheet", addSheet, true);
+    } else if (open) {
+      var left = open.clauses - open.filled;
+      title = (open.filled ? "Continue " : "Fill ") + (bare(open.file_name) || "the specification");
+      sub = plural(left, "clause is", "clauses are") + " still to fill" + (open.filled ? ", " + open.filled + " done." : ". " + (open.from_library ? open.from_library + " came filled from the library." : ""));
+      act(open.filled ? "Continue filling" : "Start filling", "record.html?run=" + encodeURIComponent(open.id));
+    } else if (runs.length && !data.notes.some(function (n) { return runs.some(function (r) { return r.product_id === n.product_id; }); }) && hasTool("datasheet-notes")) {
+      title = "Read the datasheet"; sub = "Every clause is filled. Read the datasheet to put what the units have beside what the specification asks.";
+      act("Read a datasheet", addSheet); act("Download project (Excel)", "#download", true);
+    } else if (!runs.length) {
+      title = "Add the specification"; sub = "The datasheet is in. Add the specification to fill its compliance and compare the two.";
+      if (hasTool("compliance-maker")) act("Add a specification", addSpec);
+    } else {
+      eyebrow = "Up to date"; title = "Everything is filled";
+      sub = pending ? plural(pending, "answer is", "answers are") + " with the library team for review. You can download the project now." : "Download the project, or add another specification or datasheet.";
+      act("Download project (Excel)", "#download");
+    }
+    $("pj-next-eyebrow").textContent = eyebrow; $("pj-next-title").textContent = title; $("pj-next-sub").textContent = sub;
+    var box = $("pj-next-actions"); box.textContent = ""; acts.forEach(function (a) { box.appendChild(a); });
+    [].forEach.call(box.querySelectorAll('a[href="#download"]'), function (a) { a.addEventListener("click", function (e) { e.preventDefault(); $("pj-export").click(); }); });
+    $("pj-meter").hidden = !clauses;
+    if (clauses) {
+      var p = Math.round(100 * filled / clauses);
+      $("pj-meter-fill").style.width = p + "%"; $("pj-meter-bar").setAttribute("aria-label", p + "% of the clauses filled");
+      $("pj-meter-text").textContent = filled + " of " + clauses + " clauses filled" + (pending ? " · " + pending + " in review" : "");
+    }
   }
 
   function runRow(r) {
@@ -158,7 +229,8 @@
     return el("tr", {}, [
       el("td", {}, [el("a", { "class": "pj-file pj-link", href: "record.html?run=" + encodeURIComponent(r.id), title: "Read and fill online", text: bare(r.file_name) || "Pasted text" }),
         el("div", { "class": "small muted", text: r.factory + " factory · " + when(r.created_at, true) })]),
-      el("td", { "data-label": "Lines", text: String(r.lines) }),
+      el("td", {}, [el("div", { "class": "pj-meter-bar sm", role: "img", "aria-label": pct(r) + "% filled" }, [el("i", { style: "width:" + pct(r) + "%" })]),
+        el("div", { "class": "small muted", text: (r.filled || 0) + " of " + (r.clauses || 0) + " clauses" })]),
       el("td", {}, [badges]),
       el("td", { "data-label": "By", "class": "small", text: r.user }),
       el("td", { "class": "act" }, [
@@ -208,9 +280,18 @@
     [p.client_type, p.region, "Created by " + p.created_by + ", " + when(p.created_at)].forEach(function (t) { facts.appendChild(el("span", { "class": "badge", text: t })); });
 
     var tiles = $("pj-tiles"); tiles.textContent = "";
-    [tile("compliance-maker", "Compliance Maker", "Specification to compliance sheet.", Hub.ICON.checklist, data.runs.length, "compliance sheet", "compliance sheets"),
-     tile("datasheet-notes", "Datasheet Notes", "Datasheet to Excel table, one column per unit.", Hub.ICON.table, data.notes.length, "datasheet table", "datasheet tables")]
+    [tile("compliance-maker", "Add a specification", "PDF or pasted text in, clauses ready to fill.", Hub.ICON.checklist, data.runs.length, "specification", "specifications", "add-spec.html?project=" + encodeURIComponent(id)),
+     tile("datasheet-notes", "Read a datasheet", "Datasheet PDF in, one column per unit.", Hub.ICON.table, data.notes.length, "datasheet table", "datasheet tables")]
       .forEach(function (t) { if (t) tiles.appendChild(t); });
+    nextStep();
+
+    // products that have both a specification and a datasheet can be put side by side
+    var cmp = $("pj-compare"), both = []; cmp.textContent = "";
+    data.runs.forEach(function (r) { if (data.notes.some(function (n) { return n.product_id === r.product_id; }) && !both.some(function (b) { return b.id === r.product_id; })) both.push({ id: r.product_id, name: r.product }); });
+    both.forEach(function (b) {
+      cmp.appendChild(el("a", { "class": "btn ghost", href: "compare.html?project=" + encodeURIComponent(id) + "&product=" + encodeURIComponent(b.id), text: b.name + ": specification beside datasheet" }));
+    });
+    $("pj-compare-card").hidden = !both.length;
 
     // compliance records, one block per product
     var body = $("pj-runs"), products = []; body.textContent = "";

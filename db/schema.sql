@@ -2082,6 +2082,11 @@ begin
       select jsonb_agg(jsonb_build_object('id', r.id, 'created_at', r.created_at, 'user', public.pr__name(r.user_id),
                'product_id', r.product_id, 'product', pd.name, 'factory', fa.name, 'source', r.source, 'file_name', r.file_name,
                'lines', r.line_count, 'from_library', r.matched_count,
+               -- progress: clauses that can be answered, and those that show an answer now (the project's own or the library's)
+               'clauses', (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and rl.line_id is not null),
+               'filled', (select count(*) from public.cm_run_lines rl left join public.cm_lines l on l.id = rl.line_id
+                           where rl.run_id = r.id and rl.line_id is not null
+                             and (rl.compliance <> '' or rl.remarks <> '' or l.status = 'answered')),
                'answered', (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and (rl.compliance <> '' or rl.remarks <> '')),
                'pending',  (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and rl.review = 'pending'),
                'approved', (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and rl.review = 'approved'),

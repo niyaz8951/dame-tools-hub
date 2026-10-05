@@ -163,7 +163,7 @@
           if (sub) { out.push({ section: first ? sec : '', component: sub, text: '', found: false, kind: 'sub' }); first = false; }
         }
         out.push({ section: first ? sec : '', component: String(r.label || '').trim() || r.component, text: text,
-                   found: hits.length > 0, keywords: entries.length > 0, kind: 'row' });
+                   found: hits.length > 0, keywords: entries.length > 0, kind: 'row', key: r.key });
       });
     });
     return out;
