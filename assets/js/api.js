@@ -48,7 +48,7 @@
     adminSaveTool: function (t, d) { return rpc("app_admin_save_tool", { p_token: t, p_id: d.id, p_category_id: d.category_id, p_name: d.name, p_description: d.description, p_path: d.path, p_status: d.status, p_sort: d.sort, p_editable: !!d.editable }); },
     // Compliance Maker library
     cmOptions: function (t) { return rpc("cm_options", { p_token: t }); },
-    cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines }); },
+    cmSaveRun: function (t, d) { return rpc("cm_save_run", { p_token: t, p_factory_id: d.factoryId, p_source: d.source, p_file_name: d.fileName || "", p_lines: d.lines, p_project_id: d.projectId || null }); },
     cmAdminLines: function (t, d) { return rpc("cm_admin_lines", { p_token: t, p_factory_id: d.factoryId, p_status: d.status || "open", p_search: d.search || "", p_limit: d.limit || 100, p_offset: d.offset || 0,
       p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "" }); },
     cmAdminSaveAnswer: function (t, id, c, r) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r }); },
@@ -66,11 +66,24 @@
     poAdminSaveExtra: function (t, d) { return rpc("po_admin_save_extra", { p_token: t, p_factory_id: d.factoryId, p_id: d.id || null, p_section: d.section, p_row_key: d.key || "", p_kind: d.kind, p_body: d.body }); },
     poAdminDeleteExtra: function (t, id) { return rpc("po_admin_delete_extra", { p_token: t, p_id: id }); },
     poAdminSetHidden: function (t, d) { return rpc("po_admin_set_hidden", { p_token: t, p_factory_id: d.factoryId, p_row_key: d.key, p_value_key: d.valueKey || "", p_hidden: !!d.hidden, p_model: d.model || "" }); },
+    // Projects (every piece of work is saved under one) and the review of users' compliance answers
+    prOptions: function (t) { return rpc("pr_options", { p_token: t }); },
+    prList: function (t) { return rpc("pr_list", { p_token: t }); },
+    prSave: function (t, d) { return rpc("pr_save", { p_token: t, p_id: d.id || null, p_name: d.name, p_client_type: d.clientType, p_client_name: d.clientName, p_region: d.region }); },
+    prGet: function (t, id) { return rpc("pr_get", { p_token: t, p_id: id }); },
+    prExport: function (t, id) { return rpc("pr_export", { p_token: t, p_id: id }); },
+    prNoteSave: function (t, d) { return rpc("pr_note_save", { p_token: t, p_project_id: d.projectId, p_product_id: d.productId, p_file_names: d.fileNames || "", p_columns: d.columns, p_rows: d.rows }); },
+    prNoteGet: function (t, id) { return rpc("pr_note_get", { p_token: t, p_note_id: id }); },
+    prDeleteRecord: function (t, kind, id) { return rpc("pr_delete_record", { p_token: t, p_kind: kind, p_id: id }); },
+    prSubmitAnswers: function (t, runId, rows) { return rpc("pr_submit_answers", { p_token: t, p_run_id: runId, p_rows: rows }); },
+    prReviewList: function (t, d) { return rpc("pr_review_list", { p_token: t, p_status: (d && d.status) || "pending", p_limit: (d && d.limit) || 100, p_offset: (d && d.offset) || 0 }); },
+    prReviewDecide: function (t, d) { return rpc("pr_review_decide", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_decision: d.decision, p_compliance: d.compliance == null ? null : d.compliance, p_remarks: d.remarks == null ? null : d.remarks }); },
+    prAdminSummary: function (t) { return rpc("pr_admin_summary", { p_token: t }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v7", mem = null;
+  var KEY = "dame_hub_demo_db_v8", mem = null;
   function seed() {
     return {
       users: [
@@ -85,8 +98,9 @@
         { id: "sbu", name: "SBU", description: "Specialised SBU tools", sort: 30, is_default: false }
       ],
       tools: [
-        { id: "compliance-maker", category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10, editable: true },
-        { id: "datasheet-notes", category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: true },
+        { id: "projects", category_id: "general", name: "Projects", description: "Open a project to convert specifications and read datasheets. Everything is saved under it.", path: "tools/projects/", status: "live", sort: 5 },
+        { id: "compliance-maker", project_tool: true, category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10, editable: true },
+        { id: "datasheet-notes", project_tool: true, category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: true },
         { id: "product-options", category_id: "general", name: "Product Options", description: "See the sections, options and notes each factory offers, built from the datasheets run so far.", path: "tools/product-options/", status: "live", sort: 17, editable: true },
         { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
@@ -102,6 +116,11 @@
           { id: "chiller", name: "Chiller", factories: [{ id: "chiller-italy", name: "Italy" }, { id: "chiller-jeddah", name: "Jeddah" }] }
         ],
         lines: [], runs: []
+      },
+      pr: {
+        client_types: ["Consultant", "Contractor", "Developer / Owner", "Distributor / Dealer", "Government", "Other"],
+        regions: ["UAE", "Saudi Arabia", "Qatar", "Kuwait", "Bahrain", "Oman", "Egypt", "Other Middle East", "Africa", "Other"],
+        projects: [], notes: [], log: []
       }
     };
   }
@@ -109,7 +128,7 @@
     // Re-read every time so two tabs (for example a user and an admin) see each other's changes.
     var stored = null;
     try { stored = JSON.parse(localStorage.getItem(KEY)); } catch (e) { stored = null; }
-    if (stored && stored.users && stored.cm) mem = stored;
+    if (stored && stored.users && stored.cm && stored.pr) mem = stored;
     if (!mem) mem = seed();
     return mem;
   }
@@ -190,7 +209,7 @@
   function cmNorm(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
   function cmFactory(db, id) {
     var out = null;
-    db.cm.products.forEach(function (p) { p.factories.forEach(function (f) { if (f.id === id) out = { id: f.id, name: f.name, product: p.name }; }); });
+    db.cm.products.forEach(function (p) { p.factories.forEach(function (f) { if (f.id === id) out = { id: f.id, name: f.name, product: p.name, product_id: p.id }; }); });
     if (!out) fail("Choose a product and factory first.");
     return out;
   }
@@ -209,6 +228,40 @@
     var v = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     if (/\|options\|option$/.test(key)) v = v.replace(/^\d+\s*x\s+/i, "");
     return v.trim().slice(0, 300);
+  }
+  // ---- project helpers (mirror pr__project, pr__log, pr__name in schema.sql) ----
+  function prProject(db, u, id) {
+    var p = db.pr.projects.filter(function (x) { return x.id === id; })[0];
+    if (!p || !(isAdminRole(u) || p.created_by === u.id)) fail("That project is not available. Choose a project first.");
+    return p;
+  }
+  function prLog(db, projectId, u, action, detail) { db.pr.log.push({ project_id: projectId, user_id: u.id, action: action, detail: String(detail || "").slice(0, 400), at: new Date().toISOString() }); }
+  function prName(db, id) { var x = db.users.filter(function (y) { return y.id === id; })[0]; return x ? x.full_name : "(deleted user)"; }
+  function prProductName(db, id) { var x = db.cm.products.filter(function (y) { return y.id === id; })[0]; return x ? x.name : id; }
+  function prRuns(db, p) { return db.cm.runs.filter(function (r) { return r.project_id === p.id; }); }
+  function prCard(db, u, p) {
+    var runs = prRuns(db, p), notes = db.pr.notes.filter(function (n) { return n.project_id === p.id; }), pending = 0, last = p.updated_at;
+    runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.review === "pending") pending++; }); if (r.created_at > last) last = r.created_at; });
+    notes.forEach(function (n) { if (n.created_at > last) last = n.created_at; });
+    return { id: p.id, name: p.name, client_type: p.client_type, client_name: p.client_name, region: p.region, created_at: p.created_at,
+             created_by: prName(db, p.created_by), mine: p.created_by === u.id, compliance: runs.length, notes: notes.length, pending: pending, last_at: last };
+  }
+  function prDetail(db, u, p) {
+    function n(rows, test) { return (rows || []).filter(test).length; }
+    return {
+      project: { id: p.id, name: p.name, client_type: p.client_type, client_name: p.client_name, region: p.region, created_at: p.created_at,
+                 created_by: prName(db, p.created_by), updated_at: p.updated_at, updated_by: prName(db, p.updated_by) },
+      runs: prRuns(db, p).map(function (r) {
+        return { id: r.id, created_at: r.created_at, user: r.user, product_id: r.product_id, product: r.product, factory: r.factory, source: r.source, file_name: r.file_name,
+                 lines: r.line_count, from_library: r.matched_count,
+                 answered: n(r.rows, function (x) { return x.compliance || x.remarks; }), pending: n(r.rows, function (x) { return x.review === "pending"; }),
+                 approved: n(r.rows, function (x) { return x.review === "approved"; }), rejected: n(r.rows, function (x) { return x.review === "rejected"; }) };
+      }),
+      notes: db.pr.notes.filter(function (x) { return x.project_id === p.id; }).map(function (x) {
+        return { id: x.id, created_at: x.created_at, user: prName(db, x.user_id), product_id: x.product_id, product: prProductName(db, x.product_id), file_names: x.file_names, units: x.units, rows: x.row_count };
+      }).reverse(),
+      log: db.pr.log.filter(function (g) { return g.project_id === p.id; }).map(function (g) { return { at: g.at, user: prName(db, g.user_id), action: g.action, detail: g.detail }; }).reverse().slice(0, 200)
+    };
   }
   function checkPw(p) {
     if (!p || p.length < 8) fail("Password must be at least 8 characters.");
@@ -303,10 +356,12 @@
     // ---- Compliance Maker library (same rules as db/schema.sql) ----
     cmOptions: demo(function (db, t) { sessionUser(db, t); return { products: db.cm.products }; }),
     cmSaveRun: demo(function (db, t, d) {
-      var u = sessionUser(db, t), f = cmFactory(db, d.factoryId), seen = {}, answers = [], matched = 0;
+      var u = sessionUser(db, t), f = cmFactory(db, d.factoryId), seen = {}, answers = [], matched = 0, kept = [];
       if (!d.lines || !d.lines.length) fail("There are no lines to save.");
+      if (d.projectId) prProject(db, u, d.projectId);
       var part = 0, section = "", sectionSr = "", runId = "r" + Date.now();
       d.lines.forEach(function (ln, i) {
+        kept.push({ seq: i, type: ln.type || "", sr: ln.sr || "", spec: ln.spec || "", line_id: null, compliance: "", remarks: "", review: "" });
         if (ln.type === "part") { var pn = cmPartNo(ln.spec); if (pn) { part = pn; section = ""; sectionSr = ""; } return; }
         if (ln.type === "section") { if (!/\.{5,}/.test(ln.spec) && !/^0\./.test(ln.sr || "")) { section = String(ln.spec || "").trim().slice(0, 120); sectionSr = String(ln.sr || "").trim(); } return; }
         if (["letter", "number", "text"].indexOf(ln.type) < 0) return;
@@ -314,13 +369,16 @@
         var line = db.cm.lines.filter(function (x) { return x.factory_id === f.id && x.norm_text === n; })[0];
         if (!line) { line = { id: "l" + Date.now() + "_" + i, factory_id: f.id, norm_text: n, spec_text: ln.spec, compliance: "", remarks: "", status: "open", times_seen: 0, last_seen_at: "", answered_at: null, answered_by: null, answer_source: "" }; db.cm.lines.push(line); }
         if (!seen[n]) { seen[n] = 1; line.times_seen++; line.last_seen_at = new Date().toISOString(); }
+        kept[kept.length - 1].line_id = line.id;
         if (!line.part && part) line.part = part;
         if (!line.section && section) line.section = section;
         if (!line.home_run) { line.home_run = runId; line.home_seq = i; line.sr = String(ln.sr || "").replace(/[.)]\s*$/, ""); line.row_type = ln.type; line.section_sr = sectionSr; line.file_name = d.fileName || ""; }
         if (line.status === "answered") { matched++; answers.push({ i: i, compliance: line.compliance, remarks: line.remarks }); }
       });
       var run = { id: runId, kind: "conversion", created_at: new Date().toISOString(), user: u.full_name, username: u.username, product: f.product, factory: f.name, source: d.source, file_name: d.fileName || "", line_count: d.lines.length, unique_count: Object.keys(seen).length, matched_count: matched };
+      run.user_id = u.id; run.product_id = f.product_id; run.project_id = d.projectId || null; run.rows = d.projectId ? kept : [];
       db.cm.runs.unshift(run);
+      if (d.projectId) prLog(db, d.projectId, u, "Specification converted", d.fileName || "");
       return { ok: true, run_id: run.id, lines: d.lines.length, unique_lines: run.unique_count, matched: matched, answers: answers };
     }),
     cmAdminLines: demo(function (db, t, d) {
@@ -493,6 +551,142 @@
       }
       if (!found) fail("That row no longer exists. Refresh the page.");
       return { ok: true };
+    }),
+    // ---- Projects (same rules as the PROJECTS part of db/schema.sql) ----
+    prOptions: demo(function (db, t) { sessionUser(db, t); return { client_types: db.pr.client_types, regions: db.pr.regions }; }),
+    prList: demo(function (db, t) {
+      var u = sessionUser(db, t), all = isAdminRole(u);
+      return { all: all, projects: db.pr.projects.filter(function (p) { return all || p.created_by === u.id; }).map(function (p) { return prCard(db, u, p); })
+        .sort(function (a, b) { return String(b.last_at).localeCompare(String(a.last_at)); }) };
+    }),
+    prSave: demo(function (db, t, d) {
+      var u = sessionUser(db, t), name = String(d.name || "").replace(/\s+/g, " ").trim().slice(0, 120), client = String(d.clientName || "").replace(/\s+/g, " ").trim().slice(0, 120);
+      if (name.length < 2) fail("Project name is required.");
+      if (db.pr.client_types.indexOf(d.clientType) < 0) fail("Choose the client type.");
+      if (client.length < 2) fail("Client name is required.");
+      if (db.pr.regions.indexOf(d.region) < 0) fail("Choose the region.");
+      var now = new Date().toISOString(), p;
+      if (!d.id) {
+        if (db.pr.projects.some(function (x) { return x.created_by === u.id && x.name.toLowerCase() === name.toLowerCase(); })) fail("You already have a project with this name. Open it from the list, or use another name.");
+        p = { id: "p" + Date.now(), name: name, client_type: d.clientType, client_name: client, region: d.region, created_by: u.id, created_at: now, updated_by: u.id, updated_at: now };
+        db.pr.projects.push(p); prLog(db, p.id, u, "Project created", name);
+      } else {
+        p = prProject(db, u, d.id);
+        p.name = name; p.client_type = d.clientType; p.client_name = client; p.region = d.region; p.updated_by = u.id; p.updated_at = now;
+        prLog(db, p.id, u, "Project details changed", "");
+      }
+      return { ok: true, id: p.id };
+    }),
+    prGet: demo(function (db, t, id) { var u = sessionUser(db, t); return prDetail(db, u, prProject(db, u, id)); }),
+    prExport: demo(function (db, t, id) {
+      var u = sessionUser(db, t), p = prProject(db, u, id), out = prDetail(db, u, p);
+      out.compliance = []; out.tables = [];
+      db.cm.runs.filter(function (r) { return r.project_id === p.id; }).reverse().forEach(function (r) {
+        (r.rows || []).forEach(function (x) {
+          var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0], own = !!(x.compliance || x.remarks);
+          out.compliance.push({ run: r.id, seq: x.seq, type: x.type, sr: x.sr, spec: x.spec,
+            compliance: own ? x.compliance : (l ? l.compliance : ""), remarks: own ? x.remarks : (l ? l.remarks : ""),
+            source: own ? ({ pending: "Project answer, waiting for review", approved: "Project answer, approved for the library", rejected: "Project answer, not taken into the library" }[x.review] || "Same as the library")
+                        : (l && l.status === "answered" ? "From the library" : ""), by: own ? prName(db, x.answered_by) : "" });
+        });
+      });
+      db.pr.notes.filter(function (n) { return n.project_id === p.id; }).forEach(function (n) {
+        out.tables.push({ id: n.id, product: prProductName(db, n.product_id), file_names: n.file_names, created_at: n.created_at, columns: n.columns, rows: n.rows });
+      });
+      prLog(db, p.id, u, "Project downloaded", "");
+      return out;
+    }),
+    prNoteSave: demo(function (db, t, d) {
+      var u = sessionUser(db, t), p = prProject(db, u, d.projectId);
+      if (!d.columns || !d.rows || !d.rows.length) fail("There is no table to save.");
+      var n = { id: "n" + Date.now(), project_id: p.id, user_id: u.id, product_id: d.productId, file_names: String(d.fileNames || "").slice(0, 400), units: d.columns.length,
+                row_count: d.rows.filter(function (r) { return (r.kind || "row") === "row"; }).length, columns: d.columns, rows: d.rows, created_at: new Date().toISOString() };
+      db.pr.notes.push(n);
+      prLog(db, p.id, u, "Datasheet notes saved", n.units + (n.units === 1 ? " unit" : " units") + ", " + n.file_names);
+      return { ok: true, id: n.id };
+    }),
+    prNoteGet: demo(function (db, t, id) {
+      var u = sessionUser(db, t), n = db.pr.notes.filter(function (x) { return x.id === id; })[0];
+      if (!n) fail("That table no longer exists."); prProject(db, u, n.project_id);
+      return { id: n.id, file_names: n.file_names, columns: n.columns, rows: n.rows };
+    }),
+    prDeleteRecord: demo(function (db, t, kind, id) {
+      var u = sessionUser(db, t), rec;
+      if (kind === "note") {
+        rec = db.pr.notes.filter(function (x) { return x.id === id; })[0]; if (!rec) fail("That record no longer exists.");
+        prProject(db, u, rec.project_id); db.pr.notes = db.pr.notes.filter(function (x) { return x.id !== id; });
+        prLog(db, rec.project_id, u, "Datasheet notes deleted", rec.file_names);
+      } else if (kind === "run") {
+        rec = db.cm.runs.filter(function (x) { return x.id === id; })[0]; if (!rec || !rec.project_id) fail("That record no longer exists.");
+        prProject(db, u, rec.project_id); prLog(db, rec.project_id, u, "Compliance record removed", rec.file_name);
+        (rec.rows || []).forEach(function (x) { if (x.review === "pending") x.review = ""; }); rec.project_id = null;
+      } else fail("Unknown record type.");
+      return { ok: true };
+    }),
+    prSubmitAnswers: demo(function (db, t, runId, rows) {
+      var u = sessionUser(db, t), r = db.cm.runs.filter(function (x) { return x.id === runId; })[0], src = {}, stored = 0, pending = 0;
+      if (!r || !r.project_id) fail("That compliance record is not in a project.");
+      prProject(db, u, r.project_id);
+      if (!rows || !rows.length) fail("No rows were found in that file.");
+      rows.forEach(function (x) { var c = String(x.compliance || "").trim(), m = String(x.remarks || "").trim(); if (c || m) src[cmNorm(x.spec)] = { c: c, r: m }; });
+      (r.rows || []).forEach(function (x) {
+        var s = src[cmNorm(x.spec)]; if (!s || !x.line_id || (x.compliance === s.c && x.remarks === s.r)) return;
+        var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0];
+        x.compliance = s.c; x.remarks = s.r; x.answered_by = u.id; x.answered_at = new Date().toISOString();
+        x.review = l && l.status === "answered" && l.compliance === s.c && l.remarks === s.r ? "" : "pending"; x.reviewed_by = null; x.reviewed_at = null;
+        stored++; if (x.review === "pending") pending++;
+      });
+      prLog(db, r.project_id, u, "Filled compliance uploaded", stored + " answers saved, " + pending + " sent for review (" + (r.file_name || "pasted text") + ")");
+      return { ok: true, rows: rows.length, stored: stored, pending: pending };
+    }),
+    prReviewList: demo(function (db, t, d) {
+      editor(db, t, "compliance-maker");
+      var st = d && ["pending", "approved", "rejected"].indexOf(d.status) >= 0 ? d.status : "pending", counts = { pending: 0, approved: 0, rejected: 0 }, items = [];
+      db.cm.runs.slice().reverse().forEach(function (r) {
+        var p = db.pr.projects.filter(function (x) { return x.id === r.project_id; })[0];
+        (r.rows || []).forEach(function (x) {
+          if (!x.review) return; counts[x.review]++;
+          if (x.review !== st) return;
+          var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0] || {};
+          items.push({ run: r.id, seq: x.seq, sr: x.sr, spec: x.spec, compliance: x.compliance, remarks: x.remarks, by: prName(db, x.answered_by), at: x.answered_at,
+            project: p ? p.name : "(removed from its project)", client: p ? p.client_name : "", region: p ? p.region : "", product: r.product, factory: r.factory, file_name: r.file_name,
+            lib_compliance: l.compliance || "", lib_remarks: l.remarks || "", lib_answered: l.status === "answered",
+            reviewed_by: x.reviewed_by ? prName(db, x.reviewed_by) : "", reviewed_at: x.reviewed_at || null });
+        });
+      });
+      items.sort(function (a, b) { return a.project.localeCompare(b.project); });
+      var off = (d && d.offset) || 0;
+      return { counts: counts, total: items.length, items: items.slice(off, off + ((d && d.limit) || 100)) };
+    }),
+    prReviewDecide: demo(function (db, t, d) {
+      var a = editor(db, t, "compliance-maker"), r = db.cm.runs.filter(function (x) { return x.id === d.run; })[0];
+      var x = r && (r.rows || []).filter(function (y) { return y.seq === d.seq; })[0], now = new Date().toISOString();
+      if (!x || !x.line_id || !x.review) fail("That answer is no longer waiting for review.");
+      if (d.decision === "approve") {
+        var c = String(d.compliance == null ? x.compliance : d.compliance).trim(), m = String(d.remarks == null ? x.remarks : d.remarks).trim();
+        if (!c && !m) fail("An approved answer cannot be empty.");
+        var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0];
+        if (l) { l.compliance = c; l.remarks = m; l.status = "answered"; l.answered_by = a.full_name; l.answered_at = now; l.answer_source = "approved"; }
+        db.cm.runs.forEach(function (rr) { (rr.rows || []).forEach(function (y) {
+          if (y.line_id === x.line_id && y.review === "pending" && (y === x || (y.compliance === c && y.remarks === m))) { y.review = "approved"; y.reviewed_by = a.id; y.reviewed_at = now; }
+        }); });
+        if (r.project_id) prLog(db, r.project_id, a, "Answer approved for the library", x.spec.slice(0, 200));
+      } else if (d.decision === "reject") {
+        x.review = "rejected"; x.reviewed_by = a.id; x.reviewed_at = now;
+        if (r.project_id) prLog(db, r.project_id, a, "Answer not taken into the library", x.spec.slice(0, 200));
+      } else fail("Unknown decision.");
+      return { ok: true };
+    }),
+    prAdminSummary: demo(function (db, t) {
+      admin(db, t);
+      function tally(key) { var m = {}; db.pr.projects.forEach(function (p) { m[p[key]] = (m[p[key]] || 0) + 1; }); return Object.keys(m).map(function (k) { return { name: k, n: m[k] }; }).sort(function (a, b) { return b.n - a.n || a.name.localeCompare(b.name); }); }
+      var pending = 0, prod = {};
+      db.cm.runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.review === "pending") pending++; }); if (r.project_id) (prod[r.product] = prod[r.product] || {})[r.project_id] = 1; });
+      db.pr.notes.forEach(function (n) { var nm = prProductName(db, n.product_id); (prod[nm] = prod[nm] || {})[n.project_id] = 1; });
+      var newRows = 0; Object.keys(db.dn || {}).forEach(function (k) { ((db.dn[k] || {}).rules || []).forEach(function (r) { if (r["new"]) newRows++; }); });
+      return { pending_users: db.users.filter(function (x) { return x.status === "pending"; }).length, pending_answers: pending, new_rows: newRows,
+               projects: db.pr.projects.length, by_region: tally("region"), by_client_type: tally("client_type"),
+               by_product: Object.keys(prod).map(function (k) { return { name: k, n: Object.keys(prod[k]).length }; }).sort(function (a, b) { return b.n - a.n; }) };
     }),
     adminSaveCategory: demo(function (db, t, d) {
       superUser(db, t);

@@ -10,6 +10,17 @@
 <script src="assets/js/config.js"></script>
 <script src="assets/js/api.js"></script>
 <script src="assets/js/hub.js"></script>
+<style>
+  .ad-tabs { overflow-x: auto; }
+  .ad-tabs .tab { white-space: nowrap; }
+  .ad-wait { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ad-sum { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .ad-sum h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-soft); margin-bottom: 6px; }
+  .ad-sum ul { list-style: none; margin: 0; padding: 0; }
+  .ad-sum li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .ad-sum li:last-child { border-bottom: 0; }
+  .ad-who td { vertical-align: top; }
+</style>
 </head>
 <body>
 <header id="topbar"></header>
@@ -18,11 +29,16 @@
     <p class="small"><a href="dashboard.html">&larr; Dashboard</a></p>
     <h1>Admin</h1>
     <p id="adminIntro">Approve people, decide which team tiles they can open and which tools they can edit.</p>
-    <p class="small" style="margin-top:8px"><a href="tools/compliance-maker/library.html">Compliance library</a> &middot; <a href="tools/datasheet-notes/mapping.html">Datasheet row mapping</a></p>
   </div>
 
-  <div class="tabs" role="tablist">
+  <div class="notice warn ad-wait" id="adWait" role="status" hidden></div>
+
+  <div class="tabs ad-tabs" role="tablist">
     <button class="tab" role="tab" data-tab="users" aria-selected="true">Users <span class="badge warn" id="pendingCount" hidden></span></button>
+    <button class="tab" role="tab" data-tab="library" aria-selected="false">Compliance Library <span class="badge warn" id="reviewCount" hidden></span></button>
+    <button class="tab" role="tab" data-tab="products" aria-selected="false">Products <span class="badge warn" id="rowsCount" hidden></span></button>
+    <button class="tab" role="tab" data-tab="projects" aria-selected="false">Projects</button>
+    <button class="tab" role="tab" data-tab="who" aria-selected="false">Who approves what</button>
     <button class="tab" role="tab" data-tab="tools" aria-selected="false" data-super hidden>Tools</button>
     <button class="tab" role="tab" data-tab="tiles" aria-selected="false" data-super hidden>Team tiles</button>
   </div>
@@ -36,6 +52,73 @@
       </table>
     </div>
     <p class="small muted" id="usersNote">General is open to every approved user. Admins can open every tile and edit every tool. "Can edit" gives a user write access to one tool's library or mapping. Changes apply when you press Save.</p>
+  </section>
+
+  <!-- COMPLIANCE LIBRARY -->
+  <section id="tab-library" hidden>
+    <div class="grid">
+      <a class="tile" href="tools/projects/review.html?from=admin">
+        <span class="badge warn" id="reviewBadge" hidden></span>
+        <div class="tile-icon" id="icReview"></div><h3>Review and approval</h3>
+        <p>Answers users filled in their projects. Approve the good ones into the library.</p>
+        <div class="meta" id="reviewMeta">Nothing is waiting.</div>
+      </a>
+      <a class="tile" href="tools/compliance-maker/library.html?from=admin">
+        <div class="tile-icon" id="icLibrary"></div><h3>Master compliance library</h3>
+        <p>Every clause by part, topic and section. Answer, correct, upload or download.</p>
+        <div class="meta">One library per factory</div>
+      </a>
+    </div>
+  </section>
+
+  <!-- PRODUCTS -->
+  <section id="tab-products" hidden>
+    <div class="grid">
+      <a class="tile" href="tools/datasheet-notes/mapping.html?from=admin">
+        <span class="badge warn" id="rowsBadge" hidden></span>
+        <div class="tile-icon" id="icMap"></div><h3>Product row mapping</h3>
+        <p>Which datasheet rows users get, their names, standard responses and keywords.</p>
+        <div class="meta" id="rowsMeta">No new rows to look at.</div>
+      </a>
+      <a class="tile" href="tools/product-options/index.html?from=admin">
+        <div class="tile-icon" id="icOptions"></div><h3>Product options</h3>
+        <p>The options seen on datasheets, per product and factory.</p>
+        <div class="meta">Built from the mapped rows</div>
+      </a>
+    </div>
+  </section>
+
+  <!-- PROJECTS -->
+  <section id="tab-projects" class="stack" hidden>
+    <div class="card stack">
+      <div class="row" style="justify-content:space-between">
+        <h2 id="projTitle">Projects</h2>
+        <a class="btn" href="tools/projects/index.html">Open all projects</a>
+      </div>
+      <p class="small muted">Admins see the projects of every user, with their compliance records, datasheet tables and history. The list can be searched, filtered and downloaded there.</p>
+      <div class="ad-sum" id="projSum"></div>
+    </div>
+  </section>
+
+  <!-- WHO APPROVES WHAT -->
+  <section id="tab-who" class="stack" hidden>
+    <div class="table-wrap">
+      <table class="table ad-who">
+        <thead><tr><th>What</th><th>Who decides</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>A new user account (approve, reject, disable)</td><td>Super user, admins</td><td>Users tab</td></tr>
+          <tr><td>Which team tiles a user can open, and "Can edit" for a tool</td><td>Super user, admins</td><td>Users tab</td></tr>
+          <tr><td>Making someone an admin, changing or resetting an admin, deleting an account</td><td>Super user only</td><td>Users tab</td></tr>
+          <tr><td>Tools and team tiles (add, hide, rename)</td><td>Super user only</td><td>Tools and Team tiles tabs</td></tr>
+          <tr><td>A project answer going into the master compliance library</td><td>Super user, admins, users with "Can edit" for Compliance Maker</td><td>Compliance Library &gt; Review and approval</td></tr>
+          <tr><td>Answers typed or uploaded straight into the library</td><td>Same people</td><td>Compliance Library &gt; Master compliance library</td></tr>
+          <tr><td>Which datasheet rows users see, and their wording</td><td>Super user, admins, users with "Can edit" for Datasheet Notes</td><td>Products &gt; Product row mapping</td></tr>
+          <tr><td>Product options (remove a wrong value)</td><td>Super user, admins, users with "Can edit" for Product Options</td><td>Products &gt; Product options</td></tr>
+          <tr><td>Seeing every user's projects and records</td><td>Super user, admins</td><td>Projects tab</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted">A user with "Can edit" is a key user for that one tool. The database checks every one of these rules; the pages only show or hide the buttons.</p>
   </section>
 
   <!-- TOOLS -->
@@ -201,7 +284,33 @@
     });
   }
 
-  function refresh() { return Api.adminOverview(Hub.token()).then(function (d) { data = d; render(); }, function (err) { Hub.toast(err.message, true); }); }
+  // ---------- what is waiting, and the project numbers ----------
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+  function badge(id, n) { $(id).hidden = !n; $(id).textContent = n; }
+  function openTab(name) { var t = document.querySelector('.tab[data-tab="' + name + '"]'); if (t && !t.hidden) t.click(); }
+  function summary() {
+    return Api.prAdminSummary(Hub.token()).then(function (s) {
+      badge("reviewCount", s.pending_answers); badge("reviewBadge", s.pending_answers); badge("rowsCount", s.new_rows); badge("rowsBadge", s.new_rows);
+      $("reviewMeta").textContent = s.pending_answers ? plural(s.pending_answers, "answer is", "answers are") + " waiting." : "Nothing is waiting.";
+      $("rowsMeta").textContent = s.new_rows ? plural(s.new_rows, "new row", "new rows") + " to look at." : "No new rows to look at.";
+      var wait = $("adWait"), items = []; wait.textContent = "";
+      if (s.pending_users) items.push([plural(s.pending_users, "user", "users") + " to approve", "users"]);
+      if (s.pending_answers) items.push([plural(s.pending_answers, "compliance answer", "compliance answers") + " to review", "library"]);
+      if (s.new_rows) items.push([plural(s.new_rows, "new datasheet row", "new datasheet rows") + " to map", "products"]);
+      wait.hidden = !items.length;
+      if (items.length) wait.appendChild(el("b", { text: "Waiting for a decision:" }));
+      items.forEach(function (it) { wait.appendChild(el("button", { "class": "btn ghost sm", type: "button", text: it[0], onclick: function () { openTab(it[1]); } })); });
+      $("projTitle").textContent = plural(s.projects, "project", "projects");
+      var host = $("projSum"); host.textContent = "";
+      [["By region", s.by_region], ["By client type", s.by_client_type], ["By product", s.by_product]].forEach(function (g) {
+        host.appendChild(el("div", {}, [el("h3", { text: g[0] }),
+          (g[1] || []).length ? el("ul", {}, g[1].map(function (x) { return el("li", {}, [el("span", { text: x.name }), el("b", { text: String(x.n) })]); }))
+                              : el("p", { "class": "small muted", text: "Nothing yet." })]));
+      });
+    }, function () { /* the rest of the page still works */ });
+  }
+
+  function refresh() { summary(); return Api.adminOverview(Hub.token()).then(function (d) { data = d; render(); }, function (err) { Hub.toast(err.message, true); }); }
 
   // ---------- wiring ----------
   [].forEach.call(document.querySelectorAll(".tab"), function (tab) {
@@ -228,6 +337,8 @@
 
   Hub.requireLogin({ admin: true }).then(function (p) {
     me = p.user;
+    $("icReview").innerHTML = Hub.ICON.checklist; $("icLibrary").innerHTML = Hub.ICON.book; $("icMap").innerHTML = Hub.ICON.table; $("icOptions").innerHTML = Hub.ICON.tree;
+    if (window.location.hash) openTab(window.location.hash.slice(1));
     if (Hub.isSuper(me)) {
       [].forEach.call(document.querySelectorAll("[data-super]"), function (n) { n.hidden = false; });
       $("adminIntro").textContent = "Approve people, set roles, tile access and edit rights, and manage the tools on each tile.";

@@ -26,7 +26,6 @@
   <!-- view 2: one team's tools (tiles are hidden while this is open) -->
   <section id="toolsView" hidden>
     <div class="page-head">
-      <p class="small" id="backRow"><a href="#" id="backLink">&larr; Dashboard</a></p>
       <h1 id="toolsTitle"></h1>
       <p id="toolsSub"></p>
     </div>
@@ -40,7 +39,14 @@
   var CAT_ICON = { general: Hub.ICON.grid, sales: Hub.ICON.chart, sbu: Hub.ICON.wrench };
   var TOOL_ICON = { "compliance-maker": Hub.ICON.checklist, "datasheet-notes": Hub.ICON.table, "product-options": Hub.ICON.tree,
                     "coil-data-extractor": Hub.ICON.coil, "container-calculator": Hub.ICON.box, "centre-of-gravity": Hub.ICON.target,
-                    "psychrometric-chart": Hub.ICON.curve, "standards": Hub.ICON.book };
+                    "psychrometric-chart": Hub.ICON.curve, "standards": Hub.ICON.book, "projects": Hub.ICON.folder };
+
+  // Tools that are opened from inside a project (Compliance Maker, Datasheet Notes) have no tile
+  // of their own when the tile has Projects: they are reached through a project.
+  function tiles(c) {
+    var hasProjects = c.tools.some(function (t) { return t.id === "projects" && t.status === "live"; });
+    return c.tools.filter(function (t) { return !(hasProjects && t.project_tool); });
+  }
 
   function selected() { return decodeURIComponent(location.hash.slice(1)); }
 
@@ -48,9 +54,9 @@
   function renderTiles() {
     var host = document.getElementById("tiles"); host.textContent = "";
     profile.categories.filter(function (c) { return c.allowed; }).forEach(function (c) {
-      var live = c.tools.filter(function (t) { return t.status === "live"; }).length;
-      var soon = c.tools.length - live;
-      var meta = c.tools.length === 0 ? "No tools yet"
+      var list = tiles(c), live = list.filter(function (t) { return t.status === "live"; }).length;
+      var soon = list.length - live;
+      var meta = list.length === 0 ? "No tools yet"
                : live + (live === 1 ? " tool" : " tools") + (soon ? ", " + soon + " coming soon" : "");
       host.appendChild(el("button", { type: "button", "class": "tile", onclick: function () { location.hash = c.id; } }, [
         el("span", { "class": "tile-icon", "aria-hidden": "true", html: CAT_ICON[c.id] || Hub.ICON.grid }),
@@ -63,7 +69,7 @@
 
   // only: the user has this one tile, so its tools are the dashboard
   function renderTools(c, only) {
-    document.getElementById("backRow").hidden = only;
+    Hub.setBack(only ? null : "Dashboard", back);
     document.getElementById("toolsTitle").textContent = only ? document.getElementById("hello").textContent : c.name;
     document.getElementById("toolsSub").textContent = c.description;
     document.title = (only ? "Dashboard" : c.name) + " - DAME Tools Hub";
@@ -72,7 +78,7 @@
       host.appendChild(el("div", { "class": "empty", style: "grid-column:1/-1", text: "No tools have been added to " + c.name + " yet." }));
       return;
     }
-    c.tools.forEach(function (t) {
+    tiles(c).forEach(function (t) {
       var isLive = t.status === "live" && t.path;
       host.appendChild(el(isLive ? "a" : "div", {
         "class": "tile" + (isLive ? "" : " disabled"), href: isLive ? Hub.url(t.path) : null
@@ -92,15 +98,14 @@
     var c = only ? open[0] : open.filter(function (x) { return x.id === selected(); })[0];
     document.getElementById("homeView").hidden = !!c;
     document.getElementById("toolsView").hidden = !c;
-    if (c) renderTools(c, only); else { document.title = "Dashboard - DAME Tools Hub"; renderTiles(); }
+    if (c) renderTools(c, only); else { document.title = "Dashboard - DAME Tools Hub"; Hub.setBack(null); renderTiles(); }
     window.scrollTo(0, 0);
   }
 
-  document.getElementById("backLink").addEventListener("click", function (e) {
-    e.preventDefault();
+  function back() {
     history.pushState(null, "", location.pathname + location.search);   // clear the #team part
     render();
-  });
+  }
 
   Hub.requireLogin().then(function (p) {
     profile = p;

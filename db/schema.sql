@@ -1,7 +1,17 @@
 -- ============================================================
 -- DAME Tools Hub - database schema (Supabase / PostgreSQL)
--- Run this whole file once in the Supabase SQL Editor.
--- Safe to re-run: it does not delete users or access rights.
+-- This is the ONLY file to run. Paste the whole of it in the Supabase
+-- SQL Editor and press Run: at first set-up and after every site update.
+-- Safe to re-run: it does not delete users, access rights or saved data.
+--
+-- Order of the parts (a later part uses the tables of the earlier ones):
+--   1. Users, sessions, tiles, tools        app_*
+--   2. Compliance Maker library             cm_*
+--   3. Datasheet Notes row mapping          dn_*
+--   4. Product Options                      po_*
+--   5. Projects, review, history            pr_*
+--   6. Permissions (always last)
+-- Who may do what is listed in db/README.md.
 --
 -- Design:
 --   * Login is username + password only. No email, no Supabase Auth.
@@ -76,6 +86,9 @@ create table if not exists public.app_tools (
 );
 -- editable = the tool has an edit screen (a library, a row mapping) that admins and chosen users maintain.
 alter table public.app_tools add column if not exists editable boolean not null default false;
+-- Tools that are opened from inside a project (Compliance Maker, Datasheet Notes). The dashboard
+-- shows them under the Projects tile, not as tiles of their own.
+alter table public.app_tools add column if not exists project_tool boolean not null default false;
 
 -- Per-tool write access for ordinary users. Admins and the superuser may edit every editable tool.
 create table if not exists public.app_tool_editors (
@@ -252,7 +265,7 @@ language sql security definer set search_path = public, extensions as $$
                'tools', coalesce((
                    select jsonb_agg(jsonb_build_object(
                             'id', t.id, 'name', t.name, 'description', t.description,
-                            'path', t.path, 'status', t.status,
+                            'path', t.path, 'status', t.status, 'project_tool', t.project_tool,
                             'can_edit', public.app__can_edit(u, t.id)) order by t.sort, t.name)
                      from public.app_tools t
                     where t.category_id = c.id and t.status <> 'hidden'), '[]'::jsonb)
@@ -848,8 +861,9 @@ end $$;
 --   p_lines: [{ "type": "letter", "sr": "A.", "spec": "Casing shall be ..." }, ...] in document order
 -- Every line is stored. Body lines (letter / number / text) are added to the master
 -- library once each; headings are kept with the run only.
+drop function if exists public.cm_save_run(text, text, text, text, jsonb);
 create or replace function public.cm_save_run(
-  p_token text, p_factory_id text, p_source text, p_file_name text, p_lines jsonb)
+  p_token text, p_factory_id text, p_source text, p_file_name text, p_lines jsonb, p_project_id uuid default null)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -868,11 +882,17 @@ begin
     perform public.app__fail('This specification is too long to save in one go (more than 8000 lines).');
   end if;
 
-  insert into public.cm_runs (kind, user_id, product_id, factory_id, source, file_name)
+  -- p_project_id: the project this conversion is saved under (checked by pr__project)
+  if p_project_id is not null then perform public.pr__project(u, p_project_id); end if;
+
+  insert into public.cm_runs (kind, user_id, product_id, factory_id, source, file_name, project_id)
   values ('conversion', u.id, f.product_id, f.id,
           case when p_source in ('pdf','text') then p_source else '' end,
-          left(coalesce(p_file_name, ''), 200))
+          left(coalesce(p_file_name, ''), 200), p_project_id)
   returning id into v_run;
+  if p_project_id is not null then
+    perform public.pr__log(p_project_id, u.id, 'Specification converted', left(coalesce(p_file_name, ''), 200));
+  end if;
 
   with src as (
     select (e.ord - 1)::int as seq,
@@ -1776,6 +1796,499 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- ============================================================
+-- PROJECTS
+--
+-- A project is the folder every piece of work is saved under: the specification conversions
+-- of the Compliance Maker (cm_runs.project_id), the answers a user filled for them
+-- (cm_run_lines.compliance / remarks) and the tables of the Datasheet Notes (pr_notes).
+--   pr_lists      the choices for Client type and Region (super user edits them here in SQL)
+--   pr_projects   one row per project: name, client type, client name, region, who and when
+--   pr_notes      one saved Datasheet Notes table per run, as shown to the user
+--   pr_log        what happened in a project, by whom (history / audit)
+-- Who sees what: a user sees and works in the projects he created; admins and the super user
+-- see every project. Who approves what: a user's compliance answer goes into the master
+-- library (cm_lines) only when an editor of the Compliance Maker approves it (admins, the
+-- super user, and users given "Can edit" for it). Datasheet notes stay in their project.
+-- ============================================================
+
+create table if not exists public.pr_lists (
+  kind  text not null check (kind in ('client_type', 'region')),
+  value text not null,
+  sort  int  not null default 100,
+  primary key (kind, value)
+);
+
+create table if not exists public.pr_projects (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null,
+  client_type text not null,
+  client_name text not null,
+  region      text not null,
+  created_by  uuid references public.app_users(id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_by  uuid references public.app_users(id) on delete set null,
+  updated_at  timestamptz not null default now()
+);
+create index if not exists pr_projects_owner_idx on public.pr_projects (created_by, created_at desc);
+
+create table if not exists public.pr_notes (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.pr_projects(id) on delete cascade,
+  user_id    uuid references public.app_users(id) on delete set null,
+  product_id text not null references public.cm_products(id),
+  file_names text not null default '',
+  units      int  not null default 0,
+  row_count  int  not null default 0,
+  columns    jsonb not null default '[]'::jsonb,   -- unit tags, one per column
+  rows       jsonb not null default '[]'::jsonb,   -- [{ section, component, cells, marks, kind }] as on screen
+  created_at timestamptz not null default now()
+);
+create index if not exists pr_notes_project_idx on public.pr_notes (project_id, created_at desc);
+
+create table if not exists public.pr_log (
+  id         bigint generated always as identity primary key,
+  project_id uuid not null references public.pr_projects(id) on delete cascade,
+  user_id    uuid references public.app_users(id) on delete set null,
+  action     text not null,
+  detail     text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists pr_log_project_idx on public.pr_log (project_id, created_at desc);
+
+-- Compliance Maker conversions belong to a project; a user's own answers sit on the run's lines.
+--   review: ''         no answer, or the answer is the one the library already holds
+--           'pending'  waiting for an editor   'approved' now in the library   'rejected' kept in the project only
+alter table public.cm_runs      add column if not exists project_id uuid references public.pr_projects(id) on delete set null;
+alter table public.cm_run_lines add column if not exists compliance  text not null default '';
+alter table public.cm_run_lines add column if not exists remarks     text not null default '';
+alter table public.cm_run_lines add column if not exists answered_by uuid references public.app_users(id) on delete set null;
+alter table public.cm_run_lines add column if not exists answered_at timestamptz;
+alter table public.cm_run_lines add column if not exists review      text not null default '';
+alter table public.cm_run_lines add column if not exists reviewed_by uuid references public.app_users(id) on delete set null;
+alter table public.cm_run_lines add column if not exists reviewed_at timestamptz;
+create index if not exists cm_runs_project_idx on public.cm_runs (project_id, created_at desc);
+create index if not exists cm_run_lines_review_idx on public.cm_run_lines (review) where review = 'pending';
+
+alter table public.pr_lists    enable row level security;
+alter table public.pr_projects enable row level security;
+alter table public.pr_notes    enable row level security;
+alter table public.pr_log      enable row level security;
+revoke all on public.pr_lists, public.pr_projects, public.pr_notes, public.pr_log from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.pr_lists, public.pr_projects, public.pr_notes, public.pr_log from anon, authenticated;
+  end if;
+end $$;
+
+insert into public.pr_lists (kind, value, sort) values
+  ('client_type', 'Consultant', 10), ('client_type', 'Contractor', 20), ('client_type', 'Developer / Owner', 30),
+  ('client_type', 'Distributor / Dealer', 40), ('client_type', 'Government', 50), ('client_type', 'Other', 90),
+  ('region', 'UAE', 10), ('region', 'Saudi Arabia', 20), ('region', 'Qatar', 30), ('region', 'Kuwait', 40),
+  ('region', 'Bahrain', 50), ('region', 'Oman', 60), ('region', 'Egypt', 70), ('region', 'Other Middle East', 80),
+  ('region', 'Africa', 85), ('region', 'Other', 90)
+on conflict (kind, value) do nothing;
+
+insert into public.app_tools (id, category_id, name, description, path, status, sort) values
+  ('projects', 'general', 'Projects',
+   'Open a project to convert specifications and read datasheets. Everything is saved under it.',
+   'tools/projects/', 'live', 5)
+on conflict (id) do nothing;
+update public.app_tools set project_tool = true where id in ('compliance-maker', 'datasheet-notes');
+
+-- ---------- helpers ----------
+create or replace function public.pr__is_admin(u public.app_users) returns boolean
+language sql immutable as $$ select u.role in ('admin', 'superuser'); $$;
+
+-- The project, if this user may open it (its creator, an admin or the super user). Raises otherwise.
+create or replace function public.pr__project(u public.app_users, p_id uuid)
+returns public.pr_projects
+language plpgsql security definer set search_path = public, extensions as $$
+declare p public.pr_projects;
+begin
+  select * into p from public.pr_projects where id = p_id;
+  if p.id is null or not (public.pr__is_admin(u) or p.created_by = u.id) then
+    perform public.app__fail('That project is not available. Choose a project first.');
+  end if;
+  return p;
+end $$;
+
+create or replace function public.pr__log(p_project uuid, p_user uuid, p_action text, p_detail text default '')
+returns void language sql security definer set search_path = public, extensions as $$
+  insert into public.pr_log (project_id, user_id, action, detail)
+  values (p_project, p_user, p_action, left(coalesce(p_detail, ''), 400));
+$$;
+
+create or replace function public.pr__name(p_user uuid) returns text
+language sql stable security definer set search_path = public, extensions as $$
+  select coalesce((select full_name from public.app_users where id = p_user), '(deleted user)');
+$$;
+
+-- ---------- user API ----------
+create or replace function public.pr_options(p_token text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__session_user(p_token);
+  return jsonb_build_object(
+    'client_types', coalesce((select jsonb_agg(value order by sort, value) from public.pr_lists where kind = 'client_type'), '[]'::jsonb),
+    'regions',      coalesce((select jsonb_agg(value order by sort, value) from public.pr_lists where kind = 'region'), '[]'::jsonb));
+end $$;
+
+-- The projects this user may open (admins: all), newest activity first, with what each holds.
+create or replace function public.pr_list(p_token text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users;
+begin
+  u := public.app__session_user(p_token);
+  return jsonb_build_object('all', public.pr__is_admin(u), 'projects', coalesce((
+    select jsonb_agg(x.j order by x.last_at desc) from (
+      select greatest(p.updated_at,
+                      coalesce((select max(r.created_at) from public.cm_runs r where r.project_id = p.id), p.created_at),
+                      coalesce((select max(n.created_at) from public.pr_notes n where n.project_id = p.id), p.created_at)) as last_at,
+             jsonb_build_object('id', p.id, 'name', p.name, 'client_type', p.client_type, 'client_name', p.client_name,
+               'region', p.region, 'created_at', p.created_at, 'created_by', public.pr__name(p.created_by),
+               'mine', p.created_by = u.id,
+               'compliance', (select count(*) from public.cm_runs r where r.project_id = p.id),
+               'notes', (select count(*) from public.pr_notes n where n.project_id = p.id),
+               'pending', (select count(*) from public.cm_run_lines rl join public.cm_runs r on r.id = rl.run_id
+                            where r.project_id = p.id and rl.review = 'pending'),
+               'last_at', greatest(p.updated_at,
+                      coalesce((select max(r.created_at) from public.cm_runs r where r.project_id = p.id), p.created_at),
+                      coalesce((select max(n.created_at) from public.pr_notes n where n.project_id = p.id), p.created_at))) as j
+        from public.pr_projects p
+       where public.pr__is_admin(u) or p.created_by = u.id
+    ) x), '[]'::jsonb));
+end $$;
+
+-- Create (p_id null) or change a project. All four fields are required.
+create or replace function public.pr_save(
+  p_token text, p_id uuid, p_name text, p_client_type text, p_client_name text, p_region text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; p public.pr_projects;
+  v_name text := left(regexp_replace(trim(coalesce(p_name, '')), '\s+', ' ', 'g'), 120);
+  v_client text := left(regexp_replace(trim(coalesce(p_client_name, '')), '\s+', ' ', 'g'), 120);
+  v_type text := trim(coalesce(p_client_type, '')); v_region text := trim(coalesce(p_region, ''));
+begin
+  u := public.app__session_user(p_token);
+  if length(v_name) < 2 then perform public.app__fail('Project name is required.'); end if;
+  if not exists (select 1 from public.pr_lists where kind = 'client_type' and value = v_type) then
+    perform public.app__fail('Choose the client type.'); end if;
+  if length(v_client) < 2 then perform public.app__fail('Client name is required.'); end if;
+  if not exists (select 1 from public.pr_lists where kind = 'region' and value = v_region) then
+    perform public.app__fail('Choose the region.'); end if;
+
+  if p_id is null then
+    if exists (select 1 from public.pr_projects x where x.created_by = u.id and lower(x.name) = lower(v_name)) then
+      perform public.app__fail('You already have a project with this name. Open it from the list, or use another name.');
+    end if;
+    insert into public.pr_projects (name, client_type, client_name, region, created_by, updated_by)
+    values (v_name, v_type, v_client, v_region, u.id, u.id) returning * into p;
+    perform public.pr__log(p.id, u.id, 'Project created', v_name);
+  else
+    p := public.pr__project(u, p_id);
+    update public.pr_projects set name = v_name, client_type = v_type, client_name = v_client, region = v_region,
+           updated_by = u.id, updated_at = now() where id = p.id;
+    perform public.pr__log(p.id, u.id, 'Project details changed',
+      case when p.name <> v_name then 'Name: ' || p.name || ' -> ' || v_name else '' end);
+  end if;
+  return jsonb_build_object('ok', true, 'id', p.id);
+end $$;
+
+-- One project: its details, what is saved in it, and its history.
+create or replace function public.pr_get(p_token text, p_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; p public.pr_projects;
+begin
+  u := public.app__session_user(p_token);
+  p := public.pr__project(u, p_id);
+  return jsonb_build_object(
+    'project', jsonb_build_object('id', p.id, 'name', p.name, 'client_type', p.client_type, 'client_name', p.client_name,
+       'region', p.region, 'created_at', p.created_at, 'created_by', public.pr__name(p.created_by),
+       'updated_at', p.updated_at, 'updated_by', public.pr__name(p.updated_by)),
+    'runs', coalesce((
+      select jsonb_agg(jsonb_build_object('id', r.id, 'created_at', r.created_at, 'user', public.pr__name(r.user_id),
+               'product_id', r.product_id, 'product', pd.name, 'factory', fa.name, 'source', r.source, 'file_name', r.file_name,
+               'lines', r.line_count, 'from_library', r.matched_count,
+               'answered', (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and (rl.compliance <> '' or rl.remarks <> '')),
+               'pending',  (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and rl.review = 'pending'),
+               'approved', (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and rl.review = 'approved'),
+               'rejected', (select count(*) from public.cm_run_lines rl where rl.run_id = r.id and rl.review = 'rejected'))
+             order by r.created_at desc)
+        from public.cm_runs r
+        join public.cm_products pd on pd.id = r.product_id
+        join public.cm_factories fa on fa.id = r.factory_id
+       where r.project_id = p.id), '[]'::jsonb),
+    'notes', coalesce((
+      select jsonb_agg(jsonb_build_object('id', n.id, 'created_at', n.created_at, 'user', public.pr__name(n.user_id),
+               'product_id', n.product_id, 'product', pd.name, 'file_names', n.file_names, 'units', n.units, 'rows', n.row_count)
+             order by n.created_at desc)
+        from public.pr_notes n join public.cm_products pd on pd.id = n.product_id
+       where n.project_id = p.id), '[]'::jsonb),
+    'log', coalesce((
+      select jsonb_agg(x.j order by x.id desc) from (
+        select g.id, jsonb_build_object('at', g.created_at, 'user', public.pr__name(g.user_id), 'action', g.action, 'detail', g.detail) as j
+          from public.pr_log g where g.project_id = p.id order by g.id desc limit 200) x), '[]'::jsonb));
+end $$;
+
+-- Save one Datasheet Notes table in a project (called by the tool after every read).
+create or replace function public.pr_note_save(
+  p_token text, p_project_id uuid, p_product_id text, p_file_names text, p_columns jsonb, p_rows jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; p public.pr_projects; v_id uuid; v_units int; v_rows int;
+begin
+  u := public.app__session_user(p_token);
+  p := public.pr__project(u, p_project_id);
+  perform public.dn__product(p_product_id);
+  if p_columns is null or jsonb_typeof(p_columns) <> 'array' or p_rows is null or jsonb_typeof(p_rows) <> 'array'
+     or jsonb_array_length(p_rows) = 0 then
+    perform public.app__fail('There is no table to save.');
+  end if;
+  if length(p_rows::text) > 12000000 then
+    perform public.app__fail('This table is too large to keep in the project. Download the Excel instead.');
+  end if;
+  v_units := jsonb_array_length(p_columns);
+  v_rows := (select count(*) from jsonb_array_elements(p_rows) e where coalesce(e->>'kind', 'row') = 'row');
+  insert into public.pr_notes (project_id, user_id, product_id, file_names, units, row_count, columns, rows)
+  values (p.id, u.id, p_product_id, left(coalesce(p_file_names, ''), 400), v_units, v_rows, p_columns, p_rows)
+  returning id into v_id;
+  perform public.pr__log(p.id, u.id, 'Datasheet notes saved',
+    v_units || (case when v_units = 1 then ' unit' else ' units' end) || ', ' || left(coalesce(p_file_names, ''), 200));
+  return jsonb_build_object('ok', true, 'id', v_id);
+end $$;
+
+-- One saved Datasheet Notes table, to show or download it again.
+create or replace function public.pr_note_get(p_token text, p_note_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.pr_notes;
+begin
+  u := public.app__session_user(p_token);
+  select * into n from public.pr_notes where id = p_note_id;
+  if n.id is null then perform public.app__fail('That table no longer exists.'); end if;
+  perform public.pr__project(u, n.project_id);
+  return jsonb_build_object('id', n.id, 'file_names', n.file_names, 'columns', n.columns, 'rows', n.rows);
+end $$;
+
+-- Remove one saved record from a project: p_kind 'run' (a conversion and the answers on it) or 'note'.
+-- Clauses and approved answers already in the master library stay there.
+create or replace function public.pr_delete_record(p_token text, p_kind text, p_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; v_project uuid; v_what text;
+begin
+  u := public.app__session_user(p_token);
+  if p_kind = 'note' then
+    select project_id, file_names into v_project, v_what from public.pr_notes where id = p_id;
+    if v_project is null then perform public.app__fail('That record no longer exists.'); end if;
+    perform public.pr__project(u, v_project);
+    delete from public.pr_notes where id = p_id;
+    perform public.pr__log(v_project, u.id, 'Datasheet notes deleted', v_what);
+  elsif p_kind = 'run' then
+    select project_id, file_name into v_project, v_what from public.cm_runs where id = p_id;
+    if v_project is null then perform public.app__fail('That record no longer exists.'); end if;
+    perform public.pr__project(u, v_project);
+    -- the conversion leaves the project; it stays in the library's conversion history
+    update public.cm_run_lines set review = '' where run_id = p_id and review = 'pending';
+    update public.cm_runs set project_id = null where id = p_id;
+    perform public.pr__log(v_project, u.id, 'Compliance record removed', v_what);
+  else
+    perform public.app__fail('Unknown record type.');
+  end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- A user's filled compliance for one conversion of his project.
+--   p_rows: [{ "spec", "compliance", "remarks" }, ...] read from the filled Excel
+-- Each answer is stored on the matching line of the conversion (same text rule as the library).
+-- An answer equal to what the library already holds needs no review; any other waits for an editor.
+create or replace function public.pr_submit_answers(p_token text, p_run_id uuid, p_rows jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; r public.cm_runs; v_total int; v_stored int; v_pending int;
+begin
+  u := public.app__session_user(p_token);
+  select * into r from public.cm_runs where id = p_run_id;
+  if r.id is null or r.project_id is null then perform public.app__fail('That compliance record is not in a project.'); end if;
+  perform public.pr__project(u, r.project_id);
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) = 0 then
+    perform public.app__fail('No rows were found in that file.');
+  end if;
+  v_total := jsonb_array_length(p_rows);
+  if v_total > 20000 then perform public.app__fail('That file has more than 20000 rows.'); end if;
+
+  with src as (
+    select distinct on (public.cm__norm(e.val->>'spec'))
+           public.cm__norm(e.val->>'spec') as norm,
+           left(trim(coalesce(e.val->>'compliance', '')), 200) as c,
+           left(trim(coalesce(e.val->>'remarks', '')), 4000)   as rm
+      from jsonb_array_elements(p_rows) with ordinality as e(val, ord)
+     where trim(coalesce(e.val->>'compliance', '')) <> '' or trim(coalesce(e.val->>'remarks', '')) <> ''
+     order by public.cm__norm(e.val->>'spec'), e.ord desc
+  ), up as (
+    update public.cm_run_lines rl
+       set compliance = s.c, remarks = s.rm, answered_by = u.id, answered_at = now(),
+           review = case when l.status = 'answered' and l.compliance = s.c and l.remarks = s.rm then '' else 'pending' end,
+           reviewed_by = null, reviewed_at = null
+      from src s, public.cm_lines l
+     where rl.run_id = r.id and rl.line_id is not null and l.id = rl.line_id
+       and public.cm__norm(rl.spec_text) = s.norm
+       and (rl.compliance, rl.remarks) is distinct from (s.c, s.rm)
+    returning rl.review
+  )
+  select count(*), count(*) filter (where review = 'pending') into v_stored, v_pending from up;
+
+  perform public.pr__log(r.project_id, u.id, 'Filled compliance uploaded',
+    v_stored || ' answers saved, ' || v_pending || ' sent for review (' || coalesce(nullif(r.file_name, ''), 'pasted text') || ')');
+  return jsonb_build_object('ok', true, 'rows', v_total, 'stored', v_stored, 'pending', v_pending);
+end $$;
+
+-- Everything in one project, for the Excel download: details, compliance lines with the answer
+-- that applies (the user's own, else the library's), datasheet tables, history.
+create or replace function public.pr_export(p_token text, p_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; p public.pr_projects; v jsonb;
+begin
+  u := public.app__session_user(p_token);
+  p := public.pr__project(u, p_id);
+  v := public.pr_get(p_token, p_id);
+  perform public.pr__log(p.id, u.id, 'Project downloaded', '');
+  return v || jsonb_build_object(
+    'compliance', coalesce((
+      select jsonb_agg(jsonb_build_object('run', rl.run_id, 'seq', rl.seq, 'type', rl.type, 'sr', rl.sr, 'spec', rl.spec_text,
+               'compliance', case when rl.compliance <> '' or rl.remarks <> '' then rl.compliance else coalesce(l.compliance, '') end,
+               'remarks',    case when rl.compliance <> '' or rl.remarks <> '' then rl.remarks else coalesce(l.remarks, '') end,
+               'source', case when rl.compliance <> '' or rl.remarks <> '' then
+                              case rl.review when 'pending' then 'Project answer, waiting for review'
+                                             when 'approved' then 'Project answer, approved for the library'
+                                             when 'rejected' then 'Project answer, not taken into the library'
+                                             else 'Same as the library' end
+                              when l.status = 'answered' then 'From the library' else '' end,
+               'by', case when rl.answered_by is not null then public.pr__name(rl.answered_by) else '' end)
+             order by r.created_at, rl.run_id, rl.seq)
+        from public.cm_run_lines rl
+        join public.cm_runs r on r.id = rl.run_id
+        left join public.cm_lines l on l.id = rl.line_id
+       where r.project_id = p.id), '[]'::jsonb),
+    'tables', coalesce((
+      select jsonb_agg(jsonb_build_object('id', n.id, 'product', pd.name, 'file_names', n.file_names, 'created_at', n.created_at,
+               'columns', n.columns, 'rows', n.rows) order by n.created_at)
+        from public.pr_notes n join public.cm_products pd on pd.id = n.product_id
+       where n.project_id = p.id), '[]'::jsonb));
+end $$;
+
+-- ---------- review (editors of the Compliance Maker: admins, the super user, key users) ----------
+
+-- Answers users filled in their projects, for review. p_status: pending | approved | rejected.
+create or replace function public.pr_review_list(
+  p_token text, p_status text default 'pending', p_limit int default 100, p_offset int default 0)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare v_status text := case when p_status in ('pending', 'approved', 'rejected') then p_status else 'pending' end;
+begin
+  perform public.app__require_editor(p_token, 'compliance-maker');
+  return jsonb_build_object(
+    'counts', (select jsonb_build_object('pending', count(*) filter (where review = 'pending'),
+                                         'approved', count(*) filter (where review = 'approved'),
+                                         'rejected', count(*) filter (where review = 'rejected'))
+                 from public.cm_run_lines where review <> ''),
+    'total', (select count(*) from public.cm_run_lines where review = v_status),
+    'items', coalesce((
+      select jsonb_agg(x.j order by x.rn) from (
+        select row_number() over (order by pj.name, r.created_at, rl.seq) as rn,
+               jsonb_build_object('run', rl.run_id, 'seq', rl.seq, 'sr', rl.sr, 'spec', rl.spec_text,
+                 'compliance', rl.compliance, 'remarks', rl.remarks,
+                 'by', public.pr__name(rl.answered_by), 'at', rl.answered_at,
+                 'project', coalesce(pj.name, '(removed from its project)'), 'client', coalesce(pj.client_name, ''),
+                 'region', coalesce(pj.region, ''),
+                 'product', pd.name, 'factory', fa.name, 'file_name', r.file_name,
+                 'lib_compliance', coalesce(l.compliance, ''), 'lib_remarks', coalesce(l.remarks, ''),
+                 'lib_answered', coalesce(l.status = 'answered', false),
+                 'reviewed_by', case when rl.reviewed_by is not null then public.pr__name(rl.reviewed_by) else '' end,
+                 'reviewed_at', rl.reviewed_at) as j
+          from public.cm_run_lines rl
+          join public.cm_runs r on r.id = rl.run_id
+          join public.cm_products pd on pd.id = r.product_id
+          join public.cm_factories fa on fa.id = r.factory_id
+          left join public.pr_projects pj on pj.id = r.project_id
+          left join public.cm_lines l on l.id = rl.line_id
+         where rl.review = v_status
+         order by rn
+         limit least(greatest(coalesce(p_limit, 100), 1), 300) offset greatest(coalesce(p_offset, 0), 0)
+      ) x), '[]'::jsonb));
+end $$;
+
+-- Approve (the answer, as given or as corrected here, becomes the library's answer for that
+-- clause and factory) or reject (it stays in the user's project only).
+create or replace function public.pr_review_decide(
+  p_token text, p_run_id uuid, p_seq int, p_decision text, p_compliance text default null, p_remarks text default null)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  a public.app_users; rl public.cm_run_lines; r public.cm_runs;
+  v_c text; v_r text;
+begin
+  a := public.app__require_editor(p_token, 'compliance-maker');
+  select * into rl from public.cm_run_lines where run_id = p_run_id and seq = p_seq;
+  if rl.run_id is null or rl.line_id is null or rl.review = '' then perform public.app__fail('That answer is no longer waiting for review.'); end if;
+  select * into r from public.cm_runs where id = rl.run_id;
+  if p_decision = 'approve' then
+    v_c := left(trim(coalesce(p_compliance, rl.compliance)), 200);
+    v_r := left(trim(coalesce(p_remarks, rl.remarks)), 4000);
+    if v_c = '' and v_r = '' then perform public.app__fail('An approved answer cannot be empty.'); end if;
+    update public.cm_lines set compliance = v_c, remarks = v_r, status = 'answered',
+           answered_by = a.id, answered_at = now(), answer_source = 'approved'
+     where id = rl.line_id;
+    insert into public.cm_answer_log (line_id, compliance, remarks, source, run_id, user_id)
+    values (rl.line_id, v_c, v_r, 'approved', rl.run_id, a.id);
+    -- the same answer waiting on other conversions of the same clause is settled with it
+    update public.cm_run_lines x set review = 'approved', reviewed_by = a.id, reviewed_at = now()
+     where x.line_id = rl.line_id and x.review = 'pending'
+       and ((x.run_id = rl.run_id and x.seq = rl.seq) or (x.compliance = v_c and x.remarks = v_r));
+    if r.project_id is not null then
+      perform public.pr__log(r.project_id, a.id, 'Answer approved for the library', left(rl.spec_text, 200));
+    end if;
+  elsif p_decision = 'reject' then
+    update public.cm_run_lines set review = 'rejected', reviewed_by = a.id, reviewed_at = now()
+     where run_id = rl.run_id and seq = rl.seq;
+    if r.project_id is not null then
+      perform public.pr__log(r.project_id, a.id, 'Answer not taken into the library', left(rl.spec_text, 200));
+    end if;
+  else
+    perform public.app__fail('Unknown decision.');
+  end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- What is waiting for a decision, for the Admin page: new users, compliance answers, new mapping rows.
+create or replace function public.pr_admin_summary(p_token text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__require_admin(p_token);
+  return jsonb_build_object(
+    'pending_users',   (select count(*) from public.app_users where status = 'pending'),
+    'pending_answers', (select count(*) from public.cm_run_lines where review = 'pending'),
+    'new_rows',        (select count(*) from public.dn_map where not reviewed),
+    'projects',        (select count(*) from public.pr_projects),
+    'by_region', coalesce((select jsonb_agg(jsonb_build_object('name', region, 'n', n) order by n desc, region)
+                             from (select region, count(*) n from public.pr_projects group by 1) x), '[]'::jsonb),
+    'by_client_type', coalesce((select jsonb_agg(jsonb_build_object('name', client_type, 'n', n) order by n desc, client_type)
+                             from (select client_type, count(*) n from public.pr_projects group by 1) x), '[]'::jsonb),
+    'by_product', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'n', n) order by n desc, name)
+                             from (select pd.name, count(distinct k.project_id) n
+                                     from (select project_id, product_id from public.cm_runs where project_id is not null
+                                           union all select project_id, product_id from public.pr_notes) k
+                                     join public.cm_products pd on pd.id = k.product_id group by 1) x), '[]'::jsonb));
+end $$;
+
 -- ---------- permissions: website may call ONLY the public/admin API ----------
 do $$
 declare
@@ -1785,7 +2298,7 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%' or p.proname like 'po\_%')
+     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%' or p.proname like 'po\_%' or p.proname like 'pr\_%')
   loop
     execute format('revoke all on function %s from public', f.sig);
     if has_anon then

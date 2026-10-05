@@ -2,8 +2,9 @@
    Datasheet Notes - page logic.
    The product must be chosen before the upload appears. There is no
    factory choice: one row mapping per product serves every factory.
-   The PDF is read in the browser (ds-read.js); the datasheet is
-   never sent to the database. One PDF can hold several units and
+   The PDF is read in the browser (ds-read.js); the PDF itself is
+   never sent to the database. The table made from it is saved in
+   the chosen project (Api.prNoteSave, tools/projects/pr-pick.js). One PDF can hold several units and
    several PDFs can be chosen at once: every unit gets its own
    column, headed by its unit tag. The power supply is read from
    the datasheet (Fan Supply under Electrical Power Inputs Data).
@@ -61,9 +62,11 @@
       upload.hidden = true; result.hidden = true;
       return;
     }
-    hint.textContent = c ? 'The unit tags and the power supply are read from the datasheet.'
+    var needProject = window.PRPick.required() && !window.PRPick.current();
+    hint.textContent = c && needProject ? 'Choose a project to continue. Every table is saved in its project.'
+                     : c ? 'The unit tags and the power supply are read from the datasheet.'
                          : 'Choose a product to continue.';
-    var ready = !!(c && mapping);
+    var ready = !!(c && mapping) && !needProject;
     upload.hidden = !ready;
     mapNote.hidden = !(ready && mapping.error);
     if (ready && mapping.error) mapNote.textContent = 'The row mapping for this product could not be loaded (' + mapping.error + '). Every datasheet row is shown as printed.';
@@ -72,7 +75,7 @@
   }
 
   /* A result belongs to the product it was read for: changing the product clears it. */
-  function clearResult() { parsed = null; grid = null; fileName = ''; failed = []; result.hidden = true; say(''); }
+  function clearResult() { parsed = null; grid = null; fileName = ''; failed = []; result.hidden = true; say(''); $('dn-saved').hidden = true; }
   function remember() { try { sessionStorage.setItem(STORE, productSel.value); } catch (e) { /* ignore */ } }
 
   productSel.addEventListener('change', function () {
@@ -126,6 +129,7 @@
         say('');
         render();
         register();
+        keep(c, units.names || []);
         result.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }).then(null, function (err) { if (!stopped()) say(err.message, 'error'); })
@@ -179,6 +183,25 @@
       chain = chain.then(function () { return window.Api.poCollect(window.Hub.token(), { productId: c.productId, items: part }); });
     })(items.slice(i, i + 20000));
     chain.then(null, function () { /* the tree misses this run */ });
+  }
+
+  /* The table on screen is saved in the project, once per read. The Excel does not wait for it. */
+  function keep(c, names) {
+    var box = $('dn-saved'), project = window.PRPick.current(), no = runNo;
+    function tell(text, kind) { if (no !== runNo) return; box.hidden = false; box.className = 'notice' + (kind ? ' ' + kind : ''); box.textContent = text; }
+    box.hidden = true;
+    if (!project || !grid || !grid.rows.length) return;
+    var rows = grid.rows.map(function (r) { return { section: r.section || '', component: r.component || '', cells: r.cells || [], marks: r.marks || null, kind: r.kind || 'row' }; });
+    if (JSON.stringify(rows).length > 11000000) {
+      tell('This table is too large to save in the project (' + grid.columns.length + ' units). Download the Excel and keep it, or read the datasheets in smaller groups.', 'warn');
+      return;
+    }
+    tell('Saving in ' + project.name + '…');
+    window.Api.prNoteSave(window.Hub.token(), { projectId: project.id, productId: c.productId, fileNames: names.join(', '), columns: grid.columns, rows: rows }).then(function () {
+      tell('Saved in ' + project.name + '. You can download it again from the project page.', 'ok');
+    }, function (err) {
+      tell('The table was not saved in the project: ' + ((err && err.message) || err) + ' Download the Excel now and read the datasheet again later.', 'error');
+    });
   }
 
   /* ---------- result ---------- */
@@ -317,6 +340,10 @@
   /* ---------- start ---------- */
   window.Hub.requireLogin({ tool: 'datasheet-notes' }).then(function (profile) {
     if (window.Hub.canEdit(profile, 'datasheet-notes')) $('dn-manage').hidden = false;
+    // a table belongs to the project it was read for: changing the project clears it
+    var first = true;
+    window.PRPick.attach({ select: $('dn-project'), hint: $('dn-project-hint'), profile: profile,
+      onChange: function () { if (!first) { if (busy) stop(); clearResult(); } first = false; applyGate(); } });
     return window.Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     products = res.products || [];

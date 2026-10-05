@@ -20,9 +20,9 @@
     return p && f ? { productId: p.id, productName: p.name, factoryId: f.id, factoryName: f.name } : null;
   }
   function applyGate() {
-    var sel = current();
-    gated.forEach(function (el) { if (el) el.hidden = !sel; });
-    hint.textContent = sel ? 'Converting for ' + sel.productName + ' made in ' + sel.factoryName + '. Answers come from this factory’s library only.'
+    var sel = current(), needProject = window.PRPick.required() && !window.PRPick.current();
+    gated.forEach(function (el) { if (el) el.hidden = !sel || needProject; });
+    hint.textContent = sel && needProject ? 'Choose a project to continue. Every conversion is saved in its project.' : sel ? 'Converting for ' + sel.productName + ' made in ' + sel.factoryName + '. Answers come from this factory’s library only.'
                            : 'Choose both to continue. Answers are kept separately for each factory.';
   }
   // A result belongs to the product/factory it was converted for: changing either clears it.
@@ -56,6 +56,10 @@
 
   (window.hubReady || Promise.reject(new Error('Not signed in'))).then(function (profile) {
     if (window.Hub.canEdit(profile, 'compliance-maker')) $('lib-manage').hidden = false;
+    // The project this work is saved in (tools/projects/pr-pick.js). A result belongs to its project too.
+    var first = true;
+    window.PRPick.attach({ select: $('cm-project'), hint: $('cm-project-hint'), profile: profile,
+      onChange: function () { if (!first) resetResult(); first = false; applyGate(); } });
     return window.Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     products = res.products || [];
@@ -75,8 +79,10 @@
     saveRun: function (rows, source, fileName) {
       var sel = current();
       if (!sel) return Promise.reject(new Error('Choose a product and factory first.'));
+      var project = window.PRPick.current();
+      if (window.PRPick.required() && !project) return Promise.reject(new Error('Choose a project first.'));
       return window.Api.cmSaveRun(window.Hub.token(), {
-        factoryId: sel.factoryId, source: source, fileName: fileName,
+        factoryId: sel.factoryId, source: source, fileName: fileName, projectId: project ? project.id : null,
         lines: rows.map(function (r) { return { type: r.type || '', sr: r.sr || '', spec: r.spec || '' }; })
       });
     }

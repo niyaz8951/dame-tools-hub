@@ -95,6 +95,21 @@ html[data-loading] body { visibility: hidden; }
   background: linear-gradient(135deg, var(--brand) 0 50%, var(--brand-sky) 50% 100%);
 }
 .topbar .spacer { flex: 1; }
+/* Back button: a solid pill right after the site name, in view on every page while scrolling */
+.topbar .back-btn {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  min-height: 36px; padding: 0 16px 0 10px; margin-left: 6px;
+  border-radius: 999px; background: var(--brand); color: var(--on-brand, #fff);
+  font: 650 14px/1 var(--font); text-decoration: none; white-space: nowrap;
+  transition: background .15s;
+}
+.topbar .back-btn:hover, .topbar .back-btn:focus-visible { background: var(--brand-strong); text-decoration: none; }
+.topbar .back-btn svg { width: 18px; height: 18px; display: block; }
+.topbar .back-btn .back-short { display: none; }
+@media (max-width: 720px) {
+  .topbar .back-btn .back-long { display: none; }
+  .topbar .back-btn .back-short { display: inline; }
+}
 .topbar .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 32px; height: auto; padding: 0 12px; margin: 0;

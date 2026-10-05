@@ -69,13 +69,17 @@
     <!-- 1. selection -->
     <section class="card stack" aria-labelledby="h-unit">
       <div class="dn-head">
-        <h2 id="h-unit">Product</h2>
+        <h2 id="h-unit">Project and product</h2>
         <a class="btn ghost sm" id="dn-manage" href="mapping.html" hidden>Row mapping</a>
       </div>
       <div class="dn-grid">
+        <label class="field" data-project-box hidden><span>Project</span>
+          <select class="input" id="dn-project" disabled><option value="">Loading…</option></select></label>
         <label class="field"><span>Product</span>
           <select class="input" id="dn-product" disabled><option value="">Loading…</option></select></label>
       </div>
+      <p class="hint" data-project-box hidden><span id="dn-project-hint">Choose the project these datasheets belong to.</span>
+        <a href="../projects/index.html?new=1">Add New Project</a></p>
       <p class="hint" id="dn-scope-hint" role="status">Choose a product to continue.</p>
     </section>
 
@@ -93,7 +97,7 @@
         <button type="button" class="btn ghost sm" id="dn-cancel" hidden>Cancel</button>
       </div>
       <div class="notice warn" id="dn-map-note" hidden></div>
-      <p class="hint">The PDF is read on your computer. It is not uploaded or saved. New section and row names go to the admins' mapping list, and the values of the mapped rows go to the Product Options list of the factory. The project name, reference and unit tag are not saved.</p>
+      <p class="hint">The PDF is read on your computer and is not uploaded. The table made from it is saved in the project. New section and row names go to the admins' mapping list, and the values of the mapped rows go to the Product Options list of the factory. The Product Options list never takes the project name, reference or unit tag.</p>
     </section>
 
     <!-- 3. result -->
@@ -108,6 +112,7 @@
           <button type="button" class="btn ghost" id="dn-clear">Clear</button>
         </div>
       </div>
+      <div class="notice" id="dn-saved" role="status" aria-live="polite" hidden></div>
       <div class="notice warn" id="dn-failed" hidden></div>
       <div class="dn-facts" id="dn-facts"></div>
       <div class="notice dn-diff" id="dn-diff" hidden>
@@ -130,6 +135,7 @@
 </main>
 
 <script src="../../assets/vendor/pdfjs/pdf.min.js"></script>
+<script src="../projects/pr-pick.js"></script>
 <script src="ds-parse.js"></script>
 <script src="ds-fcu.js"></script>
 <script src="ds-read.js"></script>

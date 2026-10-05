@@ -137,8 +137,14 @@
     <!-- 1 — Product and factory. Nothing else is shown until both are chosen. -->
     <section class="panel" id="panel-scope" aria-labelledby="step-scope">
       <div class="panel__head">
-        <h2 id="step-scope">Product and factory</h2>
+        <h2 id="step-scope">Project, product and factory</h2>
         <a class="btn btn--ghost btn--sm" id="lib-manage" href="library.html" hidden>Manage library</a>
+      </div>
+      <div class="field" data-project-box hidden>
+        <label for="cm-project">Project</label>
+        <select id="cm-project" disabled><option value="">Loading…</option></select>
+        <p class="hint"><span id="cm-project-hint">Choose the project this specification belongs to.</span>
+          <a href="../projects/index.html?new=1">Add New Project</a></p>
       </div>
       <div class="field-row">
         <div class="field">
@@ -342,6 +348,7 @@ starters</textarea>
   <script src="../../assets/js/legacy-tools.js"></script>
   <script src="../../assets/js/reflow.js"></script>
   <script src="xlsx-writer.js"></script>
+  <script src="../projects/pr-pick.js"></script>
   <script src="cm-library.js"></script>
   <script src="cm-rows.js"></script>
   <script src="compliance-maker.js"></script>

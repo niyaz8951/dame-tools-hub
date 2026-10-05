@@ -43,6 +43,8 @@
     target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1.5"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/></svg>',
     curve: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 17c6-1 10-4 12-11"/></svg>',
     book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+    back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
+    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
     doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>'
   };
 
@@ -145,6 +147,9 @@
       }
       renderTopbar(profile);
       document.documentElement.removeAttribute("data-loading");
+      // an edit screen opened from the Admin page goes back to the Admin page
+      if (param("from") === "admin" && isAdmin(profile.user)) setBack("Admin", url("admin.html"));
+      setTimeout(autoBack, 0);                              // after the page's own code has run
       if (sget(sessionStorage, NO_ACCESS_KEY)) { sset(sessionStorage, NO_ACCESS_KEY, null); toast("That page is not available for your account."); }
       return profile;
     }, function (err) {
@@ -203,6 +208,11 @@
     host.appendChild(el("a", { "class": "brand", href: url("dashboard.html") }, [
       el("span", { "class": "brand-mark", "aria-hidden": "true" }), cfg.SITE_NAME || "Tools Hub"
     ]));
+    // Back button: always in the same place, on every page that has somewhere to go back to.
+    host.appendChild(el("a", { "class": "back-btn", id: "hubBack", href: "#", hidden: true }, [
+      el("span", { "aria-hidden": "true", html: ICON.back }),
+      el("span", { "class": "back-long" }), el("span", { "class": "back-short", text: "Back" })
+    ]));
     host.appendChild(el("span", { "class": "spacer" }));
     host.appendChild(themeButton());
 
@@ -234,7 +244,43 @@
     applyTheme(currentTheme());
   }
 
+  /* The back button in the top bar.
+       Hub.setBack("General", url)      show "Back to General" leading to url
+       Hub.setBack("General", fn)       same, but run fn on click (views inside one page)
+       Hub.setBack(null)                no back button
+     Pages need not call it: the first back link of a page (".hub-back a", or the link in
+     ".page-head p.small") is picked up after the sign-in check and moved up here. A page whose
+     target depends on what is open (dashboard, a tool opened from a project) calls it itself. */
+  var backAction = null;
+  function setBack(label, target) {
+    var btn = document.getElementById("hubBack");
+    if (!btn) return;
+    backAction = typeof target === "function" ? target : null;
+    btn.hidden = !label;
+    if (!label) return;
+    btn.href = typeof target === "string" ? target : "#";
+    btn.querySelector(".back-long").textContent = "Back to " + label;
+    btn.setAttribute("aria-label", "Back to " + label);
+    if (!btn.dataset.wired) {
+      btn.dataset.wired = "1";
+      btn.addEventListener("click", function (e) { if (backAction) { e.preventDefault(); backAction(); } });
+    }
+  }
+  function autoBack() {
+    var btn = document.getElementById("hubBack");
+    if (!btn || !btn.hidden) return;                       // the page set it already
+    var link = document.querySelector(".hub-back a, main .page-head p.small > a, p.small > a#back, a.psy-back");
+    if (!link || link.closest("[hidden]")) return;
+    var label = link.textContent.replace(/^[\s\u2190<-]+/, "").trim();
+    if (!label) return;
+    setBack(label, function () { link.click(); });        // the link keeps deciding where it goes
+    btn.href = link.href;
+    var row = link.closest("p"); if (row) row.hidden = true;
+  }
+  function param(name) { try { return new URLSearchParams(window.location.search).get(name) || ""; } catch (e) { return ""; } }
+
   window.Hub = {
+    setBack: setBack, param: param,
     ICON: ICON, el: el, toast: toast, url: url, go: go,
     token: token, setToken: setToken, logout: logout,
     requireLogin: requireLogin, themeButton: themeButton, avatar: avatar, renderTopbar: renderTopbar,

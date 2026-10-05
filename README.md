@@ -36,12 +36,12 @@ Demo data lives in your browser only and is not secure. It is for looking around
 - Three roles: **Super user** (one account, the owner: roles, deleting users, tools and tiles), **Admin** (approve users, tile access, edit rights; edits every tool), **User**. Admins cannot change roles or other admins.
 - Admin page > Tools (super user): add a tool, choose its tile, set it Live / Coming soon / Hidden, tick "Has an edit screen" if users can be given edit access to it.
 - Admin page > Team tiles (super user): add more tiles later (no code change needed).
-- Already live before 2026-10-01? Re-run `db/schema.sql` once; see `db/2026-10-01-roles.sql` for what it changes.
+- Who may approve or edit what is listed in `db/README.md` and on Admin > Who approves what.
 
 ## Updating a site that is already live
 
 1. Replace the files in the GitHub repository with this folder. `assets/js/config.js` here already contains your database settings.
-2. In the Supabase SQL Editor run the whole of `db/schema.sql` again. It keeps your users, access and library, and adds anything new. If the update also came with a new dated file in `db/`, run that afterwards (`db/2026-09-30-update.sql` only needs running once).
+2. In the Supabase SQL Editor run the whole of `db/schema.sql` again. It keeps your users, access and library, and adds anything new. It is the only SQL file; see `db/README.md`.
 3. Hard-refresh the browser (Ctrl+F5) so the new styles load.
 
 ## Add a new tool

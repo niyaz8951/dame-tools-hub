@@ -6,7 +6,7 @@ Follow this for every page and tool so the site stays consistent.
 
 - Hosting: GitHub Pages (Cloudflare does not open on office PCs). Static files only.
 - Stack: vanilla HTML, CSS, JS. No framework, no build step, no CDN or web-font dependencies (office network may block them).
-- Database: Supabase PostgreSQL, reached only through `app_*` functions in `db/schema.sql`. Tables stay closed to the anon key (RLS on, no policies).
+- Database: Supabase PostgreSQL, reached only through the `app_*`, `cm_*`, `dn_*`, `po_*` and `pr_*` functions in `db/schema.sql` (the only SQL file, see `db/README.md`). Tables stay closed to the anon key (RLS on, no policies).
 - Login: username + password only. No email anywhere. New users are Pending until an admin approves.
 - One session per user: signing in ends that user's earlier session (`app_login`). The sign-in token is kept in `localStorage`, so all tabs of one browser share it and follow each other on sign-in and log out. Any `Api` call that gets `SESSION_EXPIRED` sends the user to the sign-in page with a message (handled once in `hub.js`; pages must not handle it themselves). A session lasts 12 hours.
 - Access: one dashboard tile per team (category). Admins grant tiles per user. General is open to all approved users. Admins see everything.
@@ -51,7 +51,8 @@ Compliance Maker, Coil Data Extractor, Container Calculator, Centre of Gravity a
 - Each tool tile has its own icon, picked by tool id in `dashboard.html` from `Hub.ICON` (`checklist`, `table`, `tree`, `coil`, `box`, `target`, `curve`, `book`; the document icon is the fallback). A new tool gets an icon there.
 - When the guard sends a signed-in user to the dashboard for lack of access, the dashboard shows one toast: "That page is not available for your account." (set in `hub.js`). It names no tool.
 - `404.html` at the repo root is the "Page not found" page for GitHub Pages. It works out the site root itself, so it works at any depth.
-- Every tool page has a "General tools" style back link to its team view.
+- **Back button** (5 Oct 2026): a solid blue "Back to <place>" button sits in the top bar beside the site name on every page that has somewhere to go back to (phone: "Back"). `hub.js` draws it. A page keeps its ordinary back link in the page head (`<p class="small"><a href="...">&larr; General</a></p>`, or `.hub-back a` on the older tools); `hub.js` moves it into the top bar and hides the paragraph. A page whose target depends on what is open calls `Hub.setBack(label, url or function)` itself (dashboard, a tool opened from a project). A page opened with `?from=admin` goes back to Admin for admins.
+- A tool marked `app_tools.project_tool = true` (Compliance Maker, Datasheet Notes) is not shown on its team tile while the Projects tool is live there: it is opened from a project (section 2i).
 - A failed sign-in check never signs the user out unless the database says the session has expired; network problems show a "Try again" screen.
 
 ## 2c. Account features
@@ -97,7 +98,7 @@ Goal: turn a product datasheet PDF into the compliance table format: Section / C
 - **Several units.** One PDF can hold several units (an AHU unit starts on the page with the "Unit Data" heading, an FCU unit on the page with the report title; `DSParse.parseAll` picks the reader with `DSParse.detect`), and several PDFs can be chosen at once. Every unit gets its own column headed by its unit tag (the "Unit" line of an AHU datasheet, the "Unit No." of an FCU datasheet; repeated tags get "(2)", "(3)"). Remarks is the last column. There is no "Unit" row, the tag is the column heading. A long schedule is fine: the Kifaf FCU PDF (1375 units, one per page, 26 MB) reads in about 6 s; the page shows "Reading … page n of N" while it works, the title names the first 12 units, and the Excel gets one column per unit. PDFs up to 60 MB are accepted.
 - **The datasheet must match the chosen product** (`DSRead.check`): an FCU datasheet run as AHU is refused with a message naming the product to choose, on the tool and on the mapping screen, so rows never land under the wrong product's mapping.
 - With one unit the Section column shows the datasheet heading (`2) Filter Supply`). With several units section numbers differ per unit, so rows are lined up by section name (a 2nd section of the same name is `Filter Supply (2)`), sub-heading and component; option lines are lined up by their text. A unit that does not have a row gets `-`. A row only a later unit has is placed after the row that comes before it in that unit. Only `DSParse.grid` builds the table.
-- The PDF is read in the browser with the local pdf.js. The datasheet is never uploaded or saved. Saved are: new section and row names (row mapping below) and the values of the shown rows for the Product Options tree (section 2g; never the project, reference or unit tag). The page tells the user so.
+- The PDF is read in the browser with the local pdf.js. The PDF itself is never uploaded. Saved are: the table made from it, in the chosen project (section 2i), new section and row names (row mapping below) and the values of the shown rows for the Product Options tree (section 2g; never the project, reference or unit tag). The page tells the user so.
 - Readers: AHU (Daikin ASTRAWEB technical report, in `ds-parse.js`) and FCU (Daikin FAN COIL UNIT TECHNICAL REPORT from McQuay Smart Tools, in `ds-fcu.js`, built 2 Oct 2026 on the owner's Kifaf Phase-5 schedule). Chiller shows "not ready yet" until a sample datasheet is supplied; a reader registers itself in `DSParse.readers` with `starts(page)` and `parse(pages)` and is then picked up by the tool, the mapping screen and the product check.
 - The reader gives: General (product, power supply, project, reference, material name, software, report date), Unit Data, then every numbered section of the datasheet in order. The Options List lines are placed under their own section (Unit Options under Unit Data). Section List, Sound Report and NRVU pages are not read; from the Electrical page only the Fan Supply connection is used.
 - Labels paired with a solid dot become one row each: `Panel • Insulation` = `62 mm • Foam` gives Panel: 62 mm and Insulation: Foam. A one-word second label takes its context from the first (`Temp. Dry Bulb In • Out` gives Temp. Dry Bulb In / Temp. Dry Bulb Out). A value with dots under a single label stays as printed (`Mounting`: `Internal • Left`).
@@ -189,6 +190,26 @@ Found by testing every tool as an ordinary user; list and status in the project 
 - **Passwords** cannot be only spaces (`app__check_password`).
 - **Admin > Users**: a row's Save is enabled only when the row differs from the stored values.
 
+## 2i. Projects (project history and data, built 5 Oct 2026)
+
+Goal: everything a user makes is saved against a project, can be found again, downloaded as one Excel, and seen by admins across all users. Tool id `projects`, General tile, first tile (sort 5). Files in `tools/projects/`.
+
+- **Project** (`pr_projects`): Project name, Client type, Client name, Region. All four are mandatory (checked in `pr_save`). Client types and regions are lists in `pr_lists`, seeded in `schema.sql` (change them there). One user cannot have two projects with the same name.
+- **Who sees a project:** its creator; admins and the super user see every project of every user (`pr__project`). Nobody else, not even a key user. Sharing a project between users is not built.
+- **Pages:** `index.html` (Add New Project, Project history with search and filters; admins also get creator, a summary by region / client type / product and a download of the list), `project.html?id=` (details, tool tiles, compliance records, datasheet notes, history, Download project), `review.html` (compliance review, editors of Compliance Maker).
+- **Tool tiles on the project page:** blue when the project holds data from the tool, grey when it holds none. Both open the tool (`../<tool>/index.html?project=<id>`). A user only gets tiles for tools he has.
+- **A project tool** (`app_tools.project_tool`) puts a Project select on its page and calls `PRPick.attach({ select, hint, profile, onChange })` (`tools/projects/pr-pick.js`). Nothing can be converted or read until a project is chosen; the Back button leads to the project. The choice follows `?project=` and is remembered for the tab. If the Projects tool is not live for the account, `PRPick.required()` is false and the tool works without a project, as before. A new tool that produces user output must do the same and save its output in a `pr_*` table.
+- **Compliance records:** `cm_runs.project_id` (set by `cm_save_run(..., p_project_id)`). The project page groups them by product. The user fills the Excel and uploads it on the record ("Upload filled Excel", `pr_submit_answers`): answers are stored on the record's lines (`cm_run_lines.compliance / remarks / answered_by`). An answer equal to the library answer needs nothing more; a new or different one gets `review = 'pending'`.
+- **Review** (`review.html`, `pr_review_list`, `pr_review_decide`): admins, the super user and users with "Can edit" for Compliance Maker. Approve (wording may be corrected first) writes the answer to the master library (`cm_lines`, `answer_source = 'approved'`, logged in `cm_answer_log`) for every user; "Do not take" leaves it in the project only. A user's answer never reaches the library without this step.
+- **Datasheet notes:** every Datasheet Notes read saves its table (columns, rows, difference marks) in `pr_notes`, at most 12 MB per table; the page says when a table is too large. They stay in the project and never enter the compliance library. The project page gives the same Excel again (`DSXlsx.build`).
+- **Product options** stay one company-wide tree (section 2g). The project Excel has a Product Options sheet worked out from the project's saved datasheet tables (distinct value per row, with the units that have it).
+- **Download project (Excel)** (`pr_export`, `pr-xlsx.js`): sheets Project Information, Compliance Records, Datasheet Notes, Product Options, History. Compliance rows show the project's own answer, or the library answer, and where it came from.
+- **History** (`pr_log`): created, details changed, specification converted, filled compliance uploaded, datasheet notes saved, record removed, answer approved / not taken, project downloaded; each with who and when. Never deleted.
+- Removing a compliance record takes it out of the project (the clauses stay in the library); removing a datasheet table deletes it.
+- **Admin page:** tabs Users, Compliance Library (Review and approval, Master compliance library), Products (Product row mapping, Product options), Projects (numbers and a link to all projects), Who approves what, Tools and Team tiles (super user). A "Waiting for a decision" line at the top counts users to approve, answers to review and new datasheet rows to map (`pr_admin_summary`).
+- Database: tables `pr_lists`, `pr_projects`, `pr_notes`, `pr_log`; functions `pr_options`, `pr_list`, `pr_save`, `pr_get`, `pr_export`, `pr_note_save`, `pr_note_get`, `pr_delete_record`, `pr_submit_answers` (any approved user, own projects), `pr_review_list`, `pr_review_decide` (Compliance Maker editors), `pr_admin_summary` (admins). Demo mirror in `api.js` (storage key `dame_hub_demo_db_v8`).
+- **Database folder:** `db/schema.sql` is the only SQL file; no dated one-off files. `db/README.md` says how to run it, the order of its parts and who may do what.
+
 ## 3. Theme
 
 Daikin colours with day and night mode. Never hard-code a colour in a tool; use the variables.
@@ -229,7 +250,7 @@ A tool is ready to be set Live only when:
 
 | Tile | Who | Tools |
 |---|---|---|
-| General | every approved user | Compliance Maker, Datasheet Notes, Product Options, Coil Data Extractor, Container Calculator, Centre of Gravity, Psychrometric Chart, Standards (all live, all in the seed of `schema.sql` and the demo seed in `api.js`) |
+| General | every approved user | Projects (which opens Compliance Maker and Datasheet Notes), Product Options, Coil Data Extractor, Container Calculator, Centre of Gravity, Psychrometric Chart, Standards (all live, all in the seed of `schema.sql` and the demo seed in `api.js`) |
 | Sales | sales team | special sales tools, to be decided per requirement |
 | SBU | SBU team | special SBU tools, to be decided per requirement |
 | more tiles | | added later from Admin > Team tiles |

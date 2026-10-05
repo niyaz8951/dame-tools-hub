@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en" data-loading>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Compliance review - DAME Tools Hub</title>
+<link rel="icon" href="../../assets/favicon.svg">
+<link rel="stylesheet" href="../../assets/css/theme.css">
+<script src="../../assets/js/config.js"></script>
+<script src="../../assets/js/api.js"></script>
+<script src="../../assets/js/hub.js"></script>
+<style>
+  .rv-item { display: grid; gap: 10px; }
+  .rv-where { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rv-spec { padding: 10px 12px; border-left: 3px solid var(--brand); background: var(--surface-2); border-radius: var(--radius-sm); font-size: 14px; overflow-wrap: anywhere; }
+  .rv-cols { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .rv-lib { font-size: 13px; overflow-wrap: anywhere; }
+  .rv-lib b { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-soft); }
+  textarea.input { min-height: 64px; resize: vertical; }
+</style>
+</head>
+<body>
+<header id="topbar"></header>
+<main class="page">
+  <div class="page-head">
+    <p class="small"><a id="back" href="index.html">&larr; Projects</a></p>
+    <h1>Compliance review</h1>
+    <p>Answers users filled in their projects that are new or different from the library. Approve one and it becomes the library answer for every user; an answer that is not taken stays in its project only.</p>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-status="pending" aria-selected="true">Waiting <span class="badge warn" id="n-pending" hidden></span></button>
+    <button class="tab" role="tab" data-status="approved" aria-selected="false">Approved <span class="badge" id="n-approved" hidden></span></button>
+    <button class="tab" role="tab" data-status="rejected" aria-selected="false">Not taken <span class="badge" id="n-rejected" hidden></span></button>
+  </div>
+
+  <div class="notice error" id="rv-error" role="alert" hidden></div>
+  <div class="empty" id="rv-empty">Loading…</div>
+  <div class="stack" id="rv-list"></div>
+  <div class="row" style="margin-top:16px"><button type="button" class="btn ghost" id="rv-more" hidden>Show more</button></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var el = Hub.el, $ = function (id) { return document.getElementById(id); };
+  var status = "pending", offset = 0, PAGE = 50, loadNo = 0;
+
+  function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); }
+  function answer(title, c, r) {
+    return el("div", { "class": "rv-lib" }, [el("b", { text: title }), el("div", { text: "Compliance: " + (c || "(empty)") }), el("div", { text: "Remarks: " + (r || "(empty)") })]);
+  }
+
+  function item(x) {
+    var card = el("section", { "class": "card rv-item" });
+    card.appendChild(el("div", { "class": "rv-where" }, [
+      el("span", { "class": "badge brand", text: x.project }), x.client ? el("span", { "class": "badge", text: x.client }) : null,
+      x.region ? el("span", { "class": "badge", text: x.region }) : null, el("span", { "class": "badge", text: x.product + ", " + x.factory }),
+      x.file_name ? el("span", { "class": "badge", text: x.file_name }) : null
+    ]));
+    card.appendChild(el("div", { "class": "rv-spec", text: (x.sr ? x.sr + "  " : "") + x.spec }));
+    var by = "Filled by " + x.by + (x.at ? ", " + when(x.at) : "");
+
+    if (status !== "pending") {
+      card.appendChild(el("div", { "class": "rv-cols" }, [answer("Project answer", x.compliance, x.remarks), answer("Library answer now", x.lib_compliance, x.lib_remarks)]));
+      card.appendChild(el("p", { "class": "small muted", text: by + ". " + (status === "approved" ? "Approved" : "Not taken") + (x.reviewed_by ? " by " + x.reviewed_by : "") + (x.reviewed_at ? ", " + when(x.reviewed_at) : "") + "." }));
+      return card;
+    }
+
+    var comp = el("input", { "class": "input", value: x.compliance, maxlength: "200" });
+    var rem = el("textarea", { "class": "input", maxlength: "2000" }); rem.value = x.remarks;
+    card.appendChild(el("div", { "class": "rv-cols" }, [
+      el("label", { "class": "field" }, [el("span", { text: "Compliance" }), comp]),
+      el("label", { "class": "field" }, [el("span", { text: "Remarks" }), rem])
+    ]));
+    card.appendChild(x.lib_answered
+      ? el("div", { "class": "notice warn" }, [answer("The library already has an answer. Approving replaces it.", x.lib_compliance, x.lib_remarks)])
+      : el("p", { "class": "small muted", text: "The library has no answer for this clause yet." }));
+    function decide(decision, btn) {
+      btn.disabled = true;
+      Api.prReviewDecide(Hub.token(), { run: x.run, seq: x.seq, decision: decision, compliance: comp.value.trim(), remarks: rem.value.trim() }).then(function () {
+        Hub.toast(decision === "approve" ? "Approved. It is now the library answer." : "Not taken. It stays in the project only.");
+        load(true);
+      }, function (err) { btn.disabled = false; Hub.toast(err.message, true); });
+    }
+    card.appendChild(el("div", { "class": "row" }, [
+      el("button", { type: "button", "class": "btn sm", text: "Approve for the library", onclick: function (e) { decide("approve", e.currentTarget); } }),
+      el("button", { type: "button", "class": "btn danger sm", text: "Do not take", onclick: function (e) { decide("reject", e.currentTarget); } }),
+      el("span", { "class": "small muted", text: by + ". You can correct the wording before approving." })
+    ]));
+    return card;
+  }
+
+  function load(fresh) {
+    var no = ++loadNo;
+    if (fresh) offset = 0;
+    Api.prReviewList(Hub.token(), { status: status, limit: PAGE, offset: offset }).then(function (res) {
+      if (no !== loadNo) return;
+      ["pending", "approved", "rejected"].forEach(function (k) { var b = $("n-" + k), n = (res.counts || {})[k] || 0; b.hidden = !n; b.textContent = n; });
+      var list = $("rv-list"); if (fresh) list.textContent = "";
+      (res.items || []).forEach(function (x) { list.appendChild(item(x)); });
+      offset += (res.items || []).length;
+      $("rv-more").hidden = offset >= res.total;
+      var empty = $("rv-empty"); empty.hidden = !!res.total; $("rv-error").hidden = true;
+      empty.textContent = status === "pending" ? "Nothing is waiting for review." : status === "approved" ? "No approved answers yet." : "No answers were turned down.";
+    }, function (err) {
+      if (no !== loadNo) return;
+      $("rv-empty").hidden = true; $("rv-error").hidden = false; $("rv-error").textContent = "Could not load the answers: " + err.message + " Refresh the page to try again.";
+    });
+  }
+
+  [].forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      [].forEach.call(document.querySelectorAll(".tab"), function (t) { t.setAttribute("aria-selected", t === tab ? "true" : "false"); });
+      status = tab.getAttribute("data-status"); $("rv-empty").hidden = false; $("rv-empty").textContent = "Loading…"; $("rv-list").textContent = "";
+      load(true);
+    });
+  });
+  $("rv-more").addEventListener("click", function () { load(false); });
+
+  Hub.requireLogin({ edit: "compliance-maker" }).then(function (profile) {
+    if (Hub.param("from") === "admin" && Hub.isAdmin(profile.user)) Hub.setBack("Admin", Hub.url("admin.html"));
+    load(true);
+  });
+})();
+</script>
+</body>
+</html>
