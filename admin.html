@@ -20,6 +20,9 @@
   .ad-sum li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
   .ad-sum li:last-child { border-bottom: 0; }
   .ad-who td { vertical-align: top; }
+  .ad-tile { display: flex; align-items: center; justify-content: space-between; gap: 10px; white-space: nowrap; font-size: 14px; }
+  .ad-tile + .ad-tile { margin-top: 6px; }
+  .ad-tile select.input { min-height: 32px; padding: 3px 8px; width: 118px; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -47,11 +50,11 @@
   <section id="tab-users" class="stack">
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>User</th><th style="white-space:normal">Team (as requested)</th><th>Status</th><th>Role</th><th>Tile access</th><th>Can edit</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th style="white-space:normal">Team (as requested)</th><th>Status</th><th>Role</th><th>Access to each tile</th><th>Can edit</th><th></th></tr></thead>
         <tbody id="userRows"></tbody>
       </table>
     </div>
-    <p class="small muted" id="usersNote">General is open to every approved user. Admins can open every tile and edit every tool. "Can edit" gives a user write access to one tool's library or mapping. Changes apply when you press Save.</p>
+    <p class="small muted" id="usersNote">For each tile choose No access, User or Admin. An admin of a tile opens it, edits every tool on it and manages the users' access to it. General is open to every approved user. "Can edit" gives a user write access to one tool's library or mapping. Changes apply when you press Save.</p>
   </section>
 
   <!-- COMPLIANCE LIBRARY -->
@@ -102,8 +105,8 @@
         <thead><tr><th>What</th><th>Who decides</th><th>Where</th></tr></thead>
         <tbody>
           <tr><td>A new user account (approve, reject, disable)</td><td>Super user, admins</td><td>Users tab</td></tr>
-          <tr><td>Which team tiles a user can open, and "Can edit" for a tool</td><td>Super user, admins</td><td>Users tab</td></tr>
-          <tr><td>Making someone an admin, changing or resetting an admin, deleting an account</td><td>Super user only</td><td>Users tab</td></tr>
+          <tr><td>Which team tiles a user can open, and "Can edit" for a tool</td><td>Super user (every tile); an admin for his own tiles</td><td>Users tab</td></tr>
+          <tr><td>Making someone admin of a tile, changing or resetting an admin, deleting an account</td><td>Super user only</td><td>Users tab</td></tr>
           <tr><td>Tools and team tiles (add, hide, rename)</td><td>Super user only</td><td>Tools and Team tiles tabs</td></tr>
           <tr><td>A project answer going into the master compliance library</td><td>Super user, admins, users with "Can edit" for Compliance Maker</td><td>Compliance Library &gt; Compliance review ("Use this answer")</td></tr>
           <tr><td>Answers typed or uploaded straight into the library</td><td>Same people</td><td>Compliance Library &gt; Compliance review</td></tr>
@@ -182,36 +185,48 @@
 
   // ---------- users ----------
   // What the signed-in person may do to this row. The database enforces the same rules.
-  function mayManage(u) { return Hub.isSuper(me) || u.role === "user"; }
+  function mayManage(u) { return u.role !== "superuser" && (Hub.isSuper(me) || u.role === "user"); }
+  function inScope(categoryId) { return (data.scope || []).indexOf(categoryId) >= 0; }
   function userRow(u) {
-    var pending = u.status === "pending", isSuperRow = u.role === "superuser", editable = mayManage(u);
-    var isAdminRow = u.role === "admin" || isSuperRow;
+    var pending = u.status === "pending", isSuperRow = u.role === "superuser", editable = mayManage(u), sup = Hub.isSuper(me);
     var statusSel = select([["pending", "Pending"], ["approved", "Approved"], ["rejected", "Rejected"], ["disabled", "Disabled"]], u.status);
-    var roleOptions = [["user", "User"], ["admin", "Admin"]];
-    if (isSuperRow) roleOptions.push(["superuser", "Super user"]);
-    var roleSel = select(roleOptions, u.role);
-    roleSel.disabled = !Hub.isSuper(me) || isSuperRow;      // roles are the super user's alone; the super user is set in the database
-    if (isSuperRow) statusSel.disabled = true;
-    var boxes = data.categories.map(function (c) {
-      var cb = el("input", { type: "checkbox", value: c.id });
-      cb.checked = c.is_default || isAdminRow || u.categories.indexOf(c.id) >= 0; cb.disabled = c.is_default || isAdminRow || !editable;
-      return el("label", { "class": "check", style: "display:flex;white-space:nowrap" }, [cb, c.name]);
+    if (!editable) statusSel.disabled = true;
+    /* One choice per tile: no access, user, or admin of that tile. Only the super user makes an
+       admin. A tile admin sets access to his own tiles; the others are shown as they are. */
+    var roleText = el("span", { "class": "small" });
+    var tiles = data.categories.map(function (c) {
+      var isAdm = (u.admin_categories || []).indexOf(c.id) >= 0, has = c.is_default || u.categories.indexOf(c.id) >= 0;
+      var opts = (c.is_default ? [] : [["none", "No access"]]).concat([["user", "User"]], sup || isAdm ? [["admin", "Admin"]] : []);
+      var sel = select(opts, isAdm ? "admin" : has ? "user" : "none");
+      sel.disabled = !editable || !inScope(c.id) || (!sup && isAdm);
+      sel.setAttribute("aria-label", c.name + " access for " + u.full_name);
+      return { c: c, sel: sel, row: el("label", { "class": "ad-tile" }, [el("span", { text: c.name }), sel]) };
     });
     var editTools = data.tools.filter(function (t) { return t.editable; });
     var editBoxes = editTools.map(function (t) {
       var cb = el("input", { type: "checkbox", value: t.id });
-      cb.checked = isAdminRow || (u.edit_tools || []).indexOf(t.id) >= 0; cb.disabled = isAdminRow || !editable;
-      return el("label", { "class": "check", style: "display:flex;white-space:nowrap" }, [cb, t.name]);
+      cb.checked = (u.edit_tools || []).indexOf(t.id) >= 0;
+      return { t: t, cb: cb, row: el("label", { "class": "check", style: "display:flex;white-space:nowrap" }, [cb, t.name]) };
     });
-    // the role box drives the two checkbox groups: admins get everything, so the boxes grey out
-    roleSel.addEventListener("change", function () {
-      var all = roleSel.value !== "user";
-      boxes.forEach(function (b) { var cb = b.firstChild; if (!data.categories.filter(function (c) { return c.id === cb.value; })[0].is_default) { cb.disabled = all; if (all) cb.checked = true; } });
-      editBoxes.forEach(function (b) { b.firstChild.disabled = all; if (all) b.firstChild.checked = true; });
-    });
-    function checked(group) { return group.map(function (b) { return b.firstChild; }).filter(function (cb) { return cb.checked && !cb.disabled; }).map(function (cb) { return cb.value; }); }
+    function tileValue(id) { var x = tiles.filter(function (y) { return y.c.id === id; })[0]; return x ? x.sel.value : "none"; }
+    // an admin of a tile edits every tool on it: its boxes are ticked and greyed
+    function sync() {
+      editBoxes.forEach(function (b) {
+        var adminHere = tileValue(b.t.category_id) === "admin";
+        if (adminHere) { b.cb.checked = true; b.cb.disabled = true; }
+        else { if (b.cb.disabled && b.wasAdmin) b.cb.checked = (u.edit_tools || []).indexOf(b.t.id) >= 0; b.cb.disabled = !editable || !inScope(b.t.category_id); }
+        b.wasAdmin = adminHere;
+      });
+      var adm = tiles.filter(function (x) { return x.sel.value === "admin"; }).map(function (x) { return x.c.name; });
+      roleText.textContent = adm.length ? "Admin of " + adm.join(", ") : "User";
+    }
+    tiles.forEach(function (x) { x.sel.addEventListener("change", sync); });
+    sync();
     function payload(status) {
-      return { id: u.id, status: status || statusSel.value, role: roleSel.value, categories: checked(boxes), editTools: checked(editBoxes) };
+      return { id: u.id, status: status || statusSel.value, role: u.role,
+        categories: tiles.filter(function (x) { return x.sel.value !== "none" && !x.c.is_default; }).map(function (x) { return x.c.id; }),
+        adminCategories: sup ? tiles.filter(function (x) { return x.sel.value === "admin"; }).map(function (x) { return x.c.id; }) : null,
+        editTools: editBoxes.filter(function (b) { return b.cb.checked && !b.cb.disabled; }).map(function (b) { return b.t.id; }) };
     }
     var actions = el("div", { "class": "row", style: "justify-content:flex-end;flex-wrap:nowrap" }), saveBtn;
     if (!editable) {
@@ -241,9 +256,9 @@
       el("td", { "class": "user-cell" }, [el("b", { text: u.full_name }), el("div", { "class": "small muted", text: u.username })]),
       el("td", { text: u.team_note || "-" }),
       el("td", {}, pending ? [el("span", { "class": "badge warn", text: "Pending" })] : [statusSel]),
-      el("td", {}, [roleSel]),
-      el("td", {}, isAdminRow ? [el("span", { "class": "small muted", text: "All tiles" })] : boxes),
-      el("td", {}, isAdminRow ? [el("span", { "class": "small muted", text: "All tools" })] : (editBoxes.length ? editBoxes : [el("span", { "class": "small muted", text: "-" })])),
+      el("td", {}, isSuperRow ? [el("span", { "class": "badge brand", text: "Super user" })] : [roleText]),
+      el("td", {}, isSuperRow ? [el("span", { "class": "small muted", text: "Every tile, as admin" })] : tiles.map(function (x) { return x.row; })),
+      el("td", {}, isSuperRow ? [el("span", { "class": "small muted", text: "All tools" })] : (editBoxes.length ? editBoxes.map(function (b) { return b.row; }) : [el("span", { "class": "small muted", text: "-" })])),
       el("td", {}, [actions])
     ]);
   }
@@ -289,6 +304,8 @@
   function openTab(name) { var t = document.querySelector('.tab[data-tab="' + name + '"]'); if (t && !t.hidden) t.click(); }
   function summary() {
     return Api.prAdminSummary(Hub.token()).then(function (s) {
+      // library, products and project numbers belong to the admins of the tile those tools sit on
+      ["library", "products", "projects"].forEach(function (name) { var t = document.querySelector('.tab[data-tab="' + name + '"]'); if (t) t.hidden = !!s.limited; });
       badge("reviewCount", s.pending_answers); badge("reviewBadge", s.pending_answers); badge("rowsCount", s.new_rows); badge("rowsBadge", s.new_rows);
       $("reviewMeta").textContent = s.pending_answers ? plural(s.pending_answers, "answer is", "answers are") + " waiting." : "No user answer is waiting.";
       $("rowsMeta").textContent = s.new_rows ? plural(s.new_rows, "new row", "new rows") + " to look at." : "No new rows to look at.";
@@ -340,9 +357,9 @@
     if (window.location.hash) openTab(window.location.hash.slice(1));
     if (Hub.isSuper(me)) {
       [].forEach.call(document.querySelectorAll("[data-super]"), function (n) { n.hidden = false; });
-      $("adminIntro").textContent = "Approve people, set roles, tile access and edit rights, and manage the tools on each tile.";
+      $("adminIntro").textContent = "Approve people, choose what each person can open and who is admin of which tile, and manage the tools on each tile.";
     } else {
-      $("usersNote").textContent = "General is open to every approved user. \"Can edit\" gives a user write access to one tool's library or mapping. Admin accounts, roles and the tool list are managed by the super user. Changes apply when you press Save.";
+      $("usersNote").textContent = "You manage the ordinary users' access to the tiles you are admin of, and \"Can edit\" for the tools on them. Other tiles are shown as they are. Admins are made by the super user. Changes apply when you press Save.";
     }
     refresh();
   });

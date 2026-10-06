@@ -101,6 +101,25 @@ create table if not exists public.app_tool_editors (
 
 alter table public.app_users           enable row level security;
 alter table public.app_sessions        enable row level security;
+-- Admin of one tile (owner's rule, 6 Oct 2026). The super user makes a person admin of single
+-- tiles. A tile admin opens that tile, may edit the data of every tool on it, and manages the
+-- ordinary users' access to it. app_users.role stays 'admin' for anyone who has at least one row
+-- here and 'user' for the rest; it is kept in step by app_admin_set_user.
+create table if not exists public.app_category_admins (
+  user_id     uuid not null references public.app_users(id) on delete cascade,
+  category_id text not null references public.app_categories(id) on delete cascade,
+  granted_by  uuid references public.app_users(id) on delete set null,
+  granted_at  timestamptz not null default now(),
+  primary key (user_id, category_id)
+);
+alter table public.app_category_admins enable row level security;
+revoke all on public.app_category_admins from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.app_category_admins from anon, authenticated;
+  end if;
+end $$;
+
 alter table public.app_categories      enable row level security;
 alter table public.app_user_categories enable row level security;
 alter table public.app_tools           enable row level security;
@@ -155,6 +174,13 @@ update public.app_users set role = 'superuser'
    and id = (select id from public.app_users where role = 'admin' and status = 'approved'
               order by created_at limit 1);
 
+-- One-time carry-over: an admin from before tile admins existed was admin of everything, so he
+-- becomes admin of every tile. The super user then unticks what he should not have.
+insert into public.app_category_admins (user_id, category_id)
+select u.id, c.id from public.app_users u cross join public.app_categories c
+ where u.role = 'admin' and not exists (select 1 from public.app_category_admins a where a.user_id = u.id)
+on conflict do nothing;
+
 -- ---------- internal helpers (not callable from the website) ----------
 
 create or replace function public.app__fail(msg text) returns void
@@ -194,7 +220,14 @@ begin
   return u;
 end $$;
 
--- Admin or superuser.
+-- Is this user admin of the tile? The super user is admin of every tile.
+create or replace function public.app__is_tile_admin(u public.app_users, p_category_id text) returns boolean
+language sql stable security definer set search_path = public, extensions as $$
+  select u.role = 'superuser'
+      or exists (select 1 from public.app_category_admins a where a.user_id = u.id and a.category_id = p_category_id);
+$$;
+
+-- The super user, or the admin of at least one tile.
 create or replace function public.app__require_admin(p_token text)
 returns public.app_users
 language plpgsql security definer set search_path = public, extensions as $$
@@ -220,15 +253,16 @@ begin
   return u;
 end $$;
 
--- May this user edit the data behind one tool? Admins and the superuser: every editable tool.
--- Users: only the tools they were granted, and only while the tool is editable and they can open it.
+-- May this user edit the data behind one tool? The super user: every editable tool. A tile
+-- admin: every editable tool on his tiles. Users: only the tools they were granted, and only
+-- while the tool is editable and they can open its tile.
 create or replace function public.app__can_edit(u public.app_users, p_tool_id text)
 returns boolean
 language sql security definer set search_path = public, extensions as $$
   select exists (
     select 1 from public.app_tools t
      where t.id = p_tool_id and t.editable
-       and (u.role in ('admin','superuser')
+       and (public.app__is_tile_admin(u, t.category_id)
             or (exists (select 1 from public.app_tool_editors e where e.user_id = u.id and e.tool_id = t.id)
                 and exists (select 1 from public.app_categories c
                              where c.id = t.category_id
@@ -257,11 +291,15 @@ language sql security definer set search_path = public, extensions as $$
     'user', jsonb_build_object('id', u.id, 'username', u.username, 'full_name', u.full_name,
                                'role', u.role, 'avatar', u.avatar,
                                'created_at', u.created_at, 'last_login_at', u.last_login_at,
+                               -- the tiles this person is admin of (the super user: all of them)
+                               'admin_categories', coalesce((select jsonb_agg(c.id order by c.sort, c.name) from public.app_categories c
+                                                              where public.app__is_tile_admin(u, c.id)), '[]'::jsonb),
                                'edit_tools', coalesce((select jsonb_agg(t.id order by t.id) from public.app_tools t
                                                         where public.app__can_edit(u, t.id)), '[]'::jsonb)),
     'categories', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id', c.id, 'name', c.name, 'description', c.description, 'allowed', true,
+               'admin', public.app__is_tile_admin(u, c.id),
                'tools', coalesce((
                    select jsonb_agg(jsonb_build_object(
                             'id', t.id, 'name', t.name, 'description', t.description,
@@ -271,7 +309,7 @@ language sql security definer set search_path = public, extensions as $$
                     where t.category_id = c.id and t.status <> 'hidden'), '[]'::jsonb)
              ) order by c.sort, c.name)
         from public.app_categories c
-       where u.role in ('admin','superuser') or c.is_default
+       where c.is_default or public.app__is_tile_admin(u, c.id)
           or exists (select 1 from public.app_user_categories uc
                       where uc.category_id = c.id and uc.user_id = u.id)
     ), '[]'::jsonb)
@@ -417,9 +455,13 @@ end $$;
 create or replace function public.app_admin_overview(p_token text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
+declare a public.app_users;
 begin
-  perform public.app__require_admin(p_token);
+  a := public.app__require_admin(p_token);
   return jsonb_build_object(
+    -- the tiles the caller may manage: all for the super user, his own for a tile admin
+    'scope', coalesce((select jsonb_agg(c.id order by c.sort, c.name) from public.app_categories c
+                        where public.app__is_tile_admin(a, c.id)), '[]'::jsonb),
     'users', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id', u.id, 'username', u.username, 'full_name', u.full_name,
@@ -428,6 +470,9 @@ begin
                'categories', coalesce((select jsonb_agg(uc.category_id order by uc.category_id)
                                          from public.app_user_categories uc
                                         where uc.user_id = u.id), '[]'::jsonb),
+               'admin_categories', coalesce((select jsonb_agg(ca.category_id order by ca.category_id)
+                                               from public.app_category_admins ca
+                                              where ca.user_id = u.id), '[]'::jsonb),
                'edit_tools', coalesce((select jsonb_agg(e.tool_id order by e.tool_id)
                                          from public.app_tool_editors e
                                         where e.user_id = u.id), '[]'::jsonb)
@@ -446,66 +491,82 @@ begin
   );
 end $$;
 
--- Approve / reject / disable a user, set which tiles they may open and which tools they may edit.
---   Admins may manage ordinary users only. Roles, and admin accounts, are the superuser's alone.
---   p_edit_tools: tool ids the user may edit (ignored for admins, who may edit everything).
+-- Approve / reject / disable a user, set which tiles they may open, which tiles they are admin
+-- of, and which tools they may edit.
+--   The super user: everything, for everyone but himself. Only he makes a tile admin
+--     (p_admin_categories; null = leave as it is).
+--   A tile admin: ordinary users only, and only inside his own tiles: their access to those
+--     tiles and "Can edit" for the tools on them. What a user has on other tiles is left alone.
+--   p_role is kept for older pages and is ignored: the role follows the admin tiles.
 drop function if exists public.app_admin_set_user(text, uuid, text, text, text[]);
+drop function if exists public.app_admin_set_user(text, uuid, text, text, text[], text[]);
 create or replace function public.app_admin_set_user(
   p_token text, p_user_id uuid, p_status text, p_role text, p_categories text[],
-  p_edit_tools text[] default '{}'::text[])
+  p_edit_tools text[] default '{}'::text[], p_admin_categories text[] default null)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
   a public.app_users;
   t public.app_users;
-  v_role text := coalesce(p_role, '');
+  v_super boolean;
+  v_scope text[];
+  v_cats text[] := coalesce(p_categories, '{}'::text[]);
+  v_tools text[] := coalesce(p_edit_tools, '{}'::text[]);
 begin
   a := public.app__require_admin(p_token);
+  v_super := a.role = 'superuser';
   select * into t from public.app_users where id = p_user_id;
   if t.id is null then perform public.app__fail('User not found.'); end if;
   if p_status not in ('pending','approved','rejected','disabled') then
     perform public.app__fail('Invalid status.');
   end if;
-  if v_role = '' then v_role := t.role; end if;
-  if v_role not in ('user','admin','superuser') then perform public.app__fail('Invalid role.'); end if;
-
-  if a.role <> 'superuser' then
-    if t.role <> 'user' then
-      perform public.app__fail('Only the super user can change an admin account.');
-    end if;
-    if v_role <> t.role then
-      perform public.app__fail('Only the super user can change roles.');
-    end if;
+  if t.role = 'superuser' then
+    if p_status <> 'approved' then perform public.app__fail('The super user account cannot be demoted or disabled.'); end if;
+    return jsonb_build_object('ok', true);            -- the super user has everything; nothing to store
   end if;
-  -- there is exactly one superuser; it is moved with app_set_superuser in the SQL Editor, never from the website
-  if v_role = 'superuser' and t.role <> 'superuser' then
-    perform public.app__fail('The super user is set in the database, not from this page.');
+  if not v_super and t.role <> 'user' then
+    perform public.app__fail('Only the super user can change an admin account.');
   end if;
-  if t.role = 'superuser' and (v_role <> 'superuser' or p_status <> 'approved') then
-    perform public.app__fail('The super user account cannot be demoted or disabled.');
+  if not v_super and p_admin_categories is not null and exists (
+       select 1 from unnest(p_admin_categories) x
+        where not exists (select 1 from public.app_category_admins ca where ca.user_id = t.id and ca.category_id = x)) then
+    perform public.app__fail('Only the super user can make someone an admin.');
   end if;
+  select coalesce(array_agg(c.id), '{}'::text[]) into v_scope from public.app_categories c where public.app__is_tile_admin(a, c.id);
 
   update public.app_users
      set status = p_status,
-         role   = v_role,
          approved_by = case when p_status = 'approved' and t.status <> 'approved' then a.id else approved_by end,
          approved_at = case when p_status = 'approved' and t.status <> 'approved' then now() else approved_at end,
          failed_attempts = 0,
          locked_until = null
    where id = t.id;
 
-  delete from public.app_user_categories where user_id = t.id;
+  -- admin tiles: the super user only
+  if v_super and p_admin_categories is not null then
+    delete from public.app_category_admins where user_id = t.id and not (category_id = any(p_admin_categories));
+    insert into public.app_category_admins (user_id, category_id, granted_by)
+    select t.id, c.id, a.id from public.app_categories c where c.id = any(p_admin_categories)
+    on conflict do nothing;
+    update public.app_users u
+       set role = case when exists (select 1 from public.app_category_admins ca where ca.user_id = u.id) then 'admin' else 'user' end
+     where u.id = t.id;
+  end if;
+
+  -- tile access, inside the caller's tiles only
+  delete from public.app_user_categories where user_id = t.id and category_id = any(v_scope);
   insert into public.app_user_categories (user_id, category_id)
   select t.id, c.id from public.app_categories c
-   where c.id = any(coalesce(p_categories, '{}'::text[])) and not c.is_default;
+   where c.id = any(v_cats) and c.id = any(v_scope) and not c.is_default
+  on conflict do nothing;
 
-  -- per-tool edit rights: only for ordinary users and only for tools that have an edit screen
-  delete from public.app_tool_editors where user_id = t.id;
-  if v_role = 'user' then
-    insert into public.app_tool_editors (user_id, tool_id, granted_by)
-    select t.id, tl.id, a.id from public.app_tools tl
-     where tl.id = any(coalesce(p_edit_tools, '{}'::text[])) and tl.editable;
-  end if;
+  -- per-tool edit rights, for tools on the caller's tiles only, and only tools that have an edit screen
+  delete from public.app_tool_editors e using public.app_tools tl
+   where e.user_id = t.id and tl.id = e.tool_id and tl.category_id = any(v_scope);
+  insert into public.app_tool_editors (user_id, tool_id, granted_by)
+  select t.id, tl.id, a.id from public.app_tools tl
+   where tl.id = any(v_tools) and tl.editable and tl.category_id = any(v_scope)
+  on conflict do nothing;
 
   if p_status <> 'approved' then
     delete from public.app_sessions where user_id = t.id;
@@ -1262,7 +1323,12 @@ begin
   select * into t from public.app_users where lower(username) = lower(trim(coalesce(p_username, '')));
   if t.id is null then return 'No user with that username.'; end if;
   if t.status <> 'approved' then return 'That user is not approved yet.'; end if;
+  -- the old super user becomes admin of every tile
+  insert into public.app_category_admins (user_id, category_id)
+  select u.id, c.id from public.app_users u cross join public.app_categories c where u.role = 'superuser' and u.id <> t.id
+  on conflict do nothing;
   update public.app_users set role = 'admin' where role = 'superuser' and id <> t.id;
+  delete from public.app_category_admins where user_id = t.id;
   update public.app_users set role = 'superuser' where id = t.id;
   return 'Super user is now ' || t.username || '.';
 end $$;
@@ -1977,8 +2043,13 @@ on conflict (id) do nothing;
 update public.app_tools set project_tool = true where id in ('compliance-maker', 'datasheet-notes', 'product-options');
 
 -- ---------- helpers ----------
+-- "Admin" for projects = the super user, or the admin of the tile the Projects tool sits on.
 create or replace function public.pr__is_admin(u public.app_users) returns boolean
-language sql immutable as $$ select u.role in ('admin', 'superuser'); $$;
+language sql stable security definer set search_path = public, extensions as $$
+  select u.role = 'superuser'
+      or exists (select 1 from public.app_category_admins a join public.app_tools t on t.category_id = a.category_id
+                  where a.user_id = u.id and t.id = 'projects');
+$$;
 
 -- The project, if this user may open it (its creator, someone it is shared with, an admin or the super user). Raises otherwise.
 create or replace function public.pr__project(u public.app_users, p_id uuid)
@@ -2516,8 +2587,15 @@ end $$;
 create or replace function public.pr_admin_summary(p_token text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
+declare a public.app_users;
 begin
-  perform public.app__require_admin(p_token);
+  a := public.app__require_admin(p_token);
+  -- the project and library numbers are for the admins of the tile those tools sit on
+  if not public.pr__is_admin(a) then
+    return jsonb_build_object('pending_users', (select count(*) from public.app_users where status = 'pending'),
+      'pending_answers', 0, 'new_rows', 0, 'projects', 0, 'limited', true,
+      'by_region', '[]'::jsonb, 'by_client_type', '[]'::jsonb, 'by_product', '[]'::jsonb);
+  end if;
   return jsonb_build_object(
     'pending_users',   (select count(*) from public.app_users where status = 'pending'),
     'pending_answers', (select count(*) from public.cm_run_lines where review = 'pending'),

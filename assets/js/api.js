@@ -42,7 +42,7 @@
     changePassword: function (t, o, n) { return rpc("app_change_password", { p_token: t, p_old: o, p_new: n }); },
     updateProfile: function (t, d) { return rpc("app_update_profile", { p_token: t, p_full_name: d.fullName, p_avatar: d.avatar || "" }); },
     adminOverview: function (t) { return rpc("app_admin_overview", { p_token: t }); },
-    adminSetUser: function (t, d) { return rpc("app_admin_set_user", { p_token: t, p_user_id: d.id, p_status: d.status, p_role: d.role, p_categories: d.categories, p_edit_tools: d.editTools || [] }); },
+    adminSetUser: function (t, d) { return rpc("app_admin_set_user", { p_token: t, p_user_id: d.id, p_status: d.status, p_role: d.role, p_categories: d.categories, p_edit_tools: d.editTools || [], p_admin_categories: d.adminCategories == null ? null : d.adminCategories }); },
     adminResetPassword: function (t, id, pw) { return rpc("app_admin_reset_password", { p_token: t, p_user_id: id, p_new_password: pw }); },
     adminDeleteUser: function (t, id) { return rpc("app_admin_delete_user", { p_token: t, p_user_id: id }); },
     adminSaveTool: function (t, d) { return rpc("app_admin_save_tool", { p_token: t, p_id: d.id, p_category_id: d.category_id, p_name: d.name, p_description: d.description, p_path: d.path, p_status: d.status, p_sort: d.sort, p_editable: !!d.editable }); },
@@ -88,12 +88,12 @@
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v9", mem = null;
+  var KEY = "dame_hub_demo_db_v10", mem = null;
   function seed() {
     return {
       users: [
         { id: "u1", username: "admin", full_name: "Demo Super User", team_note: "", password: "admin12345", role: "superuser", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] },
-        { id: "u4", username: "team.admin", full_name: "Team Admin", team_note: "Sales", password: "admin12345", role: "admin", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] },
+        { id: "u4", username: "team.admin", full_name: "Team Admin", team_note: "Sales", password: "admin12345", role: "admin", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [], admin_categories: ["general", "sales", "sbu"] },
         { id: "u2", username: "sales.user", full_name: "Sales User", team_note: "Sales", password: "sales12345", role: "user", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: ["sales"], edit_tools: ["compliance-maker"] },
         { id: "u3", username: "new.joiner", full_name: "New Joiner", team_note: "SBU", password: "joiner12345", role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] }
       ],
@@ -148,12 +148,16 @@
   function isAdminRole(u) { return u.role === "admin" || u.role === "superuser"; }
   function admin(db, token) { var u = sessionUser(db, token); if (!isAdminRole(u)) fail("Admin access required."); return u; }
   function superUser(db, token) { var u = sessionUser(db, token); if (u.role !== "superuser") fail("Only the super user can do this."); return u; }
-  function canOpen(db, u, c) { return isAdminRole(u) || c.is_default || u.categories.indexOf(c.id) >= 0; }
+  // admin of one tile (mirrors app__is_tile_admin): the super user is admin of every tile
+  function tileAdmin(u, categoryId) { return u.role === "superuser" || (u.admin_categories || []).indexOf(categoryId) >= 0; }
+  // "admin" for projects = admin of the tile the Projects tool sits on (mirrors pr__is_admin)
+  function prAdmin(db, u) { var t = db.tools.filter(function (x) { return x.id === "projects"; })[0]; return u.role === "superuser" || (!!t && tileAdmin(u, t.category_id)); }
+  function canOpen(db, u, c) { return tileAdmin(u, c.id) || c.is_default || u.categories.indexOf(c.id) >= 0; }
   // same rule as app__can_edit in schema.sql
   function canEdit(db, u, toolId) {
     var t = db.tools.filter(function (x) { return x.id === toolId; })[0];
     if (!t || !t.editable) return false;
-    if (isAdminRole(u)) return true;
+    if (tileAdmin(u, t.category_id)) return true;
     var c = db.categories.filter(function (x) { return x.id === t.category_id; })[0];
     return (u.edit_tools || []).indexOf(toolId) >= 0 && !!c && canOpen(db, u, c);
   }
@@ -161,12 +165,13 @@
   function profile(db, u) {
     return {
       user: { id: u.id, username: u.username, full_name: u.full_name, role: u.role, avatar: u.avatar || null,
+              admin_categories: db.categories.slice().sort(bySort).filter(function (c) { return tileAdmin(u, c.id); }).map(function (c) { return c.id; }),
               created_at: u.created_at, last_login_at: u.last_login_at,
               edit_tools: db.tools.filter(function (t) { return canEdit(db, u, t.id); }).map(function (t) { return t.id; }).sort() },
       // only the tiles this user may open are returned
       categories: db.categories.slice().sort(bySort).filter(function (c) { return canOpen(db, u, c); }).map(function (c) {
         return {
-          id: c.id, name: c.name, description: c.description, allowed: true,
+          id: c.id, name: c.name, description: c.description, allowed: true, admin: tileAdmin(u, c.id),
           tools: db.tools.filter(function (t) { return t.category_id === c.id && t.status !== "hidden"; }).sort(bySort)
                  .map(function (t) { var o = {}; for (var k in t) o[k] = t[k]; o.can_edit = canEdit(db, u, t.id); return o; })
         };
@@ -237,7 +242,7 @@
   // ---- project helpers (mirror pr__project, pr__log, pr__name in schema.sql) ----
   function prProject(db, u, id) {
     var p = db.pr.projects.filter(function (x) { return x.id === id; })[0];
-    if (!p || !(isAdminRole(u) || p.created_by === u.id || (p.members || []).indexOf(u.id) >= 0)) fail("That project is not available. Choose a project first.");
+    if (!p || !(prAdmin(db, u) || p.created_by === u.id || (p.members || []).indexOf(u.id) >= 0)) fail("That project is not available. Choose a project first.");
     return p;
   }
   function prLog(db, projectId, u, action, detail) { db.pr.log.push({ project_id: projectId, user_id: u.id, action: action, detail: String(detail || "").slice(0, 400), at: new Date().toISOString() }); }
@@ -251,13 +256,13 @@
     return { id: p.id, name: p.name, client_type: p.client_type, client_name: p.client_name, region: p.region, created_at: p.created_at,
              created_by: prName(db, p.created_by), mine: p.created_by === u.id, shared_with_me: (p.members || []).indexOf(u.id) >= 0, members: (p.members || []).length, compliance: runs.length, notes: notes.length, pending: pending, last_at: last };
   }
-  function prCanShare(u, p) { return isAdminRole(u) || (p.created_by === u.id && (u.edit_tools || []).length > 0); }   // mirrors pr__can_share
+  function prCanShare(u, p, db) { return prAdmin(db, u) || (p.created_by === u.id && (u.edit_tools || []).length > 0); }   // mirrors pr__can_share
   function prDetail(db, u, p) {
     function n(rows, test) { return (rows || []).filter(test).length; }
     return {
       project: { id: p.id, name: p.name, client_type: p.client_type, client_name: p.client_name, region: p.region, created_at: p.created_at,
                  created_by: prName(db, p.created_by), updated_at: p.updated_at, updated_by: prName(db, p.updated_by) },
-      access: { owner: p.created_by === u.id, can_share: prCanShare(u, p), can_delete: p.created_by === u.id || isAdminRole(u),
+      access: { owner: p.created_by === u.id, can_share: prCanShare(u, p, db), can_delete: p.created_by === u.id || prAdmin(db, u),
                 members: (p.members || []).map(function (m) { return prName(db, m); }).sort() },
       runs: prRuns(db, p).map(function (r) {
         return { id: r.id, created_at: r.created_at, user: r.user, product_id: r.product_id, product: r.product, factory: r.factory, source: r.source, file_name: r.file_name,
@@ -322,26 +327,35 @@
       var p = profile(db, u); p.ok = true; return p;
     }),
     adminOverview: demo(function (db, t) {
-      admin(db, t);
+      var a = admin(db, t);
       return {
-        users: db.users.map(function (u) { var c = {}; for (var k in u) if (k !== "password") c[k] = u[k]; return c; })
+        scope: db.categories.slice().sort(bySort).filter(function (c) { return tileAdmin(a, c.id); }).map(function (c) { return c.id; }),
+        users: db.users.map(function (u) { var c = {}; for (var k in u) if (k !== "password") c[k] = u[k]; c.admin_categories = u.admin_categories || []; return c; })
           .sort(function (a, b) { return (b.status === "pending") - (a.status === "pending") || b.created_at.localeCompare(a.created_at); }),
         categories: db.categories.slice().sort(bySort),
         tools: db.tools.slice().sort(bySort)
       };
     }),
+    // mirrors app_admin_set_user: the super user sets everything; a tile admin only his tiles, for ordinary users
     adminSetUser: demo(function (db, t, d) {
-      var a = admin(db, t);
+      var a = admin(db, t), sup = a.role === "superuser";
       var u = db.users.filter(function (x) { return x.id === d.id; })[0]; if (!u) fail("User not found.");
-      var role = d.role || u.role;
-      if (a.role !== "superuser") {
-        if (u.role !== "user") fail("Only the super user can change an admin account.");
-        if (role !== u.role) fail("Only the super user can change roles.");
+      if (["pending", "approved", "rejected", "disabled"].indexOf(d.status) < 0) fail("Invalid status.");
+      if (u.role === "superuser") { if (d.status !== "approved") fail("The super user account cannot be demoted or disabled."); return { ok: true }; }
+      if (!sup && u.role !== "user") fail("Only the super user can change an admin account.");
+      if (!sup && d.adminCategories && d.adminCategories.some(function (c) { return (u.admin_categories || []).indexOf(c) < 0; })) fail("Only the super user can make someone an admin.");
+      var scope = db.categories.filter(function (c) { return tileAdmin(a, c.id); }).map(function (c) { return c.id; });
+      function inScope(c) { return scope.indexOf(c) >= 0; }
+      u.status = d.status;
+      if (sup && d.adminCategories) {
+        u.admin_categories = d.adminCategories.filter(function (c) { return db.categories.some(function (x) { return x.id === c; }); });
+        u.role = u.admin_categories.length ? "admin" : "user";
       }
-      if (role === "superuser" && u.role !== "superuser") fail("The super user is set in the database, not from this page.");
-      if (u.role === "superuser" && (role !== "superuser" || d.status !== "approved")) fail("The super user account cannot be demoted or disabled.");
-      u.status = d.status; u.role = role; u.categories = d.categories || [];
-      u.edit_tools = role === "user" ? (d.editTools || []).filter(function (id) { return db.tools.some(function (x) { return x.id === id && x.editable; }); }) : [];
+      u.categories = (u.categories || []).filter(function (c) { return !inScope(c); })
+        .concat((d.categories || []).filter(function (c) { return inScope(c) && db.categories.some(function (x) { return x.id === c && !x.is_default; }); }));
+      function toolCat(id) { var x = db.tools.filter(function (y) { return y.id === id; })[0]; return x ? x.category_id : ""; }
+      u.edit_tools = (u.edit_tools || []).filter(function (id) { return !inScope(toolCat(id)); })
+        .concat((d.editTools || []).filter(function (id) { return inScope(toolCat(id)) && db.tools.some(function (x) { return x.id === id && x.editable; }); }));
       return { ok: true };
     }),
     adminResetPassword: demo(function (db, t, id, pw) {
@@ -595,7 +609,7 @@
     // ---- Projects (same rules as the PROJECTS part of db/schema.sql) ----
     prOptions: demo(function (db, t) { sessionUser(db, t); return { client_types: db.pr.client_types, regions: db.pr.regions }; }),
     prList: demo(function (db, t) {
-      var u = sessionUser(db, t), all = isAdminRole(u);
+      var u = sessionUser(db, t), all = prAdmin(db, u);
       return { all: all, projects: db.pr.projects.filter(function (p) { return all || p.created_by === u.id || (p.members || []).indexOf(u.id) >= 0; }).map(function (p) { return prCard(db, u, p); })
         .sort(function (a, b) { return String(b.last_at).localeCompare(String(a.last_at)); }) };
     }),
@@ -618,7 +632,7 @@
       return { ok: true, id: p.id };
     }),
     prShareGet: demo(function (db, t, id) {
-      var u = sessionUser(db, t), p = prProject(db, u, id), can = prCanShare(u, p);
+      var u = sessionUser(db, t), p = prProject(db, u, id), can = prCanShare(u, p, db);
       function card(x) { return { id: x.id, name: x.full_name, username: x.username, team: x.team_note || "" }; }
       return { can_share: can, owner: prName(db, p.created_by),
         members: db.users.filter(function (x) { return (p.members || []).indexOf(x.id) >= 0; }).map(card).sort(function (a, b) { return a.name.localeCompare(b.name); }),
@@ -626,7 +640,7 @@
     }),
     prShareSet: demo(function (db, t, id, ids) {
       var u = sessionUser(db, t), p = prProject(db, u, id);
-      if (!prCanShare(u, p)) fail("Sharing a project needs an admin, or the project's creator with edit rights.");
+      if (!prCanShare(u, p, db)) fail("Sharing a project needs an admin, or the project's creator with edit rights.");
       var old = p.members || [], now = db.users.filter(function (x) { return (ids || []).indexOf(x.id) >= 0 && x.status === "approved" && x.id !== p.created_by; }).map(function (x) { return x.id; });
       function names(list) { return list.map(function (m) { return prName(db, m); }).sort().join(", "); }
       var added = now.filter(function (m) { return old.indexOf(m) < 0; }), removed = old.filter(function (m) { return now.indexOf(m) < 0; });
@@ -637,7 +651,7 @@
     }),
     prDelete: demo(function (db, t, id) {
       var u = sessionUser(db, t), p = prProject(db, u, id);
-      if (!(p.created_by === u.id || isAdminRole(u))) fail("Only the person who created this project, or an admin, can delete it.");
+      if (!(p.created_by === u.id || prAdmin(db, u))) fail("Only the person who created this project, or an admin, can delete it.");
       db.cm.runs.forEach(function (r) { if (r.project_id === p.id) { (r.rows || []).forEach(function (x) { if (x.review === "pending") x.review = ""; }); r.project_id = null; } });
       db.pr.notes = db.pr.notes.filter(function (n) { return n.project_id !== p.id; });
       db.pr.log = db.pr.log.filter(function (g) { return g.project_id !== p.id; });
@@ -775,7 +789,8 @@
       return { ok: true };
     }),
     prAdminSummary: demo(function (db, t) {
-      admin(db, t);
+      var me = admin(db, t);
+      if (!prAdmin(db, me)) return { pending_users: db.users.filter(function (x) { return x.status === "pending"; }).length, pending_answers: 0, new_rows: 0, projects: 0, limited: true, by_region: [], by_client_type: [], by_product: [] };
       function tally(key) { var m = {}; db.pr.projects.forEach(function (p) { m[p[key]] = (m[p[key]] || 0) + 1; }); return Object.keys(m).map(function (k) { return { name: k, n: m[k] }; }).sort(function (a, b) { return b.n - a.n || a.name.localeCompare(b.name); }); }
       var pending = 0, prod = {};
       db.cm.runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.review === "pending") pending++; }); if (r.project_id) (prod[r.product] = prod[r.product] || {})[r.project_id] = 1; });

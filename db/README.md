@@ -38,18 +38,19 @@ tool adds its part above "Permissions".
   `create or replace function`).
 
 ## Who may do what (checked in the database)
-| Action | Super user | Admin | Key user ("Can edit" for the tool) | User |
+"Admin" is per tile: the super user makes a person admin of single tiles (Admin > Users).
+An admin's powers below apply on his own tiles only.
+
+| Action | Super user | Admin of the tile | Key user ("Can edit" for the tool) | User |
 |---|---|---|---|---|
-| Approve, reject, disable a user; tile access; "Can edit" | yes | yes (users only) | | |
-| Make or change an admin, delete an account | yes | | | |
+| Make someone admin of a tile, change or reset an admin, delete an account | yes | | | |
 | Add or change tools and team tiles | yes | | | |
-| Approve a project answer into the compliance library | yes | yes | yes (Compliance Maker) | |
-| Edit the compliance library directly | yes | yes | yes (Compliance Maker) | |
-| Datasheet row mapping | yes | yes | yes (Datasheet Notes) | |
-| Remove product option values | yes | yes | yes (Product Options) | |
-| See every user's projects | yes | yes | | |
-| Create projects, save and download own project data | yes | yes | yes | yes |
-| Share a project with other users | yes (any project) | yes (any project) | yes (projects he created) | |
-| Work in a project shared with him | yes | yes | yes | yes |
+| Approve, reject, disable an ordinary user; reset his password | yes | yes | | |
+| Give an ordinary user access to a tile, or "Can edit" for a tool on it | yes | yes (his tiles) | | |
+| Edit the data of a tool (compliance library, row mapping, product options) | yes | yes (tools on his tiles) | yes (that tool) | |
+| Take a project answer into the compliance library | yes | yes (General) | yes (Compliance Maker) | |
+| See every user's projects | yes | yes (General) | | |
+| Share a project with other users | yes (any) | yes (General: any) | yes (projects he created) | |
+| Create projects, work in own and shared projects | yes | yes | yes | yes |
 
 The super user is set once, in the SQL Editor: `select public.app_set_superuser('<username>');`
