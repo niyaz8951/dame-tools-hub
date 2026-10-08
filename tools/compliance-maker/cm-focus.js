@@ -1,7 +1,10 @@
 /* ============================================================
-   Compliance - full-screen reading and filling, one clause at a time.
-   Made for a phone held in one hand: big text, answer with one tap,
-   swipe or tap to the next clause. Used by the project record page
+   Compliance - focus mode: reading and filling one clause at a time.
+   On a phone it fills the screen: big text, answer with one tap,
+   swipe or tap to the next clause. On a computer it is a reading
+   pane over the dimmed page (not the browser's full screen): one
+   column, the clause before and after shown faintly for context,
+   and a text-size control, in the manner of a reader view. Used by the project record page
    (tools/projects/record.html) and by Compliance review (library.html).
 
    CMFocus.open({
@@ -25,6 +28,20 @@
 
   var CSS = [
     '.cf { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }',
+    '.cf-win { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }',
+    '.cf-size { display: none; gap: 4px; } .cf-size .btn { min-width: 34px; padding: 0 8px; }',
+    '.cf-ctx { display: none; }',
+    /* a computer: a reading pane over the dimmed page, not the whole window */
+    '@media (min-width: 700px) {',
+    '  .cf { align-items: center; justify-content: center; padding: 3vh 20px; background: var(--scrim); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: hub-fade .16s ease-out; }',
+    '  .cf-win { flex: 0 1 auto; width: 100%; max-width: 860px; max-height: 94vh; border-radius: 22px; box-shadow: var(--shadow-lift); overflow: hidden; animation: hub-rise .22s var(--ease); }',
+    '  .cf-body { padding: 26px 40px 30px; } .cf-in { max-width: 680px; gap: 16px; }',
+    '  .cf-size { display: flex; }',
+    '  .cf-ctx { display: block; width: 100%; font: inherit; text-align: left; color: var(--text-soft); background: none; border: 0; padding: 2px 4px; cursor: pointer; font-size: 14px; line-height: 1.45; opacity: .6;',
+    '            overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; transition: opacity .2s var(--ease); }',
+    '  .cf-ctx:hover, .cf-ctx:focus-visible { opacity: 1; } .cf-ctx b { font-weight: 650; margin-right: 8px; }',
+    '  .cf-nav { grid-template-columns: 1fr 1.2fr 1fr; padding: 12px 40px 14px; }',
+    '}',
     '.cf-top { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px; background: var(--surface); border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }',
     '.cf-top h2 { flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }',
     '.cf-count { font-size: 13px; color: var(--text-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }',
@@ -36,7 +53,7 @@
     '.cf-where .p { background: var(--text); color: var(--bg); } .cf-where .s { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); }',
     '.cf-card { background: var(--surface); border: 1px solid color-mix(in srgb, var(--border) 55%, transparent); border-radius: 18px; box-shadow: var(--shadow); padding: 20px; display: grid; grid-template-columns: auto 1fr; gap: 12px; }',
     '.cf-sr { min-width: 34px; height: 34px; padding: 0 8px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--brand); font-weight: 700; }',
-    '.cf-spec { font-size: 19px; line-height: 1.5; letter-spacing: -.01em; overflow-wrap: anywhere; }',
+    '.cf-spec { font-size: var(--cf-size, 19px); line-height: 1.55; letter-spacing: -.01em; overflow-wrap: anywhere; }',
     '.cf-spec .hl-red { color: var(--danger); } .cf-spec .hl-redbold { color: var(--danger); font-weight: 700; } .cf-spec .hl-underline { text-decoration: underline; } .cf-spec .hl-colon { color: var(--warn); font-weight: 700; }',
     '.cf-label { font-size: 13px; font-weight: 650; margin-bottom: 6px; }',
     '.cf-chips { display: flex; flex-wrap: wrap; gap: 8px; }',
@@ -55,7 +72,7 @@
     '@keyframes cf-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }',
     '@keyframes cf-back { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: none; } }',
     '@media (prefers-reduced-motion: reduce) { .cf-slide { animation: none; } .cf-chip, .cf-bar i { transition: none; } }',
-    '@media (max-width: 560px) { .cf-spec { font-size: 17px; } .cf-card { padding: 14px; } .cf-body { padding: 12px 12px 20px; } }',
+    '@media (max-width: 560px) { .cf-spec { font-size: var(--cf-size, 17px); } .cf-card { padding: 14px; } .cf-body { padding: 12px 12px 20px; } }',
     'body.cf-open { overflow: hidden; }'
   ].join('\n');
 
@@ -72,13 +89,24 @@
     var prev = el('button', { type: 'button', 'class': 'btn ghost', text: 'Previous' });
     var next = el('button', { type: 'button', 'class': 'btn ghost', text: 'Next' });
     var todo = el('button', { type: 'button', 'class': 'btn', text: 'Next to fill' });
-    var root = el('div', { 'class': 'cf', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title }, [
+    // text size, remembered on this device (a reader's first wish)
+    var SIZE = 'dame_cf_size', size = 0;
+    try { size = parseInt(localStorage.getItem(SIZE), 10) || 0; } catch (e) { size = 0; }
+    function setSize(px) { size = Math.max(15, Math.min(28, px)); win.style.setProperty('--cf-size', size + 'px'); try { localStorage.setItem(SIZE, String(size)); } catch (e) { /* not kept */ } }
+    var win = el('div', { 'class': 'cf-win' }, [
       el('div', { 'class': 'cf-top' }, [
         el('button', { type: 'button', 'class': 'btn ghost sm', text: 'Done', onclick: function () { leave(close); } }),
-        el('h2', { text: o.title }), count]),
+        el('h2', { text: o.title }),
+        el('div', { 'class': 'cf-size' }, [
+          el('button', { type: 'button', 'class': 'btn ghost sm', text: 'A\u2212', title: 'Smaller text', 'aria-label': 'Smaller text', onclick: function () { setSize((size || 19) - 2); } }),
+          el('button', { type: 'button', 'class': 'btn ghost sm', text: 'A+', title: 'Larger text', 'aria-label': 'Larger text', onclick: function () { setSize((size || 19) + 2); } })]),
+        count]),
       el('div', { 'class': 'cf-bar' }, [bar]), body,
       el('div', { 'class': 'cf-nav' }, [prev, todo, next])
     ]);
+    if (size) win.style.setProperty('--cf-size', size + 'px');
+    var root = el('div', { 'class': 'cf', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title }, [win]);
+    root.addEventListener('mousedown', function (e) { if (e.target === root) leave(close); });      // a click on the dimmed page closes
 
     var comp, rem, note, state, saving = Promise.resolve();
 
@@ -122,6 +150,11 @@
       inner.textContent = '';
       inner.className = 'cf-in cf-slide' + (back ? ' back' : '');
       root.classList.toggle('lib', !!it.lib);
+      function ctx(k) {
+        var x = items[k]; if (!x) return null;
+        return el('button', { type: 'button', 'class': 'cf-ctx', title: k < i ? 'Previous clause' : 'Next clause', onclick: function () { go(k, k < i); } }, [el('b', { text: x.sr || '\u2022' }), x.spec]);
+      }
+      var before = ctx(i - 1); if (before) inner.appendChild(before);
       inner.appendChild(el('div', { 'class': 'cf-where' }, [it.part ? el('span', { 'class': 'p', text: it.part }) : null, it.section ? el('span', { 'class': 's', text: it.section }) : null]));
       var runs = window.CMHighlight ? window.CMHighlight.runs(it.spec) : [{ text: it.spec, style: '' }];
       inner.appendChild(el('div', { 'class': 'cf-card' }, [
@@ -130,7 +163,7 @@
 
       comp = el('input', { 'class': 'input', maxlength: '200', placeholder: 'Or type another answer', 'aria-label': 'Compliance' }); comp.value = it.compliance || '';
       rem = el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Remarks (optional)', 'aria-label': 'Remarks' }); rem.value = it.remarks || '';
-      note = it.comments === undefined ? null : el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Internal comments, for the library team only', 'aria-label': 'Internal Comments' });
+      note = it.comments === undefined ? null : el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Internal comments: users see them beside this clause', 'aria-label': 'Internal Comments' });
       if (note) note.value = it.comments || '';
       state = el('div', { 'class': 'cf-state', role: 'status', 'aria-live': 'polite', text: it.info || '' });
       chipBox = el('div', { 'class': 'cf-chips' }, (o.choices || []).map(function (c) {
@@ -147,6 +180,7 @@
         el('div', { style: 'height:8px' }), comp, el('div', { style: 'height:10px' }), el('div', { 'class': 'cf-label', text: 'Remarks' }), rem,
         note ? el('div', { style: 'height:10px' }) : null, note ? el('div', { 'class': 'cf-label', text: 'Internal Comments' }) : null, note, state]));
       if (it.others && it.others.length) inner.appendChild(el('div', { 'class': 'cf-others' }, it.others.map(function (t) { return el('div', { text: t }); })));
+      var after = ctx(i + 1); if (after) inner.appendChild(after);
       if (items.every(filled)) inner.appendChild(el('div', { 'class': 'cf-done', text: 'All ' + items.length + ' clauses are filled. Press Done.' }));
       body.scrollTop = 0; progress();
     }
@@ -180,7 +214,6 @@
     }
     function close() {
       document.removeEventListener('keydown', key); document.removeEventListener('visibilitychange', hide); window.removeEventListener('pagehide', commit);
-      try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) { /* not in full screen */ }
       root.remove(); document.body.classList.remove('cf-open'); open = null;
       if (o.onClose) o.onClose();
     }
@@ -189,8 +222,6 @@
     document.addEventListener('visibilitychange', hide); window.addEventListener('pagehide', commit);
     document.addEventListener('keydown', key);
     document.body.appendChild(root); document.body.classList.add('cf-open'); open = root;
-    // real full screen where the browser has it (a phone browser or the installed app already fills the screen)
-    try { if (root.requestFullscreen && window.matchMedia('(min-width: 700px)').matches) root.requestFullscreen().then(null, function () { /* stays as an overlay */ }); } catch (e) { /* overlay */ }
     draw(false);
   }
 

@@ -254,6 +254,10 @@
   // Internal flag text for the Comments column (E). Conflict outranks
   // provenance because it demands action.
   function commentFor(r) {
+    var flag = flagFor(r), note = String(r.internal || '').trim();      // r.internal = the library team's Internal Comments
+    return note && flag ? note + '\n' + flag : note || flag;
+  }
+  function flagFor(r) {
     if (r.conflict && (r.compliance || r.remarks)) {
       return 'CONFLICT — previously answered: Compliance "' +
         (r.conflict.compliance || '(blank)') + '"; Remarks "' +
@@ -342,7 +346,7 @@
         inlineStrCell('C' + rowNum, 0, 'Specifications') +
         inlineStrCell('D' + rowNum, 0, 'Compliance') +
         inlineStrCell('E' + rowNum, 0, 'Remarks') +
-        inlineStrCell('F' + rowNum, 0, 'Comments') +
+        inlineStrCell('F' + rowNum, 0, 'Internal Comments') +
       '</row>'
     );
     rowNum++;
@@ -471,27 +475,31 @@
   //                  selected product; left blank (still shows the blue
   //                  band) if none is available (e.g. convert-only mode)
   //   Date (row 2) is ALWAYS today's date at export time — see todayStr().
-  /* Second sheet (optional): meta.sheet2 = { name, rows: [{ section, component, text, kind }] }.
-     Section | Component | Specification requirement | Remarks, built from the styles above:
-     2 header, 15 section name, 4 body, 0 sub-heading, 8 empty. */
+  /* Second sheet (optional): meta.sheet2 = { name, columns: [unit tag...], rows: [{ section, component, text, kind, cells }] }.
+     Section | Component | Specification requirement | one column per unit (when given) | Remarks,
+     built from the styles above: 2 header, 15 section name, 4 body, 0 sub-heading, 8 empty. */
   function buildSheet2(sheet) {
+    var units = sheet.columns || [], last = 4 + units.length;
     var out = ['<row r="1" ht="22" customHeight="1">' +
-      ['Section', 'Component', 'Specification requirement', 'Remarks'].map(function (h, i) {
+      ['Section', 'Component', 'Specification requirement'].concat(units, ['Remarks']).map(function (h, i) {
         return inlineStrCell(colLetter(i + 1) + '1', 2, h);
       }).join('') + '</row>'];
     sheet.rows.forEach(function (r, i) {
       var n = i + 2, sub = r.kind === 'sub';
       function c(col, style, text) { return text ? inlineStrCell(colLetter(col) + n, style, text) : '<c r="' + colLetter(col) + n + '" s="' + style + '"/>'; }
       out.push('<row r="' + n + '">' + c(1, sub ? 0 : 15, r.section) + c(2, sub ? 0 : 4, r.component) +
-               c(3, sub ? 0 : 4, r.text) + c(4, sub ? 0 : 8, '') + '</row>');
+               c(3, sub ? 0 : 4, r.text) + units.map(function (u, k) { return c(4 + k, sub ? 0 : 4, sub ? '' : String((r.cells || [])[k] || '')); }).join('') +
+               c(last, sub ? 0 : 8, '') + '</row>');
     });
+    var unitCols = units.map(function (u, k) { return '<col min="' + (4 + k) + '" max="' + (4 + k) + '" width="26" customWidth="1"/>'; }).join('');
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
         '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
         '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
         '<sheetFormatPr defaultRowHeight="15"/>' +
         '<cols><col min="1" max="1" width="26" customWidth="1"/><col min="2" max="2" width="32" customWidth="1"/>' +
-          '<col min="3" max="3" width="90" customWidth="1"/><col min="4" max="4" width="34" customWidth="1"/></cols>' +
+          '<col min="3" max="3" width="' + (units.length ? 70 : 90) + '" customWidth="1"/>' + unitCols +
+          '<col min="' + last + '" max="' + last + '" width="34" customWidth="1"/></cols>' +
         '<sheetData>' + out.join('') + '</sheetData>' +
         '<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
         '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +

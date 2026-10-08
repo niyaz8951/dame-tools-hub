@@ -397,7 +397,8 @@
         if (!line.part && part) line.part = part;
         if (!line.section && section) line.section = section;
         if (!line.home_run) { line.home_run = runId; line.home_seq = i; line.sr = String(ln.sr || "").replace(/[.)]\s*$/, ""); line.row_type = ln.type; line.section_sr = sectionSr; line.file_name = d.fileName || ""; }
-        if (line.status === "answered") { matched++; answers.push({ i: i, compliance: line.compliance, remarks: line.remarks }); }
+        if (line.status === "answered") matched++;
+        if (line.status === "answered" || line.comments) answers.push({ i: i, answered: line.status === "answered", compliance: line.status === "answered" ? line.compliance : "", remarks: line.status === "answered" ? line.remarks : "", comments: line.comments || "" });
       });
       var run = { id: runId, kind: "conversion", created_at: new Date().toISOString(), user: u.full_name, username: u.username, product: f.product, factory: f.name, source: d.source, file_name: d.fileName || "", line_count: d.lines.length, unique_count: Object.keys(seen).length, matched_count: matched };
       run.user_id = u.id; run.product_id = f.product_id; run.project_id = d.projectId || null; run.rows = d.projectId ? kept : [];
@@ -668,7 +669,7 @@
           out.compliance.push({ run: r.id, seq: x.seq, type: x.type, sr: x.sr, spec: x.spec,
             compliance: own ? x.compliance : (l ? l.compliance : ""), remarks: own ? x.remarks : (l ? l.remarks : ""),
             source: own ? ({ pending: "Project answer, waiting for review", approved: "Project answer, approved for the library", rejected: "Project answer, not taken into the library" }[x.review] || "Same as the library")
-                        : (l && l.status === "answered" ? "From the library" : ""), by: own ? prName(db, x.answered_by) : "" });
+                        : (l && l.status === "answered" ? "From the library" : ""), comments: (l && l.comments) || "", by: own ? prName(db, x.answered_by) : "" });
         });
       });
       db.pr.notes.filter(function (n) { return n.project_id === p.id; }).forEach(function (n) {
@@ -697,11 +698,11 @@
       var u = sessionUser(db, t), r = db.cm.runs.filter(function (x) { return x.id === id; })[0];
       if (!r || !r.project_id) fail("That compliance record is not in a project.");
       var p = prProject(db, u, r.project_id);
-      return { run: { id: r.id, file_name: r.file_name, created_at: r.created_at, user: r.user, product: r.product, factory: r.factory, project_id: p.id, project: p.name, client: p.client_name },
+      return { run: { id: r.id, file_name: r.file_name, created_at: r.created_at, user: r.user, product: r.product, product_id: r.product_id, factory: r.factory, project_id: p.id, project: p.name, client: p.client_name },
         lines: (r.rows || []).map(function (x) {
           var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0], ans = l && l.status === "answered";
           return { seq: x.seq, type: x.type, sr: x.sr, spec: x.spec, can: !!x.line_id, own: !!(x.compliance || x.remarks), compliance: x.compliance, remarks: x.remarks, review: x.review,
-                   by: x.answered_by ? prName(db, x.answered_by) : "", lib_compliance: ans ? l.compliance : "", lib_remarks: ans ? l.remarks : "" };
+                   by: x.answered_by ? prName(db, x.answered_by) : "", lib_compliance: ans ? l.compliance : "", lib_remarks: ans ? l.remarks : "", lib_comments: (l && l.comments) || "" };
         }) };
     }),
     prRunSaveLine: demo(function (db, t, d) {

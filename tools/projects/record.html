@@ -19,8 +19,9 @@
   .rc-bar i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
   /* Reads like the converted specification: dark PART row, blue section row, clause label in Sr,
      the same word highlights. Colours come from the theme. */
-  .rc { table-layout: fixed; min-width: 880px; }
-  .rc th:nth-child(1) { width: 62px; } .rc th:nth-child(3) { width: 150px; } .rc th:nth-child(4) { width: 27%; } .rc th:nth-child(5) { width: 118px; }
+  .rc { table-layout: fixed; min-width: 1040px; }
+  .rc th:nth-child(1) { width: 62px; } .rc th:nth-child(3) { width: 150px; } .rc th:nth-child(4) { width: 22%; } .rc th:nth-child(5) { width: 18%; } .rc th:nth-child(6) { width: 118px; }
+  .rc td.rc-note { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; font-size: 13px; font-style: italic; color: var(--text-soft); }
   .rc td { vertical-align: top; }
   .rc .spec { line-height: 1.45; overflow-wrap: anywhere; }
   .rc tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
@@ -35,6 +36,16 @@
   .rc .state { font-size: 12px; color: var(--text-soft); }
   .rc .state.err { color: var(--danger); }
   .rc tr.lib .input { background: var(--ok-bg); }
+  .rc td.rc-read { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; }
+  .rc tr.lib td.rc-read { color: var(--ok); }
+  .rc td.rc-end { white-space: normal; }
+  .rc-edit { display: block; margin-top: 4px; font: inherit; font-size: 12px; font-weight: 600; color: var(--brand); background: none; border: 0; padding: 2px 0; cursor: pointer; text-decoration: underline; }
+  .rc tr:not(:hover):not(.edit) .rc-edit:not(:focus-visible) { opacity: .55; }
+  .rc-sheet { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .rc-chip { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+             padding: 3px 10px; border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--brand) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); }
+  .rc-chip b { font-weight: 650; color: var(--brand); } .rc-chip span { overflow-wrap: anywhere; }
+  .rc-chip:hover { border-color: var(--brand); }
   .rc-wrap { max-height: 72vh; overflow: auto; }
   .rc thead th { position: sticky; top: 0; z-index: 1; }
 </style>
@@ -49,11 +60,12 @@
     <div class="page-head rc-head">
       <div>
         <h1 id="rc-name"></h1>
-        <p>Read the specification and fill Compliance and Remarks here. Every change is saved by itself. "Read and fill full screen" shows one clause at a time, with one-tap answers.</p>
+        <p>The specification with its answers. Read and search it as it is; press Edit to change answers, or Focus mode to go through it one clause at a time.</p>
         <div class="rc-facts" id="rc-facts"></div>
       </div>
       <div class="row">
-        <button type="button" class="btn" id="rc-focus">Read and fill full screen</button>
+        <button type="button" class="btn" id="rc-focus">Focus mode</button>
+        <button type="button" class="btn ghost" id="rc-edit">Edit</button>
         <button type="button" class="btn ghost" id="rc-download">Download Excel</button>
       </div>
     </div>
@@ -73,11 +85,12 @@
         <p class="small muted" id="rc-count" role="status"></p>
         <div class="rc-bar" aria-hidden="true"><i id="rc-bar"></i></div>
       </div>
-      <p class="hint">Green boxes are answers from the company library. Change one and your answer is kept for this project and sent to the library team for review. Empty both boxes to go back to the library answer.</p>
+      <p class="hint" id="rc-mode">Reading. Press Edit to fill or change answers, or Edit on one clause. Green answers come from the company library. Internal Comments are notes from the library team for you, not for the client.</p>
+      <p class="hint" id="rc-sheet-note" hidden></p>
       <div class="empty" id="rc-empty" hidden>No row matches.</div>
       <div class="table-wrap rc-wrap" id="rc-wrap" tabindex="0" role="region" aria-label="Specification">
         <table class="table rc">
-          <thead><tr><th>Sr</th><th>Specifications</th><th>Compliance</th><th>Remarks</th><th></th></tr></thead>
+          <thead><tr><th>Sr</th><th>Specifications</th><th>Compliance</th><th>Remarks</th><th>Internal Comments</th><th></th></tr></thead>
           <tbody id="rc-body"></tbody>
         </table>
       </div>
@@ -89,12 +102,15 @@
 <script src="../compliance-maker/cm-highlight.js"></script>
 <script src="../compliance-maker/cm-focus.js"></script>
 <script src="../compliance-maker/xlsx-writer.js"></script>
+<script src="../compliance-maker/cm-rows.js"></script>
 <script src="pr-xlsx.js"></script>
+<script src="pr-options.js"></script>
+<script src="pr-match.js"></script>
 <script>
 (function () {
   "use strict";
   var el = Hub.el, $ = function (id) { return document.getElementById(id); };
-  var runId = Hub.param("run"), run = null, lines = [];
+  var runId = Hub.param("run"), run = null, lines = [], editing = false, match = null, sheetOf = {};
 
   function when(iso) { var d = new Date(iso); return isNaN(d) ? "" : Hub.date(iso); }
   function bare(name) { return String(name || "").replace(/\.[A-Za-z0-9]{1,5}$/, "") || "Pasted text"; }
@@ -128,7 +144,8 @@
       if (l.type === "section") { sect = (l.sr ? l.sr + " " : "") + l.spec; return; }
       if (!l.can) return;
       var s = shown(l);
-      items.push({ line: l, part: part, section: sect, sr: l.sr, spec: l.spec, compliance: s.c, remarks: s.r, info: stateText(l), lib: !l.own && filled(l) });
+      items.push({ line: l, part: part, section: sect, sr: l.sr, spec: l.spec, compliance: s.c, remarks: s.r, info: stateText(l), lib: !l.own && filled(l),
+                   others: (l.lib_comments ? ["Internal comment · " + l.lib_comments] : []).concat((sheetOf[lines.indexOf(l)] || []).map(function (d) { return "Datasheet · " + d.component + ": " + valueText(d.cells); })) });
     });
     var first = 0; for (var k = 0; k < items.length; k++) if (!filled(items[k].line)) { first = k; break; }
     CMFocus.open({ title: bare(run.file_name), items: items, start: first, choices: CHOICES,
@@ -143,32 +160,61 @@
   var CHOICES = ["Comply", "Comply with Remarks", "Noted", "Not Comply", "Not Applicable", "In Contractor's Scope"];
 
   function row(l) {
-    if (l.type === "part") return el("tr", { "class": "part" }, [el("td", { "class": "sr" }), el("td", { colspan: "4", text: l.spec })]);
-    if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "4", text: l.spec })]);
+    if (l.type === "part") return el("tr", { "class": "part" }, [el("td", { "class": "sr" }), el("td", { colspan: "5", text: l.spec })]);
+    if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "5", text: l.spec })]);
     var text = el("div", { "class": "spec" }, CMHighlight.runs(l.spec).map(function (r) { return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text; }));
     var kind = l.type === "letter" && /^[A-Z]/.test(l.sr || "") ? "letter" : l.type === "number" ? "number" : "";
-    if (!l.can) return el("tr", {}, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: "4" }, [text])]);
+    if (!l.can) return el("tr", {}, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: "5" }, [text])]);
 
-    var s = shown(l);
+    var s = shown(l), sheet = sheetOf[lines.indexOf(l)] || [];
+    // what the datasheet has for the rows this clause is about (found by the row keywords)
+    var chips = sheet.length ? el("div", { "class": "rc-sheet" }, sheet.map(function (d) {
+      return el("button", { type: "button", "class": "rc-chip", title: "From the datasheet. Press to see what the factory offers for this row.", onclick: function () {
+        PROptions.open({ productId: run.product_id, product: run.product, factory: match.factory, key: d.key, section: d.section, component: d.component, values: d.cells });
+      } }, [el("b", { text: d.component }), el("span", { text: valueText(d.cells) })]);
+    })) : null;
+    var state = el("span", { "class": "state", text: stateText(l) });
+
+    // read: plain text, so the page can be searched (Ctrl+F) and read like the document
+    if (!editing && !l._edit) {
+      return el("tr", { "class": !l.own && filled(l) ? "lib" : null }, [
+        el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]),
+        el("td", { "class": "rc-read", text: s.c }), el("td", { "class": "rc-read", text: s.r }), el("td", { "class": "rc-note", text: l.lib_comments || "" }),
+        el("td", { "class": "rc-end" }, [state, el("button", { type: "button", "class": "rc-edit", text: "Edit", "aria-label": "Edit this clause", onclick: function (e) {
+          l._edit = true; var tr = e.currentTarget.closest("tr"), neu = row(l); tr.parentNode.replaceChild(neu, tr); neu.querySelector("input").focus();
+        } })])
+      ]);
+    }
     var comp = el("input", { "class": "input", value: s.c, maxlength: "200", list: "rc-words", "aria-label": "Compliance" });
     var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = s.r;
-    var state = el("span", { "class": "state", text: stateText(l) });
-    var tr = el("tr", { "class": !l.own && filled(l) ? "lib" : null }, [
-      el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text]), el("td", {}, [comp]), el("td", {}, [rem]), el("td", {}, [state])
+    var tr = el("tr", { "class": "edit" + (!l.own && filled(l) ? " lib" : "") }, [
+      el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]), el("td", {}, [comp]), el("td", {}, [rem]), el("td", { "class": "rc-note", text: l.lib_comments || "" }),
+      // Done sits above the status text, so "Saving…" appearing cannot move it away from the pointer
+      el("td", { "class": "rc-end" }, [editing ? null : el("button", { type: "button", "class": "rc-edit", text: "Done", onclick: function () {
+        save().then(function (done) { if (!done) return; l._edit = false; if (tr.parentNode) tr.parentNode.replaceChild(row(l), tr); });
+      } }), state])
     ]);
+    var busy = null;                                    // one save at a time; resolves true when the answer is stored
     function save() {
+      if (busy) return busy.then(save);
       var c = comp.value.trim(), r = rem.value.trim(), now = shown(l);
-      if (c === now.c && r === now.r) return;
+      if (c === now.c && r === now.r) return Promise.resolve(true);
       state.className = "state"; state.textContent = "Saving…";
-      saveLine(l, c, r).then(function () {
+      return busy = saveLine(l, c, r).then(function () {
+        busy = null;
         if (!l.own) { comp.value = l.lib_compliance; rem.value = l.lib_remarks; }
-        tr.className = !l.own && filled(l) ? "lib" : "";
-        state.textContent = stateText(l); counts();
-      }, function (err) { state.className = "state err"; state.textContent = "Not saved"; Hub.toast(err.message, true); });
+        tr.className = "edit" + (!l.own && filled(l) ? " lib" : "");
+        state.textContent = stateText(l); counts(); return true;
+      }, function (err) { busy = null; state.className = "state err"; state.textContent = "Not saved"; Hub.toast(err.message, true); return false; });
     }
     comp.addEventListener("change", save); rem.addEventListener("change", save);
     comp.addEventListener("blur", save); rem.addEventListener("blur", save);
     return tr;
+  }
+  function valueText(cells) {
+    var seen = [], out = [];
+    (cells || []).forEach(function (v) { v = String(v || "").trim(); if (v && v !== "-" && seen.indexOf(v.toLowerCase()) < 0) { seen.push(v.toLowerCase()); out.push(v); } });
+    return out.length ? out.slice(0, 3).join(" / ") + (out.length > 3 ? " and " + (out.length - 3) + " more" : "") : "not on the datasheet";
   }
 
   /* Headings are kept only when a row under them is shown. */
@@ -197,13 +243,30 @@
   $("rc-q").addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(draw, 200); });
 
   $("rc-focus").addEventListener("click", focusMode);
+  // Edit on: every clause shows its boxes. Edit off: the page reads like the document.
+  $("rc-edit").addEventListener("click", function () {
+    editing = !editing; lines.forEach(function (l) { l._edit = false; });
+    this.textContent = editing ? "Done editing" : "Edit"; this.classList.toggle("ghost", !editing);
+    $("rc-mode").textContent = editing ? "Edit is on. Every change is saved as you leave the box. Green boxes are answers from the company library; empty both boxes to go back to the library answer."
+                                       : "Reading. Press Edit to fill or change answers, or Edit on one clause. Green answers come from the company library.";
+    draw();
+  });
+  /* Sheet 2 of the Excel: every datasheet row with the clause that asks about it and, when the
+     project has the datasheet, what each unit has. Without a datasheet every mapped row is listed. */
+  function sheet2() {
+    if (!match || !match.table.length) return null;
+    var s = "";
+    var rows = match.hasNotes ? PRMatch.sheetRows(match, false)
+      : match.table.map(function (r) { var first = r.section !== s; s = r.section; return { section: first ? r.section : "", component: r.component, text: r.spec, kind: r.kind, cells: [] }; });
+    return rows.length ? { name: "Datasheet rows", columns: match.columns, rows: rows } : null;
+  }
   $("rc-download").addEventListener("click", function () {
     var rows = lines.map(function (l) {
       var s = shown(l);
-      return { type: l.type, sr: l.sr, spec: l.spec, compliance: l.can ? s.c : "", remarks: l.can ? s.r : "", auto: l.can && !l.own && filled(l) ? { type: "exact" } : null };
+      return { type: l.type, sr: l.sr, spec: l.spec, compliance: l.can ? s.c : "", remarks: l.can ? s.r : "", internal: l.can ? l.lib_comments || "" : "", auto: l.can && !l.own && filled(l) ? { type: "exact" } : null };
     });
     var blob = window.xlsxWriter.build(rows, null, function (text) { return CMHighlight.runs(text); },
-      { projectName: run.project, bandText: "Product : " + run.product + "     Factory : " + run.factory });
+      { projectName: run.project, bandText: "Product : " + run.product + "     Factory : " + run.factory, sheet2: sheet2() });
     PRXlsx.save(blob, bare(run.file_name) + " - compliance.xlsx");
     Hub.toast("Excel downloaded.");
   });
@@ -221,6 +284,17 @@
     [run.project, run.product + ", " + run.factory + " factory", "Converted by " + run.user + ", " + when(run.created_at)].forEach(function (t) { facts.appendChild(el("span", { "class": "badge", text: t })); });
     $("rc-loading").hidden = true; $("rc-main").hidden = false;
     counts(); draw();
+    // the datasheet rows this specification talks about, and their values when the project has the datasheet
+    PRMatch.load({ projectId: run.project_id, productId: run.product_id, specRows: lines.map(function (l) { return { type: l.type, sr: l.sr, spec: l.spec }; }) }).then(function (m) {
+      match = m; sheetOf = {};
+      m.table.forEach(function (r) { if (r.kind === "row" && r.found && m.hasNotes) r.lines.forEach(function (i) { (sheetOf[i] = sheetOf[i] || []).push(r); }); });
+      var n = Object.keys(sheetOf).length, note = $("rc-sheet-note");
+      note.hidden = false;
+      note.textContent = !m.hasNotes ? "No " + run.product + " datasheet in this project yet. Read one and its values appear beside the clauses that ask about them; the Excel gets them on its second sheet."
+        : n ? n + (n === 1 ? " clause has" : " clauses have") + " the datasheet value beside " + (n === 1 ? "it" : "them") + " (blue chips). Found by the row keywords, not by meaning: read before you rely on it."
+        : "The datasheet is in the project, but no clause matched a row keyword. An editor adds keywords in Datasheet Notes > Row mapping.";
+      if (n && !CMFocus.isOpen()) draw();
+    }, function () { /* the specification still reads and fills without it */ });
     // on a phone the table is hard to fill: start in the full-screen mode, "Done" shows the table
     if (window.matchMedia("(max-width: 640px)").matches && lines.some(function (l) { return l.can; })) focusMode();
   }, function (err) {

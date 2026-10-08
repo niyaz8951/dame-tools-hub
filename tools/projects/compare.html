@@ -71,6 +71,7 @@
 <script src="../compliance-maker/cm-rows.js"></script>
 <script src="pr-xlsx.js"></script>
 <script src="pr-options.js"></script>
+<script src="pr-match.js"></script>
 <script>
 (function () {
   "use strict";
@@ -81,42 +82,7 @@
   function low(s) { return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim(); }
   var sec = PROptions.sectionName;
 
-  /* Every unit of every saved table of this product becomes a column. A row is found by its key when
-     the table carries one, otherwise by section and component name. */
-  function unitLookup(notes) {
-    var byKey = {}, byName = {}, n = 0;
-    notes.forEach(function (note) {
-      var s = "", used = {};
-      note.columns.forEach(function (tag) { var t = tag, k = 2; while (columns.indexOf(t) >= 0) t = tag + " (" + (k++) + ")"; columns.push(t); });
-      note.rows.forEach(function (r) {
-        if (r.section) s = r.section;
-        if (r.kind === "sub") return;
-        var keys = [r.key ? "k:" + r.key : null, "n:" + sec(s) + "|" + low(r.component)];
-        keys.forEach(function (k) {
-          if (!k || used[k]) return; used[k] = 1;                     // the first section of that name wins
-          var map = k.charAt(0) === "k" ? byKey : byName;
-          (map[k] = map[k] || []).push({ at: n, cells: r.cells || [] });
-        });
-      });
-      n += note.columns.length;
-    });
-    return function (row) {
-      var hit = (row.key && byKey["k:" + row.key]) || byName["n:" + sec(row.section) + "|" + low(row.component)] || [];
-      var out = columns.map(function () { return ""; });
-      hit.forEach(function (h) { h.cells.forEach(function (v, i) { out[h.at + i] = v == null ? "" : String(v); }); });
-      return out;
-    };
-  }
-
-  function build(rules, specRows, notes) {
-    var values = unitLookup(notes), s = "";
-    table = CMRows.match(specRows, rules).map(function (r) {
-      if (r.section) s = r.section;
-      return { section: s, first: !!r.section, kind: r.kind, key: r.key || "", component: r.component, spec: r.text || "", found: !!r.found,
-               cells: r.kind === "sub" ? [] : values({ key: r.key, section: s, component: r.component }) };
-    });
-  }
-  function hasValue(r) { return r.cells.some(function (v) { return v && v !== "-"; }); }
+  function hasValue(r) { return PRMatch.hasValue(r); }
 
   function shown() {
     var q = low($("cp-q").value), only = $("cp-only").checked;
@@ -177,26 +143,17 @@
   }).then(function (res) {
     project = res.project;
     Hub.setBack(project.name, "project.html?id=" + encodeURIComponent(projectId));
-    var runs = res.runs.filter(function (r) { return r.product_id === productId; }).reverse();       // oldest first
-    var notes = res.notes.filter(function (n) { return n.product_id === productId; }).reverse();
-    productName = (runs[0] || notes[0] || {}).product || productId;
-    if (!runs.length || !notes.length) throw new Error("This needs a specification and a datasheet of the same product in the project. " + (!runs.length ? "Add the " + productName + " specification first." : "Read the " + productName + " datasheet first."));
-    var t = Hub.token();
-    return Promise.all([Api.dnRules(t, productId),
-      Promise.all(runs.map(function (r) { return Api.prRunGet(t, r.id); })),
-      Promise.all(notes.map(function (n) { return Api.prNoteGet(t, n.id); }))]).then(function (got) {
-      var rules = (got[0] && got[0].rules) || [], specRows = [];
-      got[1].forEach(function (g) { (g.lines || []).forEach(function (l) { specRows.push({ type: l.type, sr: l.sr, spec: l.spec }); }); });
-      got[2].forEach(function (n) { if (!factory) factory = PROptions.factoryOf(n.rows); });
-      build(rules, specRows, got[2]);
+    return PRMatch.load({ projectId: projectId, productId: productId, detail: res }).then(function (m) {
+      productName = m.product;
+      if (!m.runs.length || !m.notes.length) throw new Error("This needs a specification and a datasheet of the same product in the project. " + (!m.runs.length ? "Add the " + productName + " specification first." : "Read the " + productName + " datasheet first."));
+      columns = m.columns; table = m.table; factory = m.factory;
       document.title = productName + ": specification and datasheet - " + project.name;
       $("cp-title").textContent = productName + ": specification and datasheet";
       var facts = $("cp-facts");
-      [project.name, runs.length + (runs.length === 1 ? " specification" : " specifications"), columns.length + (columns.length === 1 ? " unit" : " units"), factory ? factory + " factory" : ""]
+      [project.name, m.runs.length + (m.runs.length === 1 ? " specification" : " specifications"), columns.length + (columns.length === 1 ? " unit" : " units"), factory ? factory + " factory" : ""]
         .filter(Boolean).forEach(function (x) { facts.appendChild(el("span", { "class": "badge", text: x })); });
-      var keyed = rules.filter(function (r) { return r.show !== false && String(r.keywords || "").trim(); }).length;
       var found = table.filter(function (r) { return r.found; }).length;
-      if (!keyed) { $("cp-note").hidden = false; $("cp-note").textContent = "No row of the " + productName + " mapping has keywords yet, so no requirement can be found. An editor adds them in Datasheet Notes > Row mapping."; }
+      if (!m.keyed) { $("cp-note").hidden = false; $("cp-note").textContent = "No row of the " + productName + " mapping has keywords yet, so no requirement can be found. An editor adds them in Datasheet Notes > Row mapping."; }
       $("cp-only").checked = found > 0; $("cp-only").disabled = !found;
       $("cp-loading").hidden = true; $("cp-main").hidden = false;
       draw();

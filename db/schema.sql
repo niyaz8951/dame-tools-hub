@@ -769,7 +769,9 @@ alter table public.cm_lines add column if not exists home_seq   int;
 alter table public.cm_lines add column if not exists sr         text not null default '';
 alter table public.cm_lines add column if not exists row_type   text not null default '';
 alter table public.cm_lines add column if not exists section_sr text not null default '';
--- Internal Comments: notes for the library team only. Never written into a user's compliance sheet.
+-- Internal Comments: notes from the library team (admins, editors) to the users. Only editors write them;
+-- every user reads them beside the clause (cm_save_run answers, pr_run_get lib_comments, pr_export) and
+-- in the Internal Comments column of the Excel. They are not for the client.
 alter table public.cm_lines add column if not exists comments   text not null default '';
 
 alter table public.cm_products   enable row level security;
@@ -985,8 +987,11 @@ begin
 
   select count(*), count(distinct rl.line_id),
          count(*) filter (where l.status = 'answered'),
-         coalesce(jsonb_agg(jsonb_build_object('i', rl.seq, 'compliance', l.compliance, 'remarks', l.remarks)
-                            order by rl.seq) filter (where l.status = 'answered'), '[]'::jsonb)
+         -- 'answered' false = the line has no answer yet, only Internal Comments from the library team
+         coalesce(jsonb_agg(jsonb_build_object('i', rl.seq, 'answered', l.status = 'answered',
+                              'compliance', case when l.status = 'answered' then l.compliance else '' end,
+                              'remarks', case when l.status = 'answered' then l.remarks else '' end, 'comments', l.comments)
+                            order by rl.seq) filter (where l.status = 'answered' or l.comments <> ''), '[]'::jsonb)
     into v_lines, v_unique, v_matched, v_answers
     from public.cm_run_lines rl
     left join public.cm_lines l on l.id = rl.line_id
@@ -2415,6 +2420,7 @@ begin
                                              when 'rejected' then 'Project answer, not taken into the library'
                                              else 'Same as the library' end
                               when l.status = 'answered' then 'From the library' else '' end,
+               'comments', coalesce(l.comments, ''),
                'by', case when rl.answered_by is not null then public.pr__name(rl.answered_by) else '' end)
              order by r.created_at, rl.run_id, rl.seq)
         from public.cm_run_lines rl
@@ -2441,7 +2447,7 @@ begin
   p := public.pr__project(u, r.project_id);
   return jsonb_build_object(
     'run', jsonb_build_object('id', r.id, 'file_name', r.file_name, 'created_at', r.created_at, 'user', public.pr__name(r.user_id),
-             'product', (select name from public.cm_products where id = r.product_id),
+             'product', (select name from public.cm_products where id = r.product_id), 'product_id', r.product_id,
              'factory', (select name from public.cm_factories where id = r.factory_id),
              'project_id', p.id, 'project', p.name, 'client', p.client_name),
     'lines', coalesce((
@@ -2450,7 +2456,8 @@ begin
                'compliance', rl.compliance, 'remarks', rl.remarks, 'review', rl.review,
                'by', case when rl.answered_by is not null then public.pr__name(rl.answered_by) else '' end,
                'lib_compliance', case when l.status = 'answered' then l.compliance else '' end,
-               'lib_remarks', case when l.status = 'answered' then l.remarks else '' end) order by rl.seq)
+               'lib_remarks', case when l.status = 'answered' then l.remarks else '' end,
+               'lib_comments', coalesce(l.comments, '')) order by rl.seq)
         from public.cm_run_lines rl left join public.cm_lines l on l.id = rl.line_id
        where rl.run_id = r.id), '[]'::jsonb));
 end $$;

@@ -160,6 +160,8 @@
 <script src="../../assets/js/xlsx-lite.js"></script>
 <script src="../datasheet-notes/ds-xlsx.js"></script>
 <script src="pr-xlsx.js"></script>
+<script src="../compliance-maker/cm-rows.js"></script>
+<script src="pr-match.js"></script>
 <script>
 (function () {
   "use strict";
@@ -452,6 +454,17 @@
   $("pj-export").addEventListener("click", function () {
     var btn = this; btn.disabled = true;
     Api.prExport(Hub.token(), id).then(function (x) {
+      // Products that have both a specification and a datasheet also get "Review-AHU":
+      // each datasheet row with the clause that asks about it and the value of every unit.
+      var ids = {}, both = [];
+      data.runs.forEach(function (r) { ids[r.product_id] = (ids[r.product_id] || 0) | 1; });
+      data.notes.forEach(function (n) { ids[n.product_id] = (ids[n.product_id] || 0) | 2; });
+      Object.keys(ids).forEach(function (k) { if (ids[k] === 3) both.push(k); });
+      return Promise.all(both.map(function (k) { return PRMatch.load({ projectId: id, productId: k, detail: data }).then(null, function () { return null; }); }))
+        .then(function (matches) { return { x: x, matches: matches.filter(Boolean) }; });
+    }).then(function (got) {
+      var x = got.x, review = {};
+      got.matches.forEach(function (m) { review[m.product] = m; });
       var p = x.project, runs = {};
       x.runs.forEach(function (r) { runs[r.id] = r; });
 
@@ -468,14 +481,14 @@
         var rows = [], bold = [], part = [], sect = [], first = true;
         x.runs.filter(function (r) { return r.product === product; }).reverse().forEach(function (r) {      // oldest first
           if (!first) rows.push([]); first = false;
-          bold.push(rows.length); rows.push([bare(r.file_name) || "Pasted text", r.factory + " factory, converted by " + r.user + ", " + when(r.created_at, true), "", "", "", ""]);
-          bold.push(rows.length); rows.push(["Sr", "Specifications", "Compliance", "Remarks", "Answer from", "Filled by"]);
+          bold.push(rows.length); rows.push([bare(r.file_name) || "Pasted text", r.factory + " factory, converted by " + r.user + ", " + when(r.created_at, true), "", "", "", "", ""]);
+          bold.push(rows.length); rows.push(["Sr", "Specifications", "Compliance", "Remarks", "Internal Comments", "Answer from", "Filled by"]);
           x.compliance.filter(function (c) { return c.run === r.id; }).forEach(function (c) {
             if (c.type === "part") part.push(rows.length); else if (c.type === "section") sect.push(rows.length);
-            rows.push([c.sr, c.spec, c.compliance, c.remarks, c.source, c.by]);
+            rows.push([c.sr, c.spec, c.compliance, c.remarks, c.type === "part" || c.type === "section" ? "" : c.comments || "", c.source, c.by]);
           });
         });
-        if (rows.length) sheets.push({ name: "Specs-" + product, widths: [9, 90, 22, 44, 34, 20], rows: rows, bold: bold, part: part, sect: sect });
+        if (rows.length) sheets.push({ name: "Specs-" + product, widths: [9, 90, 22, 44, 40, 34, 20], rows: rows, bold: bold, part: part, sect: sect });
 
         var notes = [], nbold = [], width = 0;
         x.tables.filter(function (t) { return t.product === product; }).forEach(function (t) {
@@ -489,6 +502,16 @@
         if (notes.length) {
           var widths = [24, 30]; for (var i = 0; i < width; i++) widths.push(28); widths.push(24);
           sheets.push({ name: "Notes-" + product, widths: widths, rows: notes, bold: nbold });
+        }
+
+        var m = review[product], rv = m ? PRMatch.sheetRows(m, false) : [];
+        if (rv.length) {
+          var out = [["Section", "Component", "Specification asks"].concat(m.columns, ["Remarks"])], rsect = [];
+          rv.forEach(function (r) {
+            if (r.section) rsect.push(out.length);
+            out.push([r.section, r.component, r.text].concat(r.kind === "sub" ? m.columns.map(function () { return ""; }) : r.cells, [""]));
+          });
+          sheets.push({ name: "Review-" + product, widths: [24, 30, 70].concat(m.columns.map(function () { return 26; }), [30]), rows: out, bold: [0], sect: rsect });
         }
       });
       PRXlsx.save(PRXlsx.build(sheets), p.name + " - project data.xlsx");

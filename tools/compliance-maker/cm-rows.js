@@ -71,7 +71,7 @@
       }
       // a title such as "G. Air Filters" or "2. Inside Casing" is only context for the items under it
       if (hasChildren && ((level === 1 && lvl1.heading) || (level === 2 && lvl2.heading))) return;
-      out.push({ part: part, ref: ref.trim(), text: text, ctx: words(ctx),
+      out.push({ row: i, part: part, ref: ref.trim(), text: text, ctx: words(ctx),
                  toks: words(text).filter(function (w) { return !/^\d+$/.test(w); }) });
     });
     return out;
@@ -122,7 +122,7 @@
   }
 
   /* rules: [{ key, section, sub, component, show, label, keywords }] in mapping order.
-     Out: [{ section, component, text, found, kind }]  kind = 'row' | 'sub';
+     Out: [{ section, component, text, found, kind, key, lines }]  kind = 'row' | 'sub';
      section is filled on the first row of a section only. */
   function match(specRows, rules) {
     var cl = clauses(specRows);
@@ -163,7 +163,8 @@
           if (sub) { out.push({ section: first ? sec : '', component: sub, text: '', found: false, kind: 'sub' }); first = false; }
         }
         out.push({ section: first ? sec : '', component: String(r.label || '').trim() || r.component, text: text,
-                   found: hits.length > 0, keywords: entries.length > 0, kind: 'row', key: r.key });
+                   found: hits.length > 0, keywords: entries.length > 0, kind: 'row', key: r.key,
+                   lines: shown.map(function (h) { return h.c.row; }) });      // positions of the clauses in specRows
       });
     });
     return out;

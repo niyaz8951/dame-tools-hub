@@ -306,6 +306,8 @@
         (res.answers || []).forEach(function (a) {
           var r = rows[a.i];
           if (!r) return;
+          r.internal = a.comments || '';              // the library team's Internal Comments for the clause
+          if (a.answered === false) return;           // comments only, no answer yet
           r.compliance = a.compliance || '';
           r.remarks = a.remarks || '';
           r.auto = { type: 'exact' };
