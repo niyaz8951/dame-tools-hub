@@ -145,6 +145,61 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table select.input { min-height: 34px; padding: 4px 8px; width: auto; }
 .table .user-cell { min-width: 210px; }   /* Admin > Users: room for a full name on one line */
 
+/* ---------- reading sheet: a long table that flows with the page (a specification, the library) ----------
+   No scroll box: the window scrolls. The work bar (filters, Read / Edit) sticks under the top bar and both
+   slide away while scrolling down (Hub.autoHide); the column names stay in view. Below 860px every row
+   becomes a block with its labels, so nothing scrolls sideways. */
+.page.wide { max-width: 1560px; }
+.workbar {
+  position: sticky; top: var(--hub-top, 59px); z-index: 30;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin: 0 -10px 14px; padding: 10px;
+  background: var(--surface);          /* solid: text passing under it must not show through */
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: var(--radius); box-shadow: 0 6px 18px -12px var(--scrim);
+  transition: transform .28s var(--ease);
+}
+html.hub-away .workbar { transform: translateY(calc(-100% - var(--hub-top, 59px) - 8px)); }
+.workbar .input { width: auto; min-height: 38px; padding-top: 6px; padding-bottom: 6px; }
+.workbar .grow { flex: 1 1 200px; min-width: 0; }
+.workbar .btn { min-height: 38px; }
+.workbar .count { font-size: 13px; color: var(--text-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.table-wrap.sheet-wrap { overflow: visible; border-radius: 14px; }
+table.sheet { table-layout: fixed; font-size: 15px; }
+.sheet thead th { position: sticky; top: var(--hub-stick, 0px); z-index: 20; transition: top .28s var(--ease); }
+.sheet thead th:first-child { border-top-left-radius: 13px; } .sheet thead th:last-child { border-top-right-radius: 13px; }
+.sheet td { vertical-align: top; padding: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+/* reads like the specification: dark PART row, blue section row, clause label in Sr, the word highlights */
+.sheet tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
+.sheet tr.sect td { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); font-weight: 650; }
+.sheet td.sr { text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
+.sheet tr.sect td.sr { color: var(--link); }
+.sheet td.sr.letter { color: var(--warn); } .sheet td.sr.number { color: var(--ok); }
+.sheet .hl-red { color: var(--danger); } .sheet .hl-redbold { color: var(--danger); font-weight: 700; }
+.sheet .hl-underline { text-decoration: underline; } .sheet .hl-colon { color: var(--warn); font-weight: 700; }
+.sheet td.read { white-space: pre-line; }
+.sheet td.note { white-space: pre-line; font-size: 14px; font-style: italic; color: var(--text-soft); }
+@media (min-width: 861px) { .sheet tbody tr.line:focus-within > td { background: color-mix(in srgb, var(--brand) 6%, var(--surface)); } }
+.sheet td .input { width: 100%; min-height: 38px; padding: 7px 10px; font-size: 15px; }
+.sheet textarea.input { resize: none; overflow: hidden; line-height: 1.45; }
+.sheet td.end { font-size: 12px; color: var(--text-soft); white-space: normal; }
+.sheet td.end .state { display: block; min-height: 18px; }
+@media (max-width: 860px) {
+  .workbar { margin: 0 -6px 12px; padding: 8px; gap: 8px; }
+  .workbar .input { flex: 1 1 130px; min-width: 0; }
+  .sheet thead { display: none; }
+  table.sheet, .sheet tbody { display: block; width: 100%; }
+  .sheet tr { display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 8px; row-gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
+  .sheet tr:last-child { border-bottom: 0; }
+  .sheet td { display: block; grid-column: 2; padding: 0; border: 0; }
+  .sheet tr.part { background: var(--text); } .sheet tr.sect { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); }
+  .sheet tr.part td, .sheet tr.sect td { background: none; }
+  .sheet td:first-child { grid-column: 1; grid-row: 1; }
+  .sheet td:empty:not(:first-child) { display: none; }
+  .sheet td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-soft); margin-bottom: 2px; font-style: normal; }
+  .sheet td .input { font-size: 16px; min-height: 44px; }
+  .sheet tr:first-child { border-radius: 13px 13px 0 0; }
+}
+
 /* ---------- login page ---------- */
 .auth {
   min-height: 100vh; display: grid; place-items: center; padding: 24px 16px;

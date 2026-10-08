@@ -13,89 +13,61 @@
 <style>
   .rc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .rc-facts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-  .rc-filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
-  .rc-filters .field { flex: 0 1 190px; } .rc-filters .grow { flex: 1 1 220px; }
-  .rc-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
-  .rc-bar i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
-  /* Reads like the converted specification: dark PART row, blue section row, clause label in Sr,
-     the same word highlights. Colours come from the theme. */
-  .rc { table-layout: fixed; min-width: 1040px; }
-  .rc th:nth-child(1) { width: 62px; } .rc th:nth-child(3) { width: 150px; } .rc th:nth-child(4) { width: 22%; } .rc th:nth-child(5) { width: 18%; } .rc th:nth-child(6) { width: 118px; }
-  .rc td.rc-note { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; font-size: 13px; font-style: italic; color: var(--text-soft); }
-  .rc td { vertical-align: top; }
-  .rc .spec { line-height: 1.45; overflow-wrap: anywhere; }
-  .rc tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
-  .rc tr.sect td { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); font-weight: 650; }
-  .rc td.sr { text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .rc tr.sect td.sr { color: var(--link); }
-  .rc td.sr.letter { color: var(--warn); } .rc td.sr.number { color: var(--ok); }
-  .rc .hl-red { color: var(--danger); } .rc .hl-redbold { color: var(--danger); font-weight: 700; }
-  .rc .hl-underline { text-decoration: underline; } .rc .hl-colon { color: var(--warn); font-weight: 700; }
-  .rc td .input { min-height: 36px; padding: 6px 10px; font-size: 14px; }
-  .rc textarea.input { min-height: 36px; resize: vertical; }
-  .rc .state { font-size: 12px; color: var(--text-soft); }
-  .rc .state.err { color: var(--danger); }
+  .rc-progress { height: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; flex: 1 0 100%; margin: 0 2px -2px; }
+  .rc-progress i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
+  .rc th:nth-child(1) { width: 62px; } .rc th:nth-child(3) { width: 170px; } .rc th:nth-child(4) { width: 23%; } .rc th:nth-child(5) { width: 18%; } .rc th:nth-child(6) { width: 104px; }
   .rc tr.lib .input { background: var(--ok-bg); }
-  .rc td.rc-read { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; }
-  .rc tr.lib td.rc-read { color: var(--ok); }
-  .rc td.rc-end { white-space: normal; }
-  .rc-edit { display: block; margin-top: 4px; font: inherit; font-size: 12px; font-weight: 600; color: var(--brand); background: none; border: 0; padding: 2px 0; cursor: pointer; text-decoration: underline; }
-  .rc tr:not(:hover):not(.edit) .rc-edit:not(:focus-visible) { opacity: .55; }
+  .rc tr.lib td.read { color: var(--ok); }
+  .rc .state.err { color: var(--danger); }
+  .mode-seg { flex: 0 0 auto; } .mode-seg .tab { min-width: 64px; }
   .rc-sheet { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .rc-chip { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
              padding: 3px 10px; border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--brand) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); }
   .rc-chip b { font-weight: 650; color: var(--brand); } .rc-chip span { overflow-wrap: anywhere; }
   .rc-chip:hover { border-color: var(--brand); }
-  .rc-wrap { max-height: 72vh; overflow: auto; }
-  .rc thead th { position: sticky; top: 0; z-index: 1; }
+  .rc-notes { margin: 0 0 12px; } .rc-notes .hint { margin: 0 0 2px; }
 </style>
 </head>
 <body>
 <header id="topbar"></header>
-<main class="page">
+<main class="page wide">
   <div class="empty" id="rc-loading">Loading the specification…</div>
   <div class="notice error" id="rc-error" role="alert" hidden></div>
 
   <div id="rc-main" hidden>
-    <div class="page-head rc-head">
-      <div>
-        <h1 id="rc-name"></h1>
-        <p>The specification with its answers. Read and search it as it is; press Edit to change answers, or Focus mode to go through it one clause at a time.</p>
-        <div class="rc-facts" id="rc-facts"></div>
-      </div>
-      <div class="row">
-        <button type="button" class="btn" id="rc-focus">Focus mode</button>
-        <button type="button" class="btn ghost" id="rc-edit">Edit</button>
-        <button type="button" class="btn ghost" id="rc-download">Download Excel</button>
-      </div>
+    <div class="page-head" style="margin-bottom:14px">
+      <h1 id="rc-name"></h1>
+      <div class="rc-facts" id="rc-facts"></div>
     </div>
 
-    <section class="card stack">
-      <div class="rc-filters">
-        <label class="field"><span>Show</span>
-          <select class="input" id="rc-show">
-            <option value="all">All rows</option>
-            <option value="open">To fill</option>
-            <option value="filled">Filled</option>
-            <option value="review">Waiting for review</option>
-          </select></label>
-        <label class="field grow"><span>Find</span><input class="input" id="rc-q" type="search" placeholder="Word in the specification" autocomplete="off"></label>
-      </div>
-      <div>
-        <p class="small muted" id="rc-count" role="status"></p>
-        <div class="rc-bar" aria-hidden="true"><i id="rc-bar"></i></div>
-      </div>
-      <p class="hint" id="rc-mode">Reading. Press Edit to fill or change answers, or Edit on one clause. Green answers come from the company library. Internal Comments are notes from the library team for you, not for the client.</p>
+    <!-- the work bar: stays under the top bar, slides away while reading down, comes back on the way up -->
+    <div class="workbar" id="rc-workbar">
+      <select class="input" id="rc-show" aria-label="Show">
+        <option value="all">All rows</option>
+        <option value="open">To fill</option>
+        <option value="filled">Filled</option>
+        <option value="review">Waiting for review</option>
+      </select>
+      <input class="input grow" id="rc-q" type="search" placeholder="Find a word in the specification" aria-label="Find" autocomplete="off">
+      <span class="count" id="rc-count" role="status"></span>
+      <div class="tabs mode-seg" id="rc-seg" role="group" aria-label="Read or edit"><button type="button" class="tab" data-mode="read" aria-selected="true">Read</button><button type="button" class="tab" data-mode="edit" aria-selected="false">Edit</button></div>
+      <button type="button" class="btn" id="rc-focus">Focus mode</button>
+      <button type="button" class="btn ghost" id="rc-download">Download Excel</button>
+      <div class="rc-progress" aria-hidden="true"><i id="rc-bar"></i></div>
+    </div>
+
+    <div class="rc-notes">
+      <p class="hint" id="rc-mode"></p>
       <p class="hint" id="rc-sheet-note" hidden></p>
-      <div class="empty" id="rc-empty" hidden>No row matches.</div>
-      <div class="table-wrap rc-wrap" id="rc-wrap" tabindex="0" role="region" aria-label="Specification">
-        <table class="table rc">
-          <thead><tr><th>Sr</th><th>Specifications</th><th>Compliance</th><th>Remarks</th><th>Internal Comments</th><th></th></tr></thead>
-          <tbody id="rc-body"></tbody>
-        </table>
-      </div>
-      <datalist id="rc-words"><option value="Comply"><option value="Comply with Remarks"><option value="Noted"><option value="Not Comply"><option value="Not Applicable"><option value="In Contractor's Scope"></datalist>
-    </section>
+    </div>
+    <div class="empty" id="rc-empty" hidden>No row matches.</div>
+    <div class="table-wrap sheet-wrap" id="rc-wrap">
+      <table class="table sheet rc">
+        <thead><tr><th>Sr</th><th>Specifications</th><th>Compliance</th><th>Remarks</th><th>Internal Comments</th><th></th></tr></thead>
+        <tbody id="rc-body"></tbody>
+      </table>
+    </div>
+    <datalist id="rc-words"><option value="Comply"><option value="Comply with Remarks"><option value="Noted"><option value="Not Comply"><option value="Not Applicable"><option value="In Contractor's Scope"></datalist>
   </div>
 </main>
 
@@ -149,6 +121,7 @@
     });
     var first = 0; for (var k = 0; k < items.length; k++) if (!filled(items[k].line)) { first = k; break; }
     CMFocus.open({ title: bare(run.file_name), items: items, start: first, choices: CHOICES,
+      editing: editing, onMode: function (on) { setMode(on, true); },      // one mode for the page and the pane
       save: function (it, v) {
         return saveLine(it.line, v.compliance, v.remarks).then(function () {
           var s = shown(it.line); it.compliance = s.c; it.remarks = s.r; it.lib = !it.line.own && filled(it.line); it.info = stateText(it.line);
@@ -164,7 +137,7 @@
     if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "5", text: l.spec })]);
     var text = el("div", { "class": "spec" }, CMHighlight.runs(l.spec).map(function (r) { return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text; }));
     var kind = l.type === "letter" && /^[A-Z]/.test(l.sr || "") ? "letter" : l.type === "number" ? "number" : "";
-    if (!l.can) return el("tr", {}, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: "5" }, [text])]);
+    if (!l.can) return el("tr", { "class": "line" }, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: "5" }, [text])]);
 
     var s = shown(l), sheet = sheetOf[lines.indexOf(l)] || [];
     // what the datasheet has for the rows this clause is about (found by the row keywords)
@@ -176,34 +149,38 @@
     var state = el("span", { "class": "state", text: stateText(l) });
 
     // read: plain text, so the page can be searched (Ctrl+F) and read like the document
-    if (!editing && !l._edit) {
-      return el("tr", { "class": !l.own && filled(l) ? "lib" : null }, [
+    if (!editing) {
+      return el("tr", { "class": "line" + (!l.own && filled(l) ? " lib" : "") }, [
         el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]),
-        el("td", { "class": "rc-read", text: s.c }), el("td", { "class": "rc-read", text: s.r }), el("td", { "class": "rc-note", text: l.lib_comments || "" }),
-        el("td", { "class": "rc-end" }, [state, el("button", { type: "button", "class": "rc-edit", text: "Edit", "aria-label": "Edit this clause", onclick: function (e) {
-          l._edit = true; var tr = e.currentTarget.closest("tr"), neu = row(l); tr.parentNode.replaceChild(neu, tr); neu.querySelector("input").focus();
-        } })])
+        el("td", { "class": "read", "data-label": "Compliance", text: s.c }), el("td", { "class": "read", "data-label": "Remarks", text: s.r }),
+        el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
+        el("td", { "class": "end" }, stateText(l) ? [state] : [])
       ]);
     }
     var comp = el("input", { "class": "input", value: s.c, maxlength: "200", list: "rc-words", "aria-label": "Compliance" });
-    var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = s.r;
-    var tr = el("tr", { "class": "edit" + (!l.own && filled(l) ? " lib" : "") }, [
-      el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]), el("td", {}, [comp]), el("td", {}, [rem]), el("td", { "class": "rc-note", text: l.lib_comments || "" }),
-      // Done sits above the status text, so "Saving…" appearing cannot move it away from the pointer
-      el("td", { "class": "rc-end" }, [editing ? null : el("button", { type: "button", "class": "rc-edit", text: "Done", onclick: function () {
-        save().then(function (done) { if (!done) return; l._edit = false; if (tr.parentNode) tr.parentNode.replaceChild(row(l), tr); });
-      } }), state])
+    var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = s.r; Hub.autoGrow(rem);
+    var tr = el("tr", { "class": "line edit" + (!l.own && filled(l) ? " lib" : "") }, [
+      el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]), el("td", { "data-label": "Compliance" }, [comp]), el("td", { "data-label": "Remarks" }, [rem]),
+      el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
+      el("td", { "class": "end" }, [state])
     ]);
+    // Enter in Compliance goes to the next clause, so a run of answers is typed without the mouse
+    comp.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      var boxes = [].slice.call(document.querySelectorAll("#rc-body input[aria-label=Compliance]")), next = boxes[boxes.indexOf(comp) + 1];
+      if (next) next.focus(); else comp.blur();
+    });
     var busy = null;                                    // one save at a time; resolves true when the answer is stored
     function save() {
-      if (busy) return busy.then(save);
+      if (busy) return pending = busy.then(save);
       var c = comp.value.trim(), r = rem.value.trim(), now = shown(l);
       if (c === now.c && r === now.r) return Promise.resolve(true);
       state.className = "state"; state.textContent = "Saving…";
-      return busy = saveLine(l, c, r).then(function () {
+      return pending = busy = saveLine(l, c, r).then(function () {
         busy = null;
         if (!l.own) { comp.value = l.lib_compliance; rem.value = l.lib_remarks; }
-        tr.className = "edit" + (!l.own && filled(l) ? " lib" : "");
+        tr.className = "line edit" + (!l.own && filled(l) ? " lib" : "");
         state.textContent = stateText(l); counts(); return true;
       }, function (err) { busy = null; state.className = "state err"; state.textContent = "Not saved"; Hub.toast(err.message, true); return false; });
     }
@@ -244,13 +221,16 @@
 
   $("rc-focus").addEventListener("click", focusMode);
   // Edit on: every clause shows its boxes. Edit off: the page reads like the document.
-  $("rc-edit").addEventListener("click", function () {
-    editing = !editing; lines.forEach(function (l) { l._edit = false; });
-    this.textContent = editing ? "Done editing" : "Edit"; this.classList.toggle("ghost", !editing);
-    $("rc-mode").textContent = editing ? "Edit is on. Every change is saved as you leave the box. Green boxes are answers from the company library; empty both boxes to go back to the library answer."
-                                       : "Reading. Press Edit to fill or change answers, or Edit on one clause. Green answers come from the company library.";
-    draw();
-  });
+  function setMode(on, quiet) {
+    editing = !!on;
+    [].forEach.call($("rc-seg").children, function (b) { b.setAttribute("aria-selected", String((b.getAttribute("data-mode") === "edit") === editing)); });
+    $("rc-mode").textContent = editing ? "Edit is on. Every change saves as you leave the box; Enter in Compliance goes to the next clause. Green boxes are answers from the company library; empty both boxes to go back to the library answer."
+                                       : "Reading. Switch to Edit to fill or change answers, or Focus mode for one clause at a time. Green answers come from the company library. Internal Comments are notes from the library team for you, not for the client.";
+    if (!quiet) settled().then(draw, draw);          // a box that was just left is saved before the page is drawn again
+  }
+  var pending = Promise.resolve();
+  function settled() { var p = pending; return p.then(function () { return p === pending ? null : settled(); }); }     // every save that is under way or queued
+  $("rc-seg").addEventListener("click", function (e) { var b = e.target.closest(".tab"); if (b) setMode(b.getAttribute("data-mode") === "edit"); });
   /* Sheet 2 of the Excel: every datasheet row with the clause that asks about it and, when the
      project has the datasheet, what each unit has. Without a datasheet every mapped row is listed. */
   function sheet2() {
@@ -283,7 +263,8 @@
     var facts = $("rc-facts");
     [run.project, run.product + ", " + run.factory + " factory", "Converted by " + run.user + ", " + when(run.created_at)].forEach(function (t) { facts.appendChild(el("span", { "class": "badge", text: t })); });
     $("rc-loading").hidden = true; $("rc-main").hidden = false;
-    counts(); draw();
+    setMode(false, true); counts(); draw();
+    Hub.autoHide($("rc-workbar"));
     // the datasheet rows this specification talks about, and their values when the project has the datasheet
     PRMatch.load({ projectId: run.project_id, productId: run.product_id, specRows: lines.map(function (l) { return { type: l.type, sr: l.sr, spec: l.spec }; }) }).then(function (m) {
       match = m; sheetOf = {};
@@ -296,7 +277,7 @@
       if (n && !CMFocus.isOpen()) draw();
     }, function () { /* the specification still reads and fills without it */ });
     // on a phone the table is hard to fill: start in the full-screen mode, "Done" shows the table
-    if (window.matchMedia("(max-width: 640px)").matches && lines.some(function (l) { return l.can; })) focusMode();
+    if (window.matchMedia("(max-width: 640px)").matches && lines.some(function (l) { return l.can; })) { setMode(true, true); focusMode(); }
   }, function (err) {
     $("rc-loading").hidden = true; $("rc-error").hidden = false;
     $("rc-error").textContent = ((err && err.message) || err) + " Go back to Projects and open it from the project page.";

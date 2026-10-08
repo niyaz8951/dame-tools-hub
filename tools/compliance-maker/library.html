@@ -21,42 +21,26 @@
   .stat span { font-size: 13px; color: var(--text-soft); }
   .bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
   .bar i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
-  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-  .filters .input { width: auto; min-width: 160px; }
-  .filters .grow { flex: 1 1 220px; }
-  .lib td { vertical-align: top; }
-  .lib .spec { line-height: 1.45; overflow-wrap: anywhere; }
   .lib .meta { font-size: 12px; color: var(--text-soft); margin-top: 4px; }
-  /* The library reads like a converted specification: a dark PART row, a blue section row,
-     the clause label in the Sr column, and the same word highlights. Colours come from the theme. */
-  .lib { table-layout: fixed; min-width: 1080px; }
-  .lib tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
-  .lib tr.sect td { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); font-weight: 650; }
   .lib tr.sect .src { font-weight: 400; font-size: 12px; color: var(--text-soft); margin-left: 10px; }
-  .lib td.sr { text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .lib tr.sect td.sr { color: var(--link); }
-  .lib td.sr.letter { color: var(--warn); } .lib td.sr.number { color: var(--ok); }
-  .lib .hl-red { color: var(--danger); } .lib .hl-redbold { color: var(--danger); font-weight: 700; }
-  .lib .hl-underline { text-decoration: underline; } .lib .hl-colon { color: var(--warn); font-weight: 700; }
-  .lib textarea.input { min-height: 40px; height: 40px; resize: vertical; }
-  .lib td.who { font-size: 13px; overflow-wrap: anywhere; }
-  .lib td.read { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; }
+  .lib td.who { font-size: 13px; }
   .lib .pa { margin-top: 8px; display: grid; gap: 6px; }
   .lib .pa-item { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; overflow-wrap: anywhere; }
   .lib .pa-item.wait { background: var(--warn-bg); }
   .lib .pa-item .row { margin-top: 6px; }
-  .lib .state { font-size: 12px; white-space: nowrap; display: inline-block; min-width: 64px; text-align: right; }
   .lib .state.ok { color: var(--ok); } .lib .state.err { color: var(--danger); }
+  .lib td.end .btn { margin-top: 4px; }
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 22px; text-align: center; cursor: pointer; }
   .drop:hover, .drop.over { border-color: var(--brand); background: var(--surface-2); }
   .result { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
   @media (max-width: 600px) { .stats { grid-template-columns: 1fr; } }
+  .mode-seg { flex: 0 0 auto; } .mode-seg .tab { min-width: 64px; }
 </style>
 </head>
 <body>
 <header id="topbar"></header>
-<main class="page" style="max-width:1280px">
+<main class="page wide">
   <div class="page-head">
     <p class="small"><a href="./">&larr; Compliance Maker</a></p>
     <h1>Compliance review</h1>
@@ -85,7 +69,8 @@
 
     <!-- LINES -->
     <section id="tab-lines" class="stack">
-      <div class="filters">
+      <!-- the work bar: stays under the top bar, slides away while reading down, comes back on the way up -->
+      <div class="workbar" id="workbar">
         <select class="input" id="fStatus" aria-label="Show">
           <option value="open">To answer</option><option value="answered">Answered</option><option value="review">Filled by users, to review</option><option value="all">All lines</option>
         </select>
@@ -95,12 +80,12 @@
         <select class="input" id="fClient" aria-label="Client name"><option value="">All clients</option></select>
         <input class="input grow" id="fSearch" type="search" placeholder="Search clause text" aria-label="Search clause text">
         <button class="btn" type="button" id="btnFocus">Focus mode</button>
-        <button class="btn ghost" type="button" id="btnEdit">Edit</button>
+        <div class="tabs mode-seg" id="modeSeg" role="group" aria-label="Read or edit"><button type="button" class="tab" data-mode="read" aria-selected="true">Read</button><button type="button" class="tab" data-mode="edit" aria-selected="false">Edit</button></div>
         <button class="btn ghost" type="button" id="btnExport">Download library (Excel)</button>
       </div>
-      <div class="table-wrap">
-        <table class="table lib">
-          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:150px">Compliance</th><th style="width:19%">Remarks</th><th style="width:17%">Internal Comments</th><th style="width:110px">Filled by</th><th style="width:128px"></th></tr></thead>
+      <div class="table-wrap sheet-wrap">
+        <table class="table sheet lib">
+          <thead><tr><th style="width:62px">Sr</th><th>Specifications</th><th style="width:170px">Compliance</th><th style="width:21%">Remarks</th><th style="width:18%">Internal Comments</th><th style="width:108px">Filled by</th><th style="width:104px"></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -108,7 +93,7 @@
         <span class="small muted" id="pageInfo"></span>
         <span class="row"><button class="btn ghost sm" type="button" id="prev">Previous</button><button class="btn ghost sm" type="button" id="next">Next</button></span>
       </div>
-      <p class="small muted" id="modeNote">Reading. Press Edit to answer or change lines, or Edit on one line. Internal Comments are your notes to the users: they show beside the clause in every user's specification, in the Internal Comments column.</p>
+      <p class="small muted" id="modeNote">Reading. Switch to Edit to answer or change lines. Internal Comments are your notes to the users: they show beside the clause in every user's specification, in the Internal Comments column.</p>
       <datalist id="answers">
         <option value="Comply"></option><option value="Not Comply"></option><option value="Comply with Remarks"></option>
         <option value="Noted"></option><option value="Not Applicable"></option><option value="In Contractor's Scope"></option>
@@ -204,17 +189,24 @@
   }
   function lineRow(l) {
     var comp = el("input", { "class": "input", list: "answers", value: l.compliance || "", maxlength: "200", "aria-label": "Compliance" });
-    var rem = el("textarea", { "class": "input", maxlength: "4000", "aria-label": "Remarks" }); rem.value = l.remarks || "";
-    var note = el("textarea", { "class": "input", maxlength: "4000", "aria-label": "Internal Comments" }); note.value = l.comments || "";
+    var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = l.remarks || ""; Hub.autoGrow(rem);
+    var note = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Internal Comments" }); note.value = l.comments || ""; Hub.autoGrow(note);
+    // Enter in Compliance goes to the next line, so a run of answers is typed without the mouse
+    comp.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      var boxes = [].slice.call(document.querySelectorAll("#rows input[aria-label=Compliance]")), next = boxes[boxes.indexOf(comp) + 1];
+      if (next) next.focus(); else comp.blur();
+    });
     var state = el("span", { "class": "state", "aria-live": "polite" });
     var saved = { c: l.compliance || "", r: l.remarks || "", n: l.comments || "" };
     var busy = null;                                    // one save at a time; resolves true when the answer is stored
     function save() {
-      if (busy) return busy.then(save);
+      if (busy) return lastSave = busy.then(save);
       var c = comp.value.trim(), r = rem.value.trim(), n = note.value.trim();
       if (c === saved.c && r === saved.r && n === saved.n) return Promise.resolve(true);
       state.textContent = "Saving..."; state.className = "state";
-      return busy = Api.cmAdminSaveAnswer(Hub.token(), l.id, c, r, n).then(function () {
+      return lastSave = busy = Api.cmAdminSaveAnswer(Hub.token(), l.id, c, r, n).then(function () {
         busy = null;
         var was = !!(saved.c || saved.r), now = !!(c || r);
         saved = { c: c, r: r, n: n }; state.textContent = "Saved"; state.className = "state ok";
@@ -254,7 +246,7 @@
       users.appendChild(el("div", { "class": "pa-item" + (wait ? " wait" : "") }, [
         el("div", {}, [el("b", { text: a.by }), " · " + a.project + " · " + a.client + " (" + a.client_type + ")" + (a.at ? " · " + fmt(a.at) : "")]),
         el("div", { text: (a.compliance || "(no compliance)") + (a.remarks ? " - " + a.remarks : "") }),
-        wait && !(editing || l._edit) ? el("div", { "class": "meta", text: "Waiting for a decision. Press Edit to take it or turn it down." }) :
+        wait && !editing ? el("div", { "class": "meta", text: "Waiting for a decision. Switch to Edit to take it or turn it down." }) :
         wait ? el("div", { "class": "row" }, [
           // a clause that already has a library answer keeps it: the user's answer can only be turned down, or typed in by hand
           (l.compliance || l.remarks) ? el("span", { "class": "meta", text: "The library already has an answer. It is kept." })
@@ -266,21 +258,18 @@
     var first = [el("td", { "class": "sr " + kind, text: l.sr || "" }),
       el("td", { "class": "spec" }, [text, el("div", { "class": "meta", text: meta }), users.firstChild ? users : null])];
     // read: plain text, so the page can be searched (Ctrl+F) and read like the document
-    if (!editing && !l._edit) {
-      return el("tr", {}, first.concat([
-        el("td", { "class": "read", text: l.compliance || "" }), el("td", { "class": "read", text: l.remarks || "" }), el("td", { "class": "read", text: l.comments || "" }),
-        el("td", { "class": "who", text: who.join(", ") }),
-        el("td", { style: "text-align:right;white-space:nowrap" }, [el("button", { "class": "btn ghost sm", type: "button", text: "Edit", "aria-label": "Edit this line", onclick: function (e) {
-          l._edit = true; var tr = e.currentTarget.closest("tr"), neu = lineRow(l); tr.parentNode.replaceChild(neu, tr); neu.querySelector("input").focus();
-        } })])
+    if (!editing) {
+      return el("tr", { "class": "line" }, first.concat([
+        el("td", { "class": "read", "data-label": "Compliance", text: l.compliance || "" }), el("td", { "class": "read", "data-label": "Remarks", text: l.remarks || "" }),
+        el("td", { "class": "note", "data-label": "Internal Comments", text: l.comments || "" }),
+        el("td", { "class": "who", "data-label": "Filled by", text: who.join(", ") }),
+        el("td", { "class": "end" })
       ]));
     }
-    var row = el("tr", { "class": "edit" }, first.concat([
-      el("td", {}, [comp]), el("td", {}, [rem]), el("td", {}, [note]),
-      el("td", { "class": "who", text: who.join(", ") }),
-      el("td", { style: "text-align:right;white-space:nowrap" }, [state, " ", del, editing ? null : el("button", { "class": "btn ghost sm", type: "button", text: "Done", style: "margin-left:6px", onclick: function () {
-        save().then(function (ok) { if (!ok || !row.parentNode) return; l.compliance = saved.c; l.remarks = saved.r; l.comments = saved.n; l._edit = false; row.parentNode.replaceChild(lineRow(l), row); });
-      } })])
+    var row = el("tr", { "class": "line edit" }, first.concat([
+      el("td", { "data-label": "Compliance" }, [comp]), el("td", { "data-label": "Remarks" }, [rem]), el("td", { "data-label": "Internal Comments" }, [note]),
+      el("td", { "class": "who", "data-label": "Filled by", text: who.join(", ") }),
+      el("td", { "class": "end" }, [state, del])       // status above Delete, inside the column: nothing leaves the window
     ]));
     return row;
   }
@@ -388,16 +377,21 @@
           it.compliance = v.compliance; it.remarks = v.remarks; it.comments = v.comments; return {};
         });
       },
+      editing: editing, onMode: function (on) { setMode(on, true); },      // one mode for the page and the pane
       onClose: loadLines });
   });
 
   // Edit on: every line shows its boxes, Delete and the buttons on users' answers. Edit off: the page reads like the document.
-  $("btnEdit").addEventListener("click", function () {
-    editing = !editing; this.textContent = editing ? "Done editing" : "Edit"; this.classList.toggle("ghost", !editing);
+  function setMode(on, quiet) {
+    editing = !!on;
+    [].forEach.call($("modeSeg").children, function (b) { b.setAttribute("aria-selected", String((b.getAttribute("data-mode") === "edit") === editing)); });
     $("modeNote").textContent = editing ? MODE_EDIT : MODE_READ;
-    loadLines();
-  });
-  var MODE_READ = "Reading. Press Edit to answer or change lines, or Edit on one line. Internal Comments are your notes to the users: they show beside the clause in every user's specification, in the Internal Comments column.";
+    if (!quiet) settled().then(loadLines, loadLines);   // a box that was just left is saved before the lines are read again
+  }
+  var lastSave = Promise.resolve();
+  function settled() { var p = lastSave; return p.then(function () { return p === lastSave ? null : settled(); }); }   // every save that is under way or queued
+  $("modeSeg").addEventListener("click", function (e) { var b = e.target.closest(".tab"); if (b) setMode(b.getAttribute("data-mode") === "edit"); });
+  var MODE_READ = "Reading. Switch to Edit to answer or change lines. Internal Comments are your notes to the users: they show beside the clause in every user's specification, in the Internal Comments column.";
   var MODE_EDIT = "Edit is on. Answers save by themselves when you leave a box. Clearing Compliance and Remarks puts the line back under \"To answer\". Internal Comments show to users beside the clause.";
 
   function download(blob, name) {
@@ -527,9 +521,9 @@
   }
 
   // ---------- tabs ----------
-  [].forEach.call(document.querySelectorAll(".tab"), function (tab) {
+  [].forEach.call(document.querySelectorAll(".tab[data-tab]"), function (tab) {
     tab.addEventListener("click", function () {
-      [].forEach.call(document.querySelectorAll(".tab"), function (t) {
+      [].forEach.call(document.querySelectorAll(".tab[data-tab]"), function (t) {
         t.setAttribute("aria-selected", t === tab ? "true" : "false");
         $("tab-" + t.getAttribute("data-tab")).hidden = t !== tab;
       });
@@ -537,7 +531,7 @@
     });
   });
 
-  Hub.requireLogin({ edit: "compliance-maker" }).then(function () { return CMHighlight.load(); })
+  Hub.requireLogin({ edit: "compliance-maker" }).then(function () { Hub.autoHide($("workbar")); return CMHighlight.load(); })
     .then(function () { return Api.cmOptions(Hub.token()); }).then(function (res) {
     products = res.products || [];
     var s = $("product"); s.appendChild(el("option", { value: "", text: "Choose a product" }));

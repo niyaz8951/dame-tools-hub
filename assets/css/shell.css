@@ -95,6 +95,10 @@ html[data-loading] body { visibility: hidden; }
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar { background: var(--surface); } }
+/* reading pages (Hub.autoHide): the bars slide away while the page is scrolled down */
+.topbar { transition: transform .28s var(--ease); }
+html.hub-away .topbar { transform: translateY(-102%); }
+@media (prefers-reduced-motion: reduce) { .topbar, .workbar, .sheet thead th { transition: none !important; } }
 .topbar::before {            /* thin Daikin stripe */
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
   background: linear-gradient(90deg, var(--brand) 0 60%, var(--brand-sky) 60% 100%);

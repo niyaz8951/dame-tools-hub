@@ -353,7 +353,46 @@
   }
   function param(name) { try { return new URLSearchParams(window.location.search).get(name) || ""; } catch (e) { return ""; } }
 
+  /* Long reading pages (a specification, the library): scrolling down slides the top bar and the page's
+     own work bar away so the text has the whole window; scrolling up brings them straight back.
+     bar = the page's sticky work bar (class "workbar"), or nothing. Sets --hub-top (height of the top
+     bar) and --hub-stick (where a sticky table header sits: under the bars, or 0 when they are away). */
+  function autoHide(bar) {
+    var root = document.documentElement, top = document.getElementById("topbar"), last = window.pageYOffset, run = 0, away = false, tick = false;
+    function measure() {
+      var th = top ? top.offsetHeight : 0, stuck = bar && bar.getBoundingClientRect().top <= th + 1;
+      root.style.setProperty("--hub-top", th + "px");
+      root.style.setProperty("--hub-stick", (away ? 0 : th + (stuck ? bar.offsetHeight : 0)) + "px");
+    }
+    function set(on) { if (on !== away) { away = on; root.classList.toggle("hub-away", on); } measure(); }
+    function busy() {       // typing in the bar, or a menu or sheet is open: keep everything in view
+      var a = document.activeElement;
+      return (a && a !== document.body && ((bar && bar.contains(a)) || (top && top.contains(a)))) || !!document.querySelector(".topbar .menu:not([hidden]), .hub-sheet-back");
+    }
+    function onScroll() {
+      tick = false;
+      var y = window.pageYOffset, d = y - last; last = y;
+      if (y < 140 || busy()) { run = 0; return set(false); }
+      run = (d > 0) === (run > 0) ? run + d : d;          // distance travelled in one direction
+      if (run > 40) set(true); else if (run < -8) set(false); else measure();
+    }
+    window.addEventListener("scroll", function () { if (!tick) { tick = true; window.requestAnimationFrame(onScroll); } }, { passive: true });
+    window.addEventListener("resize", measure);
+    document.addEventListener("focusin", function () { if (away && busy()) set(false); });
+    if (bar && window.ResizeObserver) new ResizeObserver(measure).observe(bar);
+    measure();
+    return { show: function () { run = 0; set(false); }, measure: measure };
+  }
+  /* A text box that is as tall as its text, so a long remark is read without scrolling inside a small box. */
+  function autoGrow(box) {
+    function fit() { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight + 2, 320) + "px"; }
+    box.addEventListener("input", fit);
+    window.requestAnimationFrame(fit);
+    return box;
+  }
+
   window.Hub = {
+    autoHide: autoHide, autoGrow: autoGrow,
     setBack: setBack, param: param, confirm: confirmSheet, ask: askSheet, tell: tellSheet, date: fmtDate,
     ICON: ICON, el: el, toast: toast, url: url, go: go,
     token: token, setToken: setToken, logout: logout,

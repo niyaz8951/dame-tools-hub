@@ -15,6 +15,8 @@
                lib,                 true = the answer shown is the library's (green)
                others: [text] }],   read-only lines, e.g. what users filled
      start,                         index to open on
+     editing,                       true = opens in Edit; false = Read (answers as text, nothing can change)
+     onMode(editing),               the Read | Edit switch in the pane was used (keep the page in the same mode)
      choices: [text],               one-tap answers
      save(item, { compliance, remarks, comments }) -> Promise of { info, lib }
                                     must update the item itself
@@ -31,11 +33,15 @@
     '.cf-win { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }',
     '.cf-size { display: none; gap: 4px; } .cf-size .btn { min-width: 34px; padding: 0 8px; }',
     '.cf-ctx { display: none; }',
+    '.cf-mode { flex: 0 0 auto; margin: 0; } .cf-mode .tab { min-height: 32px; padding: 0 12px; font-size: 13px; }',
+    '.cf-read .cf-label { margin-top: 12px; } .cf-read .cf-label:first-child { margin-top: 0; }',
+    '.cf-val { font-size: 17px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; } .cf-val.none { color: var(--text-soft); font-size: 15px; } .cf-val.soft { color: var(--text-soft); font-style: italic; font-size: 15px; }',
+    '.cf.lib .cf-read .cf-val:not(.soft):not(.none) { color: var(--ok); }',
     /* a computer: a reading pane over the dimmed page, not the whole window */
     '@media (min-width: 700px) {',
     '  .cf { align-items: center; justify-content: center; padding: 3vh 20px; background: var(--scrim); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: hub-fade .16s ease-out; }',
-    '  .cf-win { flex: 0 1 auto; width: 100%; max-width: 860px; max-height: 94vh; border-radius: 22px; box-shadow: var(--shadow-lift); overflow: hidden; animation: hub-rise .22s var(--ease); }',
-    '  .cf-body { padding: 26px 40px 30px; } .cf-in { max-width: 680px; gap: 16px; }',
+    '  .cf-win { flex: 0 1 auto; width: 100%; max-width: 1040px; max-height: 96vh; border-radius: 22px; box-shadow: var(--shadow-lift); overflow: hidden; animation: hub-rise .22s var(--ease); }',
+    '  .cf-body { padding: 26px 40px 30px; } .cf-in { max-width: 820px; gap: 16px; }',
     '  .cf-size { display: flex; }',
     '  .cf-ctx { display: block; width: 100%; font: inherit; text-align: left; color: var(--text-soft); background: none; border: 0; padding: 2px 4px; cursor: pointer; font-size: 14px; line-height: 1.45; opacity: .6;',
     '            overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; transition: opacity .2s var(--ease); }',
@@ -93,10 +99,17 @@
     var SIZE = 'dame_cf_size', size = 0;
     try { size = parseInt(localStorage.getItem(SIZE), 10) || 0; } catch (e) { size = 0; }
     function setSize(px) { size = Math.max(15, Math.min(28, px)); win.style.setProperty('--cf-size', size + 'px'); try { localStorage.setItem(SIZE, String(size)); } catch (e) { /* not kept */ } }
+    // Read | Edit, the same switch as on the page
+    var edit = !!o.editing;
+    function modeBtn(on, text) { return el('button', { type: 'button', 'class': 'tab', text: text, 'aria-selected': String(on === edit), onclick: function () {
+      if (on === edit) return;
+      leave(function () { edit = on; [].forEach.call(seg.children, function (b, k) { b.setAttribute('aria-selected', String((k === 1) === edit)); }); draw(false); if (o.onMode) o.onMode(edit); });
+    } }); }
+    var seg = el('div', { 'class': 'tabs cf-mode', role: 'group', 'aria-label': 'Read or edit' }, [modeBtn(false, 'Read'), modeBtn(true, 'Edit')]);
     var win = el('div', { 'class': 'cf-win' }, [
       el('div', { 'class': 'cf-top' }, [
         el('button', { type: 'button', 'class': 'btn ghost sm', text: 'Done', onclick: function () { leave(close); } }),
-        el('h2', { text: o.title }),
+        el('h2', { text: o.title }), seg,
         el('div', { 'class': 'cf-size' }, [
           el('button', { type: 'button', 'class': 'btn ghost sm', text: 'A\u2212', title: 'Smaller text', 'aria-label': 'Smaller text', onclick: function () { setSize((size || 19) - 2); } }),
           el('button', { type: 'button', 'class': 'btn ghost sm', text: 'A+', title: 'Larger text', 'aria-label': 'Larger text', onclick: function () { setSize((size || 19) + 2); } })]),
@@ -121,6 +134,7 @@
 
     /* Save what is in the boxes if it differs from the item. Resolves when the save is over. */
     function commit() {
+      if (!comp) return saving;                         // Read: nothing to save
       var it = items[i];
       var v = { compliance: comp.value.trim(), remarks: rem.value.trim(), comments: note ? note.value.trim() : undefined };
       if (v.compliance === (it.compliance || '') && v.remarks === (it.remarks || '') && (!note || v.comments === (it.comments || ''))) return saving;
@@ -142,7 +156,7 @@
 
     var chipBox;
     function chips() {
-      [].forEach.call(chipBox.children, function (b) { b.setAttribute('aria-pressed', b.textContent.toLowerCase() === comp.value.trim().toLowerCase() ? 'true' : 'false'); });
+      if (chipBox) [].forEach.call(chipBox.children, function (b) { b.setAttribute('aria-pressed', b.textContent.toLowerCase() === comp.value.trim().toLowerCase() ? 'true' : 'false'); });
     }
 
     function draw(back) {
@@ -161,6 +175,19 @@
         el('div', { 'class': 'cf-sr', text: it.sr || '•' }),
         el('div', { 'class': 'cf-spec' }, runs.map(function (r) { return r.style ? el('span', { 'class': 'hl-' + r.style, text: r.text }) : r.text; }))]));
 
+      if (!edit) {
+        // Read: the answer as text, nothing to press by mistake
+        comp = rem = note = chipBox = null;
+        state = el('div', { 'class': 'cf-state', role: 'status', text: it.info || '' });
+        var has = it.compliance || it.remarks;
+        inner.appendChild(el('div', { 'class': 'cf-answer cf-read' }, [
+          el('div', { 'class': 'cf-label', text: 'Compliance' }), el('div', { 'class': 'cf-val' + (it.compliance ? '' : ' none'), text: it.compliance || (has ? '-' : 'Not answered yet. Switch to Edit to answer.') }),
+          it.remarks ? el('div', { 'class': 'cf-label', text: 'Remarks' }) : null, it.remarks ? el('div', { 'class': 'cf-val', text: it.remarks }) : null,
+          it.comments ? el('div', { 'class': 'cf-label', text: 'Internal Comments' }) : null, it.comments ? el('div', { 'class': 'cf-val soft', text: it.comments }) : null, state]));
+        if (it.others && it.others.length) inner.appendChild(el('div', { 'class': 'cf-others' }, it.others.map(function (t) { return el('div', { text: t }); })));
+        var afterR = ctx(i + 1); if (afterR) inner.appendChild(afterR);
+        body.scrollTop = 0; progress(); return;
+      }
       comp = el('input', { 'class': 'input', maxlength: '200', placeholder: 'Or type another answer', 'aria-label': 'Compliance' }); comp.value = it.compliance || '';
       rem = el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Remarks (optional)', 'aria-label': 'Remarks' }); rem.value = it.remarks || '';
       note = it.comments === undefined ? null : el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Internal comments: users see them beside this clause', 'aria-label': 'Internal Comments' });
