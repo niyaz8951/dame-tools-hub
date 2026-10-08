@@ -132,7 +132,9 @@
   }
   var CHOICES = ["Comply", "Comply with Remarks", "Noted", "Not Comply", "Not Applicable", "In Contractor's Scope"];
 
-  function row(l) {
+  /* In Edit a clause is first drawn as text and gets its boxes when it comes near the window (Hub.lazyRows). */
+  var lazy = Hub.lazyRows(function (tr) { return row(tr._line, true); });
+  function row(l, boxes) {
     if (l.type === "part") return el("tr", { "class": "part" }, [el("td", { "class": "sr" }), el("td", { colspan: "5", text: l.spec })]);
     if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "5", text: l.spec })]);
     var text = el("div", { "class": "spec" }, CMHighlight.runs(l.spec).map(function (r) { return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text; }));
@@ -149,13 +151,16 @@
     var state = el("span", { "class": "state", text: stateText(l) });
 
     // read: plain text, so the page can be searched (Ctrl+F) and read like the document
-    if (!editing) {
-      return el("tr", { "class": "line" + (!l.own && filled(l) ? " lib" : "") }, [
+    if (!editing || (!boxes && lazy.on)) {
+      var plain = el("tr", { "class": "line" + (!l.own && filled(l) ? " lib" : "") }, [
         el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]),
         el("td", { "class": "read", "data-label": "Compliance", text: s.c }), el("td", { "class": "read", "data-label": "Remarks", text: s.r }),
         el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
         el("td", { "class": "end" }, stateText(l) ? [state] : [])
       ]);
+      plain._line = l;
+      if (editing) lazy.watch(plain);
+      return plain;
     }
     var comp = el("input", { "class": "input", value: s.c, maxlength: "200", list: "rc-words", "aria-label": "Compliance" });
     var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = s.r; Hub.autoGrow(rem);
@@ -164,12 +169,15 @@
       el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
       el("td", { "class": "end" }, [state])
     ]);
+    tr._line = l;
     // Enter in Compliance goes to the next clause, so a run of answers is typed without the mouse
     comp.addEventListener("keydown", function (e) {
       if (e.key !== "Enter") return;
       e.preventDefault();
-      var boxes = [].slice.call(document.querySelectorAll("#rc-body input[aria-label=Compliance]")), next = boxes[boxes.indexOf(comp) + 1];
-      if (next) next.focus(); else comp.blur();
+      var nx = tr.nextElementSibling;
+      while (nx && !(nx.classList.contains("line") && (nx._lazy || nx.querySelector("input")))) nx = nx.nextElementSibling;
+      if (nx && nx._lazy) nx = lazy.now(nx);
+      if (nx) nx.querySelector("input").focus(); else comp.blur();
     });
     var busy = null;                                    // one save at a time; resolves true when the answer is stored
     function save() {
@@ -198,6 +206,7 @@
   function draw() {
     var show = $("rc-show").value, q = $("rc-q").value.trim().toLowerCase(), body = $("rc-body"), frag = document.createDocumentFragment();
     var plain = show === "all" && !q, part = null, sect = null, n = 0;
+    lazy.stop();
     lines.forEach(function (l) {
       if (l.type === "part") { part = l; sect = null; if (plain) frag.appendChild(row(l)); return; }
       if (l.type === "section") { sect = l; if (plain) frag.appendChild(row(l)); return; }
@@ -226,7 +235,20 @@
     [].forEach.call($("rc-seg").children, function (b) { b.setAttribute("aria-selected", String((b.getAttribute("data-mode") === "edit") === editing)); });
     $("rc-mode").textContent = editing ? "Edit is on. Every change saves as you leave the box; Enter in Compliance goes to the next clause. Green boxes are answers from the company library; empty both boxes to go back to the library answer."
                                        : "Reading. Switch to Edit to fill or change answers, or Focus mode for one clause at a time. Green answers come from the company library. Internal Comments are notes from the library team for you, not for the client.";
-    if (!quiet) settled().then(draw, draw);          // a box that was just left is saved before the page is drawn again
+    if (!quiet) settled().then(remode, remode);      // a box that was just left is saved first
+  }
+  /* The rows are not drawn again: to Edit, every clause is watched and gets its boxes as it nears the
+     window; to Read, only the clauses that have boxes go back to text. Instant on any length. */
+  function remode() {
+    var rows = [].slice.call($("rc-body").children);
+    lazy.stop();
+    rows.forEach(function (tr) {
+      if (!tr._line) return;
+      if (editing) { if (!tr.classList.contains("edit")) lazy.watch(tr); }
+      else if (tr.classList.contains("edit")) tr.parentNode.replaceChild(row(tr._line), tr);
+      else tr._lazy = false;
+    });
+    counts();
   }
   var pending = Promise.resolve();
   function settled() { var p = pending; return p.then(function () { return p === pending ? null : settled(); }); }     // every save that is under way or queued

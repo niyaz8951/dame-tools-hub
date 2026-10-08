@@ -187,7 +187,9 @@
     $("sAll").textContent = c.all; $("sOpen").textContent = c.open; $("sDone").textContent = c.answered; $("sReview").textContent = c.review || 0;
     $("sBar").style.width = (c.all ? Math.round(c.answered / c.all * 100) : 0) + "%";
   }
-  function lineRow(l) {
+  /* In Edit a line is first drawn as text and gets its boxes when it comes near the window (Hub.lazyRows). */
+  var lazy = Hub.lazyRows(function (tr) { return lineRow(tr._line, true); });
+  function lineRow(l, boxes) {
     var comp = el("input", { "class": "input", list: "answers", value: l.compliance || "", maxlength: "200", "aria-label": "Compliance" });
     var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = l.remarks || ""; Hub.autoGrow(rem);
     var note = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Internal Comments" }); note.value = l.comments || ""; Hub.autoGrow(note);
@@ -195,8 +197,10 @@
     comp.addEventListener("keydown", function (e) {
       if (e.key !== "Enter") return;
       e.preventDefault();
-      var boxes = [].slice.call(document.querySelectorAll("#rows input[aria-label=Compliance]")), next = boxes[boxes.indexOf(comp) + 1];
-      if (next) next.focus(); else comp.blur();
+      var nx = row.nextElementSibling;
+      while (nx && !(nx.classList.contains("line") && (nx._lazy || nx.querySelector("input")))) nx = nx.nextElementSibling;
+      if (nx && nx._lazy) nx = lazy.now(nx);
+      if (nx) nx.querySelector("input").focus(); else comp.blur();
     });
     var state = el("span", { "class": "state", "aria-live": "polite" });
     var saved = { c: l.compliance || "", r: l.remarks || "", n: l.comments || "" };
@@ -258,13 +262,15 @@
     var first = [el("td", { "class": "sr " + kind, text: l.sr || "" }),
       el("td", { "class": "spec" }, [text, el("div", { "class": "meta", text: meta }), users.firstChild ? users : null])];
     // read: plain text, so the page can be searched (Ctrl+F) and read like the document
-    if (!editing) {
-      return el("tr", { "class": "line" }, first.concat([
+    if (!editing || (!boxes && lazy.on)) {
+      var plain = el("tr", { "class": "line" }, first.concat([
         el("td", { "class": "read", "data-label": "Compliance", text: l.compliance || "" }), el("td", { "class": "read", "data-label": "Remarks", text: l.remarks || "" }),
         el("td", { "class": "note", "data-label": "Internal Comments", text: l.comments || "" }),
         el("td", { "class": "who", "data-label": "Filled by", text: who.join(", ") }),
         el("td", { "class": "end" })
       ]));
+      if (editing) { plain._line = l; lazy.watch(plain); }
+      return plain;
     }
     var row = el("tr", { "class": "line edit" }, first.concat([
       el("td", { "data-label": "Compliance" }, [comp]), el("td", { "data-label": "Remarks" }, [rem]), el("td", { "data-label": "Internal Comments" }, [note]),
@@ -281,7 +287,7 @@
                                      part: $("fPart").value, topic: $("fTopic").value, clientType: $("fClientType").value, clientName: $("fClient").value }).then(function (res) {
       if (loadLines.last !== req) return;
       shownLines = res.lines; total = res.total; setCounts(res.counts); fillGroups(res.groups || []); fillClients(res.client_types || [], res.client_names || []);
-      var body = $("rows"); body.textContent = "";
+      var body = $("rows"); body.textContent = ""; lazy.stop();
       if (!res.lines.length) {
         var msg = res.counts.all === 0 ? "No lines yet for this factory. They appear here after the first conversion or upload."
                 : $("fClientType").value || $("fClient").value ? "No lines here for this client."

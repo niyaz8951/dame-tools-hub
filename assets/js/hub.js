@@ -384,15 +384,43 @@
     return { show: function () { run = 0; set(false); }, measure: measure };
   }
   /* A text box that is as tall as its text, so a long remark is read without scrolling inside a small box. */
+  var growQueue = [];
   function autoGrow(box) {
-    function fit() { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight + 2, 320) + "px"; }
-    box.addEventListener("input", fit);
-    window.requestAnimationFrame(fit);
+    var len = box.value.length;
+    // typing: one measurement and a write only when the text no longer fits; the box is reset only when text was removed
+    box.addEventListener("input", function () {
+      if (box.value.length < len) box.style.height = "auto";
+      len = box.value.length;
+      var h = box.scrollHeight + 2;
+      if (h > box.offsetHeight + 1 || box.style.height === "auto") box.style.height = Math.min(h, 320) + "px";
+    });
+    // first size: every new box is measured in one pass, then sized in one pass (a long page has hundreds)
+    if (box.value) {
+      if (!growQueue.length) window.requestAnimationFrame(function () {
+        var q = growQueue; growQueue = [];
+        var hs = q.map(function (b) { return b.scrollHeight + 2; });
+        q.forEach(function (b, i) { if (hs[i] > b.offsetHeight + 1) b.style.height = Math.min(hs[i], 320) + "px"; });
+      });
+      growQueue.push(box);
+    }
     return box;
+  }
+  /* A long list in Edit: rows are drawn as text and get their boxes only when they come near the window,
+     so switching to Edit is instant however long the specification is. make(row) returns the row with boxes. */
+  function lazyRows(make) {
+    var io = window.IntersectionObserver ? new IntersectionObserver(function (hits) {
+      hits.forEach(function (h) { if (h.isIntersecting) swap(h.target); });
+    }, { rootMargin: "700px 0px" }) : null;
+    function swap(tr) {
+      if (!tr.parentNode || !tr._lazy) return tr;
+      var neu = make(tr); if (io) io.unobserve(tr);
+      tr.parentNode.replaceChild(neu, tr); return neu;
+    }
+    return { watch: function (tr) { tr._lazy = true; if (io) io.observe(tr); return tr; }, now: swap, on: !!io, stop: function () { if (io) io.disconnect(); } };
   }
 
   window.Hub = {
-    autoHide: autoHide, autoGrow: autoGrow,
+    autoHide: autoHide, autoGrow: autoGrow, lazyRows: lazyRows,
     setBack: setBack, param: param, confirm: confirmSheet, ask: askSheet, tell: tellSheet, date: fmtDate,
     ICON: ICON, el: el, toast: toast, url: url, go: go,
     token: token, setToken: setToken, logout: logout,
