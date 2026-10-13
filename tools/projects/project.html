@@ -481,14 +481,14 @@
         var rows = [], bold = [], part = [], sect = [], first = true;
         x.runs.filter(function (r) { return r.product === product; }).reverse().forEach(function (r) {      // oldest first
           if (!first) rows.push([]); first = false;
-          bold.push(rows.length); rows.push([bare(r.file_name) || "Pasted text", r.factory + " factory, converted by " + r.user + ", " + when(r.created_at, true), "", "", "", "", ""]);
-          bold.push(rows.length); rows.push(["Sr", "Specifications", "Compliance", "Remarks", "Internal Comments", "Answer from", "Filled by"]);
+          bold.push(rows.length); rows.push([bare(r.file_name) || "Pasted text", r.factory + " factory, converted by " + r.user + ", " + when(r.created_at, true), "", "", "", ""]);
+          bold.push(rows.length); rows.push(["Sr", "Specifications", "Compliance", "Remarks", "Answer from", "Filled by"]);
           x.compliance.filter(function (c) { return c.run === r.id; }).forEach(function (c) {
             if (c.type === "part") part.push(rows.length); else if (c.type === "section") sect.push(rows.length);
-            rows.push([c.sr, c.spec, c.compliance, c.remarks, c.type === "part" || c.type === "section" ? "" : c.comments || "", c.source, c.by]);
+            rows.push([c.sr, c.spec, c.compliance, c.remarks, c.source, c.by]);      // Internal Comments and TL Review stay on the site
           });
         });
-        if (rows.length) sheets.push({ name: "Specs-" + product, widths: [9, 90, 22, 44, 40, 34, 20], rows: rows, bold: bold, part: part, sect: sect });
+        if (rows.length) sheets.push({ name: "Specs-" + product, widths: [9, 90, 22, 44, 34, 20], rows: rows, bold: bold, part: part, sect: sect });
 
         var notes = [], nbold = [], width = 0;
         x.tables.filter(function (t) { return t.product === product; }).forEach(function (t) {

@@ -273,8 +273,10 @@
     if (r.auto.type === 'ai-guess') return r.auto.comments || 'WILD GUESS — NOT VERIFIED. CONFIRM BEFORE SENDING.';
     return '';
   }
+  // The Excel carries the flag only. The library's Internal Comments (and a project's TL Review) are
+  // for the screen: a sheet that may go to a client must not hold them.
   function commentCell(ref, r) {
-    var text = commentFor(r);
+    var text = flagFor(r);
     return text ? inlineStrCell(ref, 12, text) : '<c r="' + ref + '" s="12"/>';
   }
 
@@ -346,7 +348,7 @@
         inlineStrCell('C' + rowNum, 0, 'Specifications') +
         inlineStrCell('D' + rowNum, 0, 'Compliance') +
         inlineStrCell('E' + rowNum, 0, 'Remarks') +
-        inlineStrCell('F' + rowNum, 0, 'Internal Comments') +
+        inlineStrCell('F' + rowNum, 0, 'Comments') +
       '</row>'
     );
     rowNum++;

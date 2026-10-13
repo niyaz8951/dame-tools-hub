@@ -18,7 +18,7 @@
      editing,                       true = opens in Edit; false = Read (answers as text, nothing can change)
      onMode(editing),               the Read | Edit switch in the pane was used (keep the page in the same mode)
      choices: [text],               one-tap answers
-     save(item, { compliance, remarks, comments }) -> Promise of { info, lib }
+     save(item, { compliance, remarks, comments, review }) -> Promise of { info, lib }      review = the TL Review box (item.review, item.canReview)
                                     must update the item itself
      onClose()
    })
@@ -36,7 +36,7 @@
     '.cf-mode { flex: 0 0 auto; margin: 0; } .cf-mode .tab { min-height: 32px; padding: 0 12px; font-size: 13px; }',
     '.cf-read .cf-label { margin-top: 12px; } .cf-read .cf-label:first-child { margin-top: 0; }',
     '.cf-val { font-size: 17px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; } .cf-val.none { color: var(--text-soft); font-size: 15px; } .cf-val.soft { color: var(--text-soft); font-style: italic; font-size: 15px; }',
-    '.cf.lib .cf-read .cf-val:not(.soft):not(.none) { color: var(--ok); }',
+    '.cf.lib .cf-read .cf-val:not(.soft):not(.none):not(.tl) { color: var(--ok); }',
     /* a computer: a reading pane over the dimmed page, not the whole window */
     '@media (min-width: 700px) {',
     '  .cf { align-items: center; justify-content: center; padding: 3vh 20px; background: var(--scrim); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: hub-fade .16s ease-out; }',
@@ -58,6 +58,7 @@
     '.cf-where span { font-size: 12px; font-weight: 650; padding: 3px 10px; border-radius: 999px; }',
     '.cf-where .p { background: var(--text); color: var(--bg); } .cf-where .s { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); }',
     // the Part and the section are drop-downs: choosing one jumps to its first clause
+    '.cf-val.tl { color: var(--warn); white-space: pre-line; }',
     '.cf-where { min-width: 0; } .cf-in { grid-template-columns: minmax(0, 1fr); }',
     '.cf-where .cf-pick { position: relative; display: inline-flex; max-width: 100%; min-width: 0; padding: 0; }',
     '.cf-where .cf-pick::after { content: ""; position: absolute; right: 11px; top: 50%; margin-top: -2px; border: 4px solid transparent; border-top-color: currentColor; pointer-events: none; }',
@@ -129,7 +130,7 @@
     var root = el('div', { 'class': 'cf', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title }, [win]);
     root.addEventListener('mousedown', function (e) { if (e.target === root) leave(close); });      // a click on the dimmed page closes
 
-    var comp, rem, note, state, saving = Promise.resolve();
+    var comp, rem, note, tl, state, saving = Promise.resolve();
 
     function progress() {
       var done = items.filter(filled).length;
@@ -144,23 +145,42 @@
     function commit() {
       if (!comp) return saving;                         // Read: nothing to save
       var it = items[i];
-      var v = { compliance: comp.value.trim(), remarks: rem.value.trim(), comments: note ? note.value.trim() : undefined };
-      if (v.compliance === (it.compliance || '') && v.remarks === (it.remarks || '') && (!note || v.comments === (it.comments || ''))) return saving;
+      var v = { compliance: comp.value.trim(), remarks: rem.value.trim(), comments: note ? note.value.trim() : undefined, review: tl ? tl.value.trim() : undefined };
+      if (v.compliance === (it.compliance || '') && v.remarks === (it.remarks || '') && (!note || v.comments === (it.comments || '')) && (!tl || v.review === (it.review || ''))) return saving.then(function () { return true; });
       var st = state, at = i;
       st.className = 'cf-state'; st.textContent = 'Saving…';
       saving = saving.then(function () { return o.save(it, v); }).then(function (res) {
         if (at === i) {
           st.className = 'cf-state ok'; st.textContent = 'Saved' + (res && res.info ? ' · ' + res.info : '');
           root.classList.toggle('lib', !!(res && res.lib));
-          comp.value = it.compliance || ''; rem.value = it.remarks || ''; chips();
+          // show what was stored, but never over something typed while the save was on its way
+          if (comp && comp.value.trim() === v.compliance) comp.value = it.compliance || '';
+          if (rem && rem.value.trim() === v.remarks) rem.value = it.remarks || '';
+          chips();
         }
-        progress();
+        progress(); failed = '';
+        return true;
       }, function (err) {
         if (at === i) { st.className = 'cf-state err'; st.textContent = 'Not saved: ' + ((err && err.message) || err); }
+        return false;
       });
       return saving;
     }
-    function leave(then) { commit().then(then, then); }
+    /* Leaving a clause (Next, Previous, a drop-down, Done) saves it first. When the save fails the pane
+       stays on the clause and says so; a second try to leave with the same text goes ahead without saving. */
+    var failed = '';
+    function leave(then) {
+      if (!comp) { then(); return; }
+      var now = i + '|' + comp.value + '|' + rem.value + '|' + (note ? note.value : '') + '|' + (tl ? tl.value : '');
+      commit().then(function (ok) {
+        if (ok === false && failed !== now) {
+          failed = now;
+          if (window.Hub && window.Hub.toast) window.Hub.toast('This clause was not saved. Check the connection and try again, or press once more to leave without saving it.', true);
+          return;
+        }
+        failed = ''; then();
+      }, then);
+    }
 
     var chipBox;
     function chips() {
@@ -185,12 +205,13 @@
 
       if (!edit) {
         // Read: the answer as text, nothing to press by mistake
-        comp = rem = note = chipBox = null;
+        comp = rem = note = tl = chipBox = null;
         state = el('div', { 'class': 'cf-state', role: 'status', text: it.info || '' });
         var has = it.compliance || it.remarks;
         inner.appendChild(el('div', { 'class': 'cf-answer cf-read' }, [
           el('div', { 'class': 'cf-label', text: 'Compliance' }), el('div', { 'class': 'cf-val' + (it.compliance ? '' : ' none'), text: it.compliance || (has ? '-' : 'Not answered yet. Switch to Edit to answer.') }),
           it.remarks ? el('div', { 'class': 'cf-label', text: 'Remarks' }) : null, it.remarks ? el('div', { 'class': 'cf-val', text: it.remarks }) : null,
+          it.review ? el('div', { 'class': 'cf-label', text: 'TL Review' }) : null, it.review ? el('div', { 'class': 'cf-val tl', text: it.review }) : null,
           it.comments ? el('div', { 'class': 'cf-label', text: 'Internal Comments' }) : null, it.comments ? el('div', { 'class': 'cf-val soft', text: it.comments }) : null, state]));
         if (it.others && it.others.length) inner.appendChild(el('div', { 'class': 'cf-others' }, it.others.map(function (t) { return el('div', { text: t }); })));
         var afterR = ctx(i + 1); if (afterR) inner.appendChild(afterR);
@@ -200,6 +221,9 @@
       rem = el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Remarks (optional)', 'aria-label': 'Remarks' }); rem.value = it.remarks || '';
       note = it.comments === undefined ? null : el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Internal comments: users see them beside this clause', 'aria-label': 'Internal Comments' });
       if (note) note.value = it.comments || '';
+      // TL Review: a box for the people who may write it (item.canReview), a line of text for the others
+      tl = it.canReview ? el('textarea', { 'class': 'input', maxlength: '4000', placeholder: 'Review note for this clause in this project', 'aria-label': 'TL Review' }) : null;
+      if (tl) tl.value = it.review || '';
       state = el('div', { 'class': 'cf-state', role: 'status', 'aria-live': 'polite', text: it.info || '' });
       chipBox = el('div', { 'class': 'cf-chips' }, (o.choices || []).map(function (c) {
         return el('button', { type: 'button', 'class': 'cf-chip', text: c, 'aria-pressed': 'false', onclick: function () {
@@ -210,9 +234,10 @@
       }));
       chips();
       comp.addEventListener('input', chips);
-      [comp, rem, note].forEach(function (b) { if (b) b.addEventListener('change', commit); });
+      [comp, rem, note, tl].forEach(function (b) { if (b) b.addEventListener('change', commit); });
       inner.appendChild(el('div', { 'class': 'cf-answer' }, [el('div', { 'class': 'cf-label', text: 'Compliance' }), chipBox,
         el('div', { style: 'height:8px' }), comp, el('div', { style: 'height:10px' }), el('div', { 'class': 'cf-label', text: 'Remarks' }), rem,
+        tl || it.review ? el('div', { style: 'height:10px' }) : null, tl || it.review ? el('div', { 'class': 'cf-label', text: 'TL Review' }) : null, tl || (it.review ? el('div', { 'class': 'cf-val tl', text: it.review }) : null),
         note ? el('div', { style: 'height:10px' }) : null, note ? el('div', { 'class': 'cf-label', text: 'Internal Comments' }) : null, note, state]));
       if (it.others && it.others.length) inner.appendChild(el('div', { 'class': 'cf-others' }, it.others.map(function (t) { return el('div', { text: t }); })));
       var after = ctx(i + 1); if (after) inner.appendChild(after);

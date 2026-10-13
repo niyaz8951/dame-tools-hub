@@ -15,7 +15,13 @@
   .rc-facts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .rc-progress { height: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; flex: 1 0 100%; margin: 0 2px -2px; }
   .rc-progress i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
-  .rc th:nth-child(1) { width: 80px; } .rc th:nth-child(3) { width: 170px; } .rc th:nth-child(4) { width: 23%; } .rc th:nth-child(5) { width: 18%; } .rc th:nth-child(6) { width: 104px; }
+  .rc th:nth-child(1) { width: 80px; } .rc th:nth-child(3) { width: 150px; } .rc th:nth-child(4) { width: 17%; } .rc th:nth-child(5) { width: 13%; } .rc th:nth-child(6) { width: 13%; } .rc th:nth-child(7) { width: 96px; }
+  .rc td.tl { white-space: pre-line; font-size: 14px; color: var(--warn); }
+  /* a notes column with nothing in it, that this person cannot write in, gives its room to the specification */
+  @media (min-width: 861px) {
+    .rc.no-tl th:nth-child(5), .rc.no-ic th:nth-child(6) { width: 0; padding-left: 0; padding-right: 0; font-size: 0; overflow: hidden; }
+    .rc.no-tl td[data-label="TL Review"], .rc.no-ic td[data-label="Internal Comments"] { padding-left: 0; padding-right: 0; }
+  }
   .rc tr.lib .input { background: var(--ok-bg); }
   .rc tr.lib td.read { color: var(--ok); }
   .rc .state.err { color: var(--danger); }
@@ -31,6 +37,9 @@
   .rc-split { max-width: 760px; width: 100%; }
   .hub-sheet.rc-split textarea.input { min-height: 220px; max-height: 56vh; resize: vertical; line-height: 1.5; }
   #rc-name, .rc-facts .badge { overflow-wrap: anywhere; white-space: normal; }       /* a long file name without spaces must not widen the page on a phone */
+  .rc td.rc-sec { padding-top: 6px; padding-bottom: 6px; }
+  .rc-sec select.input { width: auto; max-width: 100%; min-height: 34px; padding: 4px 10px; font-size: 13px; font-weight: 600; }
+  .rc .input.unsaved { border-color: var(--danger); }
   .rc-notes { margin: 0 0 12px; } .rc-notes .hint { margin: 0 0 2px; }
 </style>
 </head>
@@ -68,8 +77,8 @@
     </div>
     <div class="empty" id="rc-empty" hidden>No row matches.</div>
     <div class="table-wrap sheet-wrap" id="rc-wrap">
-      <table class="table sheet rc">
-        <thead><tr><th>Sr</th><th>Specifications</th><th>Compliance</th><th>Remarks</th><th>Internal Comments</th><th></th></tr></thead>
+      <table class="table sheet rc" id="rc-table">
+        <thead><tr><th>Sr</th><th>Specifications</th><th>Compliance</th><th>Remarks</th><th>TL Review</th><th>Internal Comments</th><th></th></tr></thead>
         <tbody id="rc-body"></tbody>
       </table>
     </div>
@@ -107,10 +116,13 @@
     $("rc-bar").style.width = (can.length ? Math.round(100 * done / can.length) : 0) + "%";
   }
 
+  // sent with every write: the database refuses it when the row with this number is no longer this clause
+  // (someone split or joined rows since the page was opened)
+  function rowKey(l) { return String(l.spec || "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 40); }
   /* Save one clause. Back to exactly the library answer, or both boxes emptied: no own answer is kept. */
   function saveLine(l, c, r) {
     var same = c === l.lib_compliance && r === l.lib_remarks;
-    return Api.prRunSaveLine(Hub.token(), { run: runId, seq: l.seq, compliance: same ? "" : c, remarks: same ? "" : r }).then(function (res) {
+    return Api.prRunSaveLine(Hub.token(), { run: runId, seq: l.seq, compliance: same ? "" : c, remarks: same ? "" : r, check: rowKey(l) }).then(function (res) {
       l.own = !same && !!(c || r); l.compliance = l.own ? c : ""; l.remarks = l.own ? r : ""; l.review = res.review || "";
     });
   }
@@ -124,7 +136,9 @@
       if (!l.can) return;
       var s = shown(l);
       items.push({ line: l, part: part, section: sect, sr: l.sr, spec: l.spec, compliance: s.c, remarks: s.r, info: stateText(l), lib: !l.own && filled(l),
-                   others: (l.lib_comments ? ["Internal comment · " + l.lib_comments] : []).concat((sheetOf[lines.indexOf(l)] || []).map(function (d) { return "Datasheet · " + d.component + ": " + valueText(d.cells); })) });
+                   comments: run.can_comment ? l.lib_comments || "" : undefined,
+                   review: l.tl_review || "", canReview: !!run.can_review,       // a box for the people who may write them, a line of text for everyone else
+                   others: (l.lib_comments && !run.can_comment ? ["Internal comment · " + l.lib_comments] : []).concat((sheetOf[lines.indexOf(l)] || []).map(function (d) { return "Datasheet · " + d.component + ": " + valueText(d.cells); })) });
     });
     // Opens where the user is: the clause at the top of the window once he has scrolled into the
     // specification, otherwise the first clause still to fill.
@@ -134,7 +148,12 @@
     CMFocus.open({ title: bare(run.file_name), items: items, start: first, choices: CHOICES,
       editing: editing, onMode: function (on) { setMode(on, true); },      // one mode for the page and the pane
       save: function (it, v) {
-        return saveLine(it.line, v.compliance, v.remarks).then(function () {
+        var now = shown(it.line), answer = v.compliance === now.c && v.remarks === now.r ? Promise.resolve() : saveLine(it.line, v.compliance, v.remarks);
+        var note = v.comments === undefined || v.comments === (it.line.lib_comments || "") ? Promise.resolve()
+          : Api.prRunSaveComment(Hub.token(), { run: runId, seq: it.line.seq, comments: v.comments, check: rowKey(it.line) }).then(function () { it.line.lib_comments = v.comments; it.comments = v.comments; });
+        var tl = v.review === undefined || v.review === (it.line.tl_review || "") ? Promise.resolve()
+          : Api.prRunSaveReview(Hub.token(), { run: runId, seq: it.line.seq, text: v.review, check: rowKey(it.line) }).then(function () { it.line.tl_review = v.review; it.review = v.review; });
+        return Promise.all([answer, note, tl]).then(function () {
           var s = shown(it.line); it.compliance = s.c; it.remarks = s.r; it.lib = !it.line.own && filled(it.line); it.info = stateText(it.line);
           return { info: it.line.own && it.line.review === "pending" ? "sent for review" : "", lib: it.lib };
         });
@@ -155,17 +174,28 @@
     }
     return part;
   }
+  var chipsDue = false;
+  $("rc-body").addEventListener("focusout", function () {
+    if (!chipsDue) return;
+    setTimeout(function () { var a = document.activeElement; if (chipsDue && !(a && $("rc-body").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) { chipsDue = false; settled().then(draw); } }, 300);
+  });
   var CHOICES = ["Comply", "Comply with Remarks", "Noted", "Not Comply", "Not Applicable", "In Contractor's Scope"];
 
   /* In Edit a clause is first drawn as text and gets its boxes when it comes near the window (Hub.lazyRows). */
   var lazy = Hub.lazyRows(function (tr) { return row(tr._line, true); });
   function row(l, boxes) {
-    if (l.type === "part") return el("tr", { "class": "part" }, [el("td", { "class": "sr" }), el("td", { colspan: "5", text: l.spec })]);
-    if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "5", text: l.spec })]);
+    if (l.type === "part") return el("tr", { "class": "part" }, [el("td", { "class": "sr" }), el("td", { colspan: "6", text: l.spec })]);
+    if (l.type === "section") {
+      // a heading has no answer of its own; in Edit it can give one answer to every clause under it
+      var pick = editing ? sectionPick(l) : null;
+      var head = el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: pick ? "1" : "6", text: l.spec }), pick ? el("td", { colspan: "5", "class": "rc-sec" }, [pick]) : null]);
+      head._line = l; head._fixed = true;
+      return head;
+    }
     var text = el("div", { "class": "spec" }, CMHighlight.runs(l.spec).map(function (r) { return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text; }));
     var kind = l.type === "letter" && /^[A-Z]/.test(l.sr || "") ? "letter" : l.type === "number" ? "number" : "";
     if (!l.can) {            // too short to answer; in Edit it can still be split or joined
-      var bare = el("tr", { "class": "line" }, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: editing ? "4" : "5" }, [text]), editing ? el("td", { "class": "end" }, [tools(l)]) : null]);
+      var bare = el("tr", { "class": "line" }, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: editing ? "5" : "6" }, [text]), editing ? el("td", { "class": "end" }, [tools(l)]) : null]);
       bare._line = l; bare._fixed = true;
       return bare;
     }
@@ -184,6 +214,7 @@
       var plain = el("tr", { "class": "line" + (!l.own && filled(l) ? " lib" : "") }, [
         el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]),
         el("td", { "class": "read", "data-label": "Compliance", text: s.c }), el("td", { "class": "read", "data-label": "Remarks", text: s.r }),
+        el("td", { "class": "tl", "data-label": "TL Review", text: l.tl_review || "" }),
         el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
         el("td", { "class": "end" }, stateText(l) ? [state] : [])
       ]);
@@ -195,7 +226,8 @@
     var rem = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Remarks" }); rem.value = s.r; Hub.autoGrow(rem);
     var tr = el("tr", { "class": "line edit" + (!l.own && filled(l) ? " lib" : "") }, [
       el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]), el("td", { "data-label": "Compliance" }, [comp]), el("td", { "data-label": "Remarks" }, [rem]),
-      el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
+      run.can_review ? el("td", { "data-label": "TL Review" }, [reviewBox(l)]) : el("td", { "class": "tl", "data-label": "TL Review", text: l.tl_review || "" }),
+      run.can_comment ? el("td", { "data-label": "Internal Comments" }, [commentBox(l)]) : el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
       el("td", { "class": "end" }, [state, tools(l)])
     ]);
     tr._line = l;
@@ -210,21 +242,96 @@
     });
     var busy = null;                                    // one save at a time; resolves true when the answer is stored
     function save() {
-      if (busy) return pending = busy.then(save);
+      if (busy) return track(busy.then(save));
       var c = comp.value.trim(), r = rem.value.trim(), now = shown(l);
       if (c === now.c && r === now.r) return Promise.resolve(true);
       state.className = "state"; state.textContent = "Saving…";
-      return pending = busy = saveLine(l, c, r).then(function () {
+      return track(busy = saveLine(l, c, r).then(function () {
         busy = null;
         if (!l.own) { comp.value = l.lib_compliance; rem.value = l.lib_remarks; }
         tr.className = "line edit" + (!l.own && filled(l) ? " lib" : "");
         state.textContent = stateText(l); counts(); return true;
-      }, function (err) { busy = null; state.className = "state err"; state.textContent = "Not saved"; Hub.toast(err.message, true); return false; });
+      }, function (err) { busy = null; state.className = "state err"; state.textContent = "Not saved"; Hub.toast(err.message, true); return false; }));
     }
     comp.addEventListener("change", save); rem.addEventListener("change", save);
     comp.addEventListener("blur", save); rem.addEventListener("blur", save);
     return tr;
   }
+  /* ---------- one answer for a whole section ---------- */
+  function sectionLines(h) {
+    var out = [];
+    for (var k = lines.indexOf(h) + 1; k < lines.length && lines[k].type !== "section" && lines[k].type !== "part"; k++) if (lines[k].can) out.push(lines[k]);
+    return out;
+  }
+  function sectionPick(h) {
+    var under = sectionLines(h); if (!under.length) return null;
+    var sel = el("select", { "class": "input", "aria-label": "One answer for every clause of " + (h.sr ? h.sr + " " : "") + h.spec }, [el("option", { value: "", text: "Answer all " + under.length + (under.length === 1 ? " clause" : " clauses") + " of this section\u2026" })]
+      .concat(CHOICES.map(function (c) { return el("option", { value: c, text: c }); }), [el("option", { value: "\u0000clear", text: "Take the answers off this section" })]));
+    sel.addEventListener("change", function () {
+      var v = sel.value; sel.value = ""; if (!v) return;
+      var clear = v === "\u0000clear", name = (h.sr ? h.sr + " " : "") + h.spec, had = sectionLines(h).filter(filled).length, all = sectionLines(h).length;
+      var own = sectionLines(h).filter(function (x) { return x.own; }).length;
+      var ask = clear ? (own ? Hub.confirm("This takes the " + own + (own === 1 ? " answer" : " answers") + " typed in this project off " + name + ", whoever typed them. Answers from the library show again.", { title: "Take the answers off this section?", ok: "Take them off", danger: true }).then(function (yes) { return yes ? false : null; }) : Promise.resolve(false))
+        : had ? choose3(had + " of " + all + " clauses under " + name + " already have an answer.", "Set " + name + " to \u201c" + v + "\u201d?", "Replace all " + all, "Only the " + (all - had) + " empty", all - had > 0)
+        : Promise.resolve(false);
+      ask.then(function (replace) {
+        if (replace === null) return null;              // cancelled: nothing is changed
+        sel.disabled = true;
+        return settled().then(function () { return Api.prRunFillSection(Hub.token(), { run: runId, seq: h.seq, compliance: clear ? "" : v, replace: replace, check: rowKey(h) }); });
+      }).then(function (res) {
+        if (!res) return;
+        Hub.toast(clear ? (res.filled ? "Your answers were taken off " + res.filled + (res.filled === 1 ? " clause." : " clauses.") : "There was no answer of yours in this section.")
+          : res.filled + (res.filled === 1 ? " clause" : " clauses") + " of " + name + " set to " + v + (res.kept ? ", " + res.kept + " kept as they were." : "."));
+        return reload();
+      }).then(null, function (err) { sel.disabled = false; Hub.toast(err.message || String(err), true); });
+    });
+    return sel;
+  }
+
+  /* A question with two ways to go ahead and a real Cancel (Esc, or a click outside, cancels).
+     Resolves true (first way), false (second way) or null (cancelled). */
+  function choose3(message, title, first, second, secondOk) {
+    return new Promise(function (resolve) {
+      function done(v) { document.removeEventListener("keydown", key, true); back.remove(); resolve(v); }
+      function key(e) { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); } }
+      var box = el("div", { "class": "hub-sheet", role: "alertdialog", "aria-modal": "true", "aria-label": title }, [
+        el("h2", { text: title }), el("p", { text: message }),
+        el("div", { "class": "hub-sheet-actions", style: "grid-auto-flow:row" }, [
+          el("button", { type: "button", "class": "btn", text: first, onclick: function () { done(true); } }),
+          secondOk ? el("button", { type: "button", "class": "btn ghost", text: second, onclick: function () { done(false); } }) : null,
+          el("button", { type: "button", "class": "btn ghost", text: "Cancel", onclick: function () { done(null); } })])
+      ]);
+      var back = el("div", { "class": "hub-sheet-back", onclick: function (e) { if (e.target === back) done(null); } }, [box]);
+      document.addEventListener("keydown", key, true); document.body.appendChild(back); box.querySelector(".btn.ghost:last-child").focus();
+    });
+  }
+
+  /* ---------- Internal Comments, for the people who may edit the library ----------
+     The comment belongs to the clause in the library: it shows in Compliance review and in every project that has the clause. */
+  function commentBox(l) {
+    var box = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "Internal Comments", placeholder: "Note" }); box.value = l.lib_comments || ""; Hub.autoGrow(box);
+    function save() {
+      var v = box.value.trim(); if (v === (l.lib_comments || "")) return;
+      track(Api.prRunSaveComment(Hub.token(), { run: runId, seq: l.seq, comments: v, check: rowKey(l) }).then(function () { l.lib_comments = v; box.classList.remove("unsaved"); Hub.toast("Internal comment saved."); },
+        function (err) { box.classList.add("unsaved"); Hub.toast("Internal comment not saved: " + (err.message || String(err)), true); }));
+    }
+    box.addEventListener("change", save); box.addEventListener("blur", save);
+    return box;
+  }
+
+  /* ---------- TL Review: the checker's note on one clause of this project ----------
+     Written by admins and the super user, read by everyone on the project. It stays in the project: not in the library, not in the Excel. */
+  function reviewBox(l) {
+    var box = el("textarea", { "class": "input", rows: "1", maxlength: "4000", "aria-label": "TL Review", placeholder: "Review" }); box.value = l.tl_review || ""; Hub.autoGrow(box);
+    function save() {
+      var v = box.value.trim(); if (v === (l.tl_review || "")) return;
+      track(Api.prRunSaveReview(Hub.token(), { run: runId, seq: l.seq, text: v, check: rowKey(l) }).then(function () { l.tl_review = v; box.classList.remove("unsaved"); Hub.toast("TL Review saved."); },
+        function (err) { box.classList.add("unsaved"); Hub.toast("TL Review not saved: " + (err.message || String(err)), true); }));
+    }
+    box.addEventListener("change", save); box.addEventListener("blur", save);
+    return box;
+  }
+
   /* ---------- Split and Join: the user puts right what the converter got wrong ----------
      Only the rows change, never the words: the database refuses a split whose text is not the text it was given. */
   function tools(l) {
@@ -233,8 +340,8 @@
       el("button", { type: "button", "class": "rc-tool", text: "Split", title: "Make several rows of this one", onclick: function () { splitSheet(l); } }),
       up && up.type !== "part" && l.type !== "part" ? el("button", { type: "button", "class": "rc-tool", text: "Join up", title: "Put this row at the end of the row above", onclick: function (e) {
         var b = e.currentTarget; b.disabled = true;
-        settled().then(function () { return Api.prRunJoin(Hub.token(), { run: runId, seq: l.seq }); }).then(function () { Hub.toast("Joined to the row above."); return refresh(); })
-          .then(null, function (err) { b.disabled = false; Hub.toast(err.message || String(err), true); });
+        settled().then(function () { return Api.prRunJoin(Hub.token(), { run: runId, seq: l.seq, check: rowKey(l) }); }).then(function () { Hub.toast("Joined to the row above."); reload(); },
+          function (err) { b.disabled = false; Hub.toast(err.message || String(err), true); });
       } }) : null
     ]);
   }
@@ -246,7 +353,8 @@
     var parts = String(text).split(/\n+/).map(function (t) { return t.replace(/\s+/g, " ").trim(); }).filter(Boolean);
     return parts.map(function (t, k) {
       if (!k) return { spec: t };
-      var r = CMEngine.parseLines([t], { keepBreaks: true, style: docStyle() })[0] || { type: "text", sr: "", spec: t };
+      // the line as one row, whatever is inside it: its label is read, the rest of the text is left alone
+      var r = CMEngine.parseLines([t], { keepBreaks: true, whole: true, style: docStyle() })[0] || { type: "text", sr: "", spec: t };
       return r.type === "part" ? { type: "part", sr: "", spec: t } : { type: r.type, sr: r.sr, spec: r.spec };
     });
   }
@@ -275,13 +383,21 @@
     function close() { document.removeEventListener("keydown", key, true); back.remove(); }
     go.addEventListener("click", function () {
       go.disabled = true;
-      settled().then(function () { return Api.prRunSplit(Hub.token(), { run: runId, seq: l.seq, rows: splitParts(box.value) }); }).then(function (res) { close(); Hub.toast("Split into " + res.rows + " rows."); return refresh(); })
-        .then(null, function (err) { go.disabled = false; note.textContent = err.message || String(err); note.style.color = "var(--danger)"; });
+      settled().then(function () { return Api.prRunSplit(Hub.token(), { run: runId, seq: l.seq, rows: splitParts(box.value), check: rowKey(l) }); }).then(function (res) { close(); Hub.toast("Split into " + res.rows + " rows."); reload(); },
+        function (err) { go.disabled = false; note.textContent = err.message || String(err); note.style.color = "var(--danger)"; });
     });
     document.addEventListener("keydown", key, true);
     document.body.appendChild(back); check(); box.focus(); box.setSelectionRange(0, 0);
   }
-  /* The rows changed: read the record again and draw it where the user was. */
+  /* The rows changed in the database. The page must not keep the old rows: when it cannot read the
+     record again it says so and offers the reload, instead of leaving buttons that point at old row numbers. */
+  function reload() {
+    return refresh().then(null, function () {
+      $("rc-body").textContent = "";
+      $("rc-main").hidden = true; $("rc-error").hidden = false;
+      $("rc-error").textContent = "The change was saved, but the page could not read the record again. Reload the page to carry on.";
+    });
+  }
   function refresh() {
     var y = window.pageYOffset;
     return Api.prRunGet(Hub.token(), runId).then(function (res) {
@@ -298,7 +414,7 @@
   function draw() {
     var show = $("rc-show").value, q = $("rc-q").value.trim().toLowerCase(), body = $("rc-body"), frag = document.createDocumentFragment();
     var plain = show === "all" && !q, part = null, sect = null, n = 0;
-    lazy.stop();
+    lazy.stop(); columns();
     lines.forEach(function (l) {
       if (l.type === "part") { part = l; sect = null; if (plain) frag.appendChild(row(l)); return; }
       if (l.type === "section") { sect = l; if (plain) frag.appendChild(row(l)); return; }
@@ -331,7 +447,13 @@
   }
   /* The rows are not drawn again: to Edit, every clause is watched and gets its boxes as it nears the
      window; to Read, only the clauses that have boxes go back to text. Instant on any length. */
+  function columns() {
+    var t = $("rc-table"), can = run || {};
+    t.classList.toggle("no-tl", !(lines.some(function (l) { return l.tl_review; }) || (editing && can.can_review)));
+    t.classList.toggle("no-ic", !(lines.some(function (l) { return l.lib_comments; }) || (editing && can.can_comment)));
+  }
   function remode() {
+    columns();
     var rows = [].slice.call($("rc-body").children);
     lazy.stop();
     rows.forEach(function (tr) {
@@ -344,6 +466,8 @@
     counts();
   }
   var pending = Promise.resolve();
+  // every save joins the queue the page waits for before it redraws, splits or joins; one save never hides another
+  function track(p) { var before = pending, quiet = p.then(null, function () {}); pending = before.then(function () { return quiet; }); return p; }
   function settled() { var p = pending; return p.then(function () { return p === pending ? null : settled(); }); }     // every save that is under way or queued
   $("rc-seg").addEventListener("click", function (e) { var b = e.target.closest(".tab"); if (b) setMode(b.getAttribute("data-mode") === "edit"); });
   /* Sheet 2 of the Excel: every datasheet row with the clause that asks about it and, when the
@@ -358,7 +482,7 @@
   $("rc-download").addEventListener("click", function () {
     var rows = lines.map(function (l) {
       var s = shown(l);
-      return { type: l.type, sr: l.sr, spec: l.spec, compliance: l.can ? s.c : "", remarks: l.can ? s.r : "", internal: l.can ? l.lib_comments || "" : "", auto: l.can && !l.own && filled(l) ? { type: "exact" } : null };
+      return { type: l.type, sr: l.sr, spec: l.spec, compliance: l.can ? s.c : "", remarks: l.can ? s.r : "", auto: l.can && !l.own && filled(l) ? { type: "exact" } : null };
     });
     var blob = window.xlsxWriter.build(rows, null, function (text) { return CMHighlight.runs(text); },
       { projectName: run.project, bandText: "Product : " + run.product + "     Factory : " + run.factory, sheet2: sheet2() });
@@ -398,7 +522,12 @@
       note.textContent = !m.hasNotes ? "No " + run.product + " datasheet in this project yet. Read one and its values appear beside the clauses that ask about them; the Excel gets them on its second sheet."
         : n ? n + (n === 1 ? " clause has" : " clauses have") + " the datasheet value beside " + (n === 1 ? "it" : "them") + " (blue chips). Found by the row keywords, not by meaning: read before you rely on it."
         : "The datasheet is in the project, but no clause matched a row keyword. An editor adds keywords in Datasheet Notes > Row mapping.";
-      if (n && !CMFocus.isOpen()) draw();
+      // the datasheet chips need a redraw; never while the user is typing in a box of the table
+      if (n && !CMFocus.isOpen()) settled().then(function () {
+        var a = document.activeElement;
+        if (a && $("rc-body").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) { chipsDue = true; return; }
+        draw();
+      });
     }, function () { /* the specification still reads and fills without it */ });
   }
 })();
