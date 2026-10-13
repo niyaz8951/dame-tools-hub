@@ -2465,6 +2465,144 @@ end $$;
 -- Save the answer typed on the website for one row of a record. Same rule as the filled Excel:
 -- equal to the library answer = nothing more to do; anything else waits for review.
 -- Both fields empty takes the project's own answer away (the library answer shows again).
+-- ---------- Split and Join: the user corrects rows the converter got wrong ----------
+-- The words of the specification are never changed by these: a split must give back exactly the
+-- text it was given (letters and digits compared), a join only puts two rows together.
+
+-- The library line for a clause of a run (made when it is new), or null for a text too short to keep.
+create or replace function public.pr__run_line(r public.cm_runs, p_spec text) returns uuid
+language plpgsql security definer set search_path = public, extensions as $$
+declare n text := public.cm__norm(p_spec); v uuid;
+begin
+  if length(n) < 8 or p_spec ~ '\.{5,}' then return null; end if;
+  insert into public.cm_lines (product_id, factory_id, norm_hash, norm_text, spec_text, first_run_id, times_seen)
+  values (r.product_id, r.factory_id, md5(n), n, p_spec, r.id, 1)
+  on conflict (factory_id, norm_hash) do update set last_seen_at = now()
+  returning id into v;
+  return v;
+end $$;
+
+-- A library line nobody uses any more (made by the wrong row, never answered) is removed.
+create or replace function public.pr__drop_unused_line(p_line uuid) returns void
+language sql security definer set search_path = public, extensions as $$
+  delete from public.cm_lines l
+   where l.id = p_line and l.status = 'open' and l.comments = '' and l.times_seen <= 1
+     and not exists (select 1 from public.cm_run_lines x where x.line_id = l.id);
+$$;
+
+-- After rows were rearranged: counts of the run, Part and section of its lines, one history line an hour.
+create or replace function public.pr__run_reshaped(u public.app_users, r public.cm_runs) returns void
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  update public.cm_runs set line_count = (select count(*) from public.cm_run_lines where run_id = r.id),
+         unique_count = (select count(distinct line_id) from public.cm_run_lines where run_id = r.id)
+   where id = r.id;
+  perform public.cm__fill_structure(r.id);
+  if not exists (select 1 from public.pr_log g where g.project_id = r.project_id and g.user_id = u.id
+                    and g.action = 'Rows split or joined' and g.detail = coalesce(nullif(r.file_name, ''), 'pasted text')
+                    and g.created_at > now() - interval '1 hour') then
+    perform public.pr__log(r.project_id, u.id, 'Rows split or joined', coalesce(nullif(r.file_name, ''), 'pasted text'));
+  end if;
+end $$;
+
+-- Split one row into several. p_rows: [{ "type", "sr", "spec" }, ...] in order, at least two.
+-- The first keeps the label, the type and the answer of the row; the others are new rows after it.
+create or replace function public.pr_run_split(p_token text, p_run_id uuid, p_seq int, p_rows jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; r public.cm_runs; rl public.cm_run_lines;
+  n int; v_new text; v_old text; e record; v_type text; v_spec text; v_sr text;
+begin
+  u := public.app__session_user(p_token);
+  select * into r from public.cm_runs where id = p_run_id;
+  if r.id is null or r.project_id is null then perform public.app__fail('That compliance record is not in a project.'); end if;
+  perform public.pr__project(u, r.project_id);
+  select * into rl from public.cm_run_lines where run_id = r.id and seq = p_seq;
+  if rl.run_id is null then perform public.app__fail('That row no longer exists. Reload the page.'); end if;
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) < 2 then
+    perform public.app__fail('Press Enter where a new row should start, at least once.');
+  end if;
+  n := jsonb_array_length(p_rows);
+  if n > 60 then perform public.app__fail('That is too many rows in one go (more than 60).'); end if;
+  if (select count(*) from public.cm_run_lines where run_id = r.id) + n > 8000 then
+    perform public.app__fail('This specification has too many rows.');
+  end if;
+  if exists (select 1 from jsonb_array_elements(p_rows) x where trim(coalesce(x->>'spec', '')) = '' and trim(coalesce(x->>'sr', '')) = '') then
+    perform public.app__fail('A row cannot be empty.');
+  end if;
+  -- the same words, in the same order (the label of the first row stays as it is and is not part of the text)
+  select string_agg(case when x.ord = 1 then '' else coalesce(x.val->>'sr', '') end || coalesce(x.val->>'spec', ''), '' order by x.ord)
+    into v_new from jsonb_array_elements(p_rows) with ordinality as x(val, ord);
+  v_new := regexp_replace(lower(v_new), '[^a-z0-9]+', '', 'g');
+  v_old := regexp_replace(lower(rl.spec_text), '[^a-z0-9]+', '', 'g');
+  if v_new <> v_old then perform public.app__fail('The words were changed. A split only puts rows on new lines; it does not edit the specification.'); end if;
+
+  -- make room: rows after this one move down (two steps, so no two rows share a number on the way)
+  update public.cm_run_lines set seq = -(seq + n - 1) - 1 where run_id = r.id and seq > p_seq;
+  update public.cm_run_lines set seq = -seq - 1 where run_id = r.id and seq < 0;
+
+  for e in select x.val, (x.ord - 1)::int as k from jsonb_array_elements(p_rows) with ordinality as x(val, ord) order by x.ord loop
+    v_spec := left(regexp_replace(trim(coalesce(e.val->>'spec', '')), '\s+', ' ', 'g'), 6000);
+    if e.k = 0 then
+      update public.cm_run_lines set spec_text = v_spec,
+             line_id = case when rl.type in ('letter','number','text') then public.pr__run_line(r, v_spec) else null end
+       where run_id = r.id and seq = p_seq;
+    else
+      v_type := case when e.val->>'type' in ('part','section','letter','number','text') then e.val->>'type' else 'text' end;
+      v_sr := left(trim(coalesce(e.val->>'sr', '')), 40);
+      insert into public.cm_run_lines (run_id, seq, type, sr, spec_text, line_id)
+      values (r.id, p_seq + e.k, v_type, v_sr, v_spec,
+              case when v_type in ('letter','number','text') then public.pr__run_line(r, v_spec) else null end);
+    end if;
+  end loop;
+  -- the first row lost its library line (text too short now): its own answer cannot stay
+  update public.cm_run_lines set compliance = '', remarks = '', answered_by = null, answered_at = null, review = '', reviewed_by = null, reviewed_at = null
+   where run_id = r.id and seq = p_seq and line_id is null;
+  -- its text changed, so an answer on it goes (back) to review
+  update public.cm_run_lines set review = 'pending', reviewed_by = null, reviewed_at = null
+   where run_id = r.id and seq = p_seq and line_id is not null and (compliance <> '' or remarks <> '');
+  if rl.line_id is not null then perform public.pr__drop_unused_line(rl.line_id); end if;
+  perform public.pr__run_reshaped(u, r);
+  return jsonb_build_object('ok', true, 'rows', n);
+end $$;
+
+-- Join a row to the row above it. The row above keeps its label and type; its own answer wins,
+-- otherwise the answer of the joined row is kept. Headings (PART rows) are not joined.
+create or replace function public.pr_run_join(p_token text, p_run_id uuid, p_seq int)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; r public.cm_runs; a public.cm_run_lines; b public.cm_run_lines; v_spec text; v_line uuid; keep_b boolean;
+begin
+  u := public.app__session_user(p_token);
+  select * into r from public.cm_runs where id = p_run_id;
+  if r.id is null or r.project_id is null then perform public.app__fail('That compliance record is not in a project.'); end if;
+  perform public.pr__project(u, r.project_id);
+  select * into b from public.cm_run_lines where run_id = r.id and seq = p_seq;
+  select * into a from public.cm_run_lines where run_id = r.id and seq = p_seq - 1;
+  if b.run_id is null or a.run_id is null then perform public.app__fail('There is no row above to join to. Reload the page.'); end if;
+  if a.type = 'part' or b.type = 'part' then perform public.app__fail('A PART row cannot be joined.'); end if;
+  v_spec := left(trim(a.spec_text || ' ' || case when b.sr <> '' and b.sr <> chr(8226) then b.sr || ' ' else '' end || b.spec_text), 6000);
+  v_line := case when a.type in ('letter','number','text') then public.pr__run_line(r, v_spec) else null end;
+  keep_b := v_line is not null and a.compliance = '' and a.remarks = '' and (b.compliance <> '' or b.remarks <> '');
+  update public.cm_run_lines set spec_text = v_spec, line_id = v_line,
+         compliance  = case when v_line is null then '' when keep_b then b.compliance else compliance end,
+         remarks     = case when v_line is null then '' when keep_b then b.remarks else remarks end,
+         answered_by = case when v_line is null then null when keep_b then b.answered_by else answered_by end,
+         answered_at = case when v_line is null then null when keep_b then b.answered_at else answered_at end,
+         review      = case when v_line is null then '' when keep_b or compliance <> '' or remarks <> '' then 'pending' else '' end,
+         reviewed_by = null, reviewed_at = null
+   where run_id = r.id and seq = a.seq;
+  delete from public.cm_run_lines where run_id = r.id and seq = b.seq;
+  update public.cm_run_lines set seq = -seq where run_id = r.id and seq > b.seq;
+  update public.cm_run_lines set seq = -seq - 1 where run_id = r.id and seq < 0;
+  if a.line_id is not null and a.line_id is distinct from v_line then perform public.pr__drop_unused_line(a.line_id); end if;
+  if b.line_id is not null and b.line_id is distinct from v_line then perform public.pr__drop_unused_line(b.line_id); end if;
+  perform public.pr__run_reshaped(u, r);
+  return jsonb_build_object('ok', true);
+end $$;
+
 create or replace function public.pr_run_save_line(p_token text, p_run_id uuid, p_seq int, p_compliance text, p_remarks text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$

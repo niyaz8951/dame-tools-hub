@@ -79,6 +79,8 @@
     prNoteGet: function (t, id) { return rpc("pr_note_get", { p_token: t, p_note_id: id }); },
     prRunGet: function (t, id) { return rpc("pr_run_get", { p_token: t, p_run_id: id }); },
     prRunSaveLine: function (t, d) { return rpc("pr_run_save_line", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_compliance: d.compliance || "", p_remarks: d.remarks || "" }); },
+    prRunSplit: function (t, d) { return rpc("pr_run_split", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_rows: d.rows }); },
+    prRunJoin: function (t, d) { return rpc("pr_run_join", { p_token: t, p_run_id: d.run, p_seq: d.seq }); },
     prDeleteRecord: function (t, kind, id) { return rpc("pr_delete_record", { p_token: t, p_kind: kind, p_id: id }); },
     prSubmitAnswers: function (t, runId, rows) { return rpc("pr_submit_answers", { p_token: t, p_run_id: runId, p_rows: rows }); },
     prReviewList: function (t, d) { return rpc("pr_review_list", { p_token: t, p_status: (d && d.status) || "pending", p_limit: (d && d.limit) || 100, p_offset: (d && d.offset) || 0 }); },
@@ -215,6 +217,30 @@
       return (pa === 0) - (pb === 0) || pa - pb || gsort[pa + "|" + sa] - gsort[pb + "|" + sb] || sa.localeCompare(sb) ||
              String(a.home_run || "~").localeCompare(String(b.home_run || "~")) || (a.home_seq == null ? 1e9 : a.home_seq) - (b.home_seq == null ? 1e9 : b.home_seq);
     });
+  }
+  // helpers of prRunSplit / prRunJoin (pr__run_line, pr__drop_unused_line, pr__run_reshaped in db/schema.sql)
+  function prRunOf(db, u, id) {
+    var r = db.cm.runs.filter(function (x) { return x.id === id; })[0];
+    if (!r || !r.project_id) fail("That compliance record is not in a project.");
+    prProject(db, u, r.project_id); return r;
+  }
+  function prRunLine(db, r, spec) {
+    var n = cmNorm(spec); if (n.length < 8 || /\.{5,}/.test(spec)) return null;
+    var fid = r.factory_id || "";
+    db.cm.products.forEach(function (p) { if (p.name === r.product) p.factories.forEach(function (f) { if (f.name === r.factory) fid = f.id; }); });
+    var line = db.cm.lines.filter(function (x) { return x.factory_id === fid && x.norm_text === n; })[0];
+    if (!line) { line = { id: "l" + Date.now() + "_" + Math.random().toString(36).slice(2, 8), factory_id: fid, norm_text: n, spec_text: spec, compliance: "", remarks: "", comments: "", status: "open", times_seen: 1, last_seen_at: new Date().toISOString(), answered_at: null, answered_by: null, answer_source: "", home_run: r.id, file_name: r.file_name || "" }; db.cm.lines.push(line); }
+    return line.id;
+  }
+  function prRunReshaped(db, u, r, oldLines) {
+    r.rows.sort(function (a, b) { return a.seq - b.seq; });
+    oldLines.forEach(function (id) {
+      if (!id || db.cm.runs.some(function (x) { return (x.rows || []).some(function (y) { return y.line_id === id; }); })) return;
+      db.cm.lines = db.cm.lines.filter(function (l) { return !(l.id === id && l.status === "open" && !l.comments && l.times_seen <= 1); });
+    });
+    r.line_count = r.rows.length;
+    var name = r.file_name || "pasted text", hour = new Date(Date.now() - 3600000).toISOString();
+    if (!db.pr.log.some(function (g) { return g.project_id === r.project_id && g.user_id === u.id && g.action === "Rows split or joined" && g.detail === name && g.at > hour; })) prLog(db, r.project_id, u, "Rows split or joined", name);
   }
   function cmNorm(s) { return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
   function cmFactory(db, id) {
@@ -718,6 +744,46 @@
       var name = r.file_name || "pasted text", hour = new Date(Date.now() - 3600000).toISOString();
       if (!db.pr.log.some(function (g) { return g.project_id === r.project_id && g.user_id === u.id && g.action === "Compliance filled online" && g.detail === name && g.at > hour; })) prLog(db, r.project_id, u, "Compliance filled online", name);
       return { ok: true, review: x.review };
+    }),
+    // mirrors pr_run_split and pr_run_join in db/schema.sql
+    prRunSplit: demo(function (db, t, d) {
+      var u = sessionUser(db, t), r = prRunOf(db, u, d.run), rows = r.rows || [], at = rows.filter(function (y) { return y.seq === d.seq; })[0];
+      if (!at) fail("That row no longer exists. Reload the page.");
+      if (!Array.isArray(d.rows) || d.rows.length < 2) fail("Press Enter where a new row should start, at least once.");
+      if (d.rows.length > 60) fail("That is too many rows in one go (more than 60).");
+      if (d.rows.some(function (x) { return !String(x.spec || "").trim() && !String(x.sr || "").trim(); })) fail("A row cannot be empty.");
+      function bare(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+      if (bare(d.rows.map(function (x, k) { return (k ? x.sr || "" : "") + (x.spec || ""); }).join("")) !== bare(at.spec)) fail("The words were changed. A split only puts rows on new lines; it does not edit the specification.");
+      var n = d.rows.length, old = at.line_id, body = ["letter", "number", "text"];
+      rows.forEach(function (y) { if (y.seq > d.seq) y.seq += n - 1; });
+      d.rows.forEach(function (x, k) {
+        var spec = String(x.spec || "").replace(/\s+/g, " ").trim().slice(0, 6000);
+        if (!k) { at.spec = spec; at.line_id = body.indexOf(at.type) >= 0 ? prRunLine(db, r, spec) : null; return; }
+        var type = ["part", "section", "letter", "number", "text"].indexOf(x.type) >= 0 ? x.type : "text";
+        rows.push({ seq: d.seq + k, type: type, sr: String(x.sr || "").trim().slice(0, 40), spec: spec, line_id: body.indexOf(type) >= 0 ? prRunLine(db, r, spec) : null, compliance: "", remarks: "", review: "" });
+      });
+      if (!at.line_id) { at.compliance = ""; at.remarks = ""; at.answered_by = null; at.answered_at = null; at.review = ""; }
+      else if (at.compliance || at.remarks) at.review = "pending";
+      prRunReshaped(db, u, r, [old]);
+      return { ok: true, rows: n };
+    }),
+    prRunJoin: demo(function (db, t, d) {
+      var u = sessionUser(db, t), r = prRunOf(db, u, d.run), rows = r.rows || [];
+      var b = rows.filter(function (y) { return y.seq === d.seq; })[0], a = rows.filter(function (y) { return y.seq === d.seq - 1; })[0];
+      if (!a || !b) fail("There is no row above to join to. Reload the page.");
+      if (a.type === "part" || b.type === "part") fail("A PART row cannot be joined.");
+      var spec = (a.spec + " " + (b.sr && b.sr !== "\u2022" ? b.sr + " " : "") + b.spec).trim().slice(0, 6000), oldA = a.line_id, oldB = b.line_id;
+      var line = ["letter", "number", "text"].indexOf(a.type) >= 0 ? prRunLine(db, r, spec) : null;
+      var keepB = line && !a.compliance && !a.remarks && (b.compliance || b.remarks), had = a.compliance || a.remarks;
+      a.spec = spec; a.line_id = line;
+      if (!line) { a.compliance = ""; a.remarks = ""; a.answered_by = null; a.answered_at = null; a.review = ""; }
+      else if (keepB) { a.compliance = b.compliance; a.remarks = b.remarks; a.answered_by = b.answered_by; a.answered_at = b.answered_at; a.review = "pending"; }
+      else a.review = had ? "pending" : "";
+      a.reviewed_by = null; a.reviewed_at = null;
+      r.rows = rows.filter(function (y) { return y !== b; });
+      r.rows.forEach(function (y) { if (y.seq > d.seq) y.seq -= 1; });
+      prRunReshaped(db, u, r, [oldA, oldB]);
+      return { ok: true };
     }),
     prDeleteRecord: demo(function (db, t, kind, id) {
       var u = sessionUser(db, t), rec;

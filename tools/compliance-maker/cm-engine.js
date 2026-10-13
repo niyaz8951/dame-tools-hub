@@ -44,6 +44,7 @@
      A document that is neither keeps the heading test it always had. */
   var style = { classic: true, deep: false };
   var PARA = '\u2029';      // put in front of a PDF line that starts a new paragraph on the page
+  var TABLE = '\u2028';     // put in front of a PDF line that is a row of a table (its cells are separated by " | ")
 
   // Mirrors the Excel tool's section test: a numbered heading is a blue
   // SECTION when its text is short and heading-shaped (Proper Case, ALL CAPS,
@@ -216,10 +217,14 @@
     var keepBreaks = !!(opts && opts.keepBreaks);
     // how this document numbers itself (see "style" above)
     var flat = rawLines.map(function (l) { return String(l).replace(/\s+/g, ' ').trim(); });
+    rawLines = splitInline(rawLines);
+    flat = rawLines.map(function (l) { return String(l).replace(/\s+/g, ' ').trim(); });
     style = { classic: flat.some(function (l) { return /^\d{1,2}\.0\d\s/.test(l); }),
               deep: flat.filter(function (l) { return !!deepMatch(l); }).length >= 2 };
     if (!style.classic && !style.deep && !flat.some(function (l) { return /^\d{1,2}\.\d{1,2}\.?\s+[A-Z][a-z]+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S/.test(l); })) style.classic = true;
+    if (opts && opts.style) style = { classic: !!opts.style.classic, deep: !!opts.style.deep };      // the caller knows the document (a row being split)
     var paraAt = rawLines.map(function (l) { l = String(l); return l.charAt(0) !== PARA ? 0 : l.charAt(1) === PARA ? 2 : 1; });
+    var tableAt = rawLines.map(function (l) { return /^\u2029*\u2028/.test(String(l)); });
     // Promote bare labels before anything else looks at the lines, so the
     // rest of the parser sees one canonical label shape. The copy also keeps
     // the END OF SECTION splice below from mutating the caller's array.
@@ -239,7 +244,7 @@
         // so process that remainder first and let the divider follow.
         var before = line.slice(0, endMatch.index).trim();
         if (before) {
-          rawLines.splice(i + 1, 0, 'END OF SECTION'); paraAt.splice(i + 1, 0, 0);
+          rawLines.splice(i + 1, 0, 'END OF SECTION'); paraAt.splice(i + 1, 0, 0); tableAt.splice(i + 1, 0, false);
           line = before;
         } else {
           rows.push({ type: 'part', sr: '', spec: 'END OF SECTION' });
@@ -249,6 +254,9 @@
 
       if (startsNewItem(line)) {
         rows.push(classify(line));
+      } else if (tableAt[i] && !keepBreaks && (para || !/^[a-z]/.test(line) || !rows.length)) {
+        // a row of a table is its own row, whatever is above it (a line that carries on in small letters is the end of a clause)
+        rows.push({ type: 'text', sr: '', spec: line });
       } else if (!keepBreaks && rows.length && (rows[rows.length - 1].type === 'part' || rows[rows.length - 1].type === 'section') &&
                  !para && headingWrap(rows[rows.length - 1], line)) {
         // a heading in capitals that runs over two lines
@@ -275,6 +283,51 @@
     return rows;
   }
 
+  /* Clauses that came on one line: text pasted without its line breaks, or a PDF line that holds two.
+     A line is cut before a clause number that continues the numbering the document is already in
+     (3.11.1 then 3.11.2, or 3.11 then 3.11.1, or back up to 3.12), before the next letter of a
+     list in brackets (a) ... b) ...), and at a bullet glyph. A number that does not continue the
+     sequence ("see clause 4.2", "25.4 mm") is left alone. */
+  function follows(last, cand) {
+    var a = last.split('.').map(Number), c = cand.split('.').map(Number), k;
+    if (c.length > a.length + 1) return false;
+    if (c.length === 2 && c[0] === a[0] + 1 && c[1] <= 1) return true;                            // 2.4 -> 3.0 or 3.1
+    var same = Math.min(a.length, c.length) - (c.length <= a.length ? 1 : 0);
+    for (k = 0; k < same; k++) if (a[k] !== c[k]) return false;
+    if (c.length === a.length + 1) return c[c.length - 1] === 1 || c[c.length - 1] === 0;       // 3.11 -> 3.11.1
+    return c[c.length - 1] === a[c.length - 1] + 1;                                               // 3.11.1 -> 3.11.2, 3.11.7 -> 3.12
+  }
+  function splitInline(lines) {
+    var out = [], lastNum = '', lastLet = '', partNo = 0;
+    lines.forEach(function (raw) {
+      raw = String(raw);
+      var lead = (raw.match(/^[\u2028\u2029]+/) || [''])[0], text = raw.slice(lead.length), cuts = [], m;
+      var ph = text.replace(/^\s+/, '').match(/^PART\s+(\d{1,2})/i); if (ph) { partNo = +ph[1]; lastNum = ''; }
+      var head = text.replace(/^\s+/, '').match(/^(\d{1,2}(?:\.\d{1,2}){1,4})\.?\s/);
+      if (head) { lastNum = head[1]; lastLet = ''; }
+      var hl = text.replace(/^\s+/, '').match(/^\(?([a-z])\)\s/); if (hl) lastLet = hl[1];
+      var re = /\s(?=PART\s+(\d{1,2})(?:\.0)?\s*[-\u2013:]?\s*[A-Z]{3})|\s(\d{1,2}(?:\.\d{1,2}){1,4})\.?\s+(?=[A-Z])|\s\(?([a-z])\)\s+(?=[A-Z])|\s(?=[\u2022\u25AA\u25CF\u25A0\uF0A7\uF0B7\uF0D8\uF0FC]\s*\S)/g;
+      while ((m = re.exec(text)) !== null) {
+        if (m[1]) { cuts.push(m.index); partNo = +m[1]; lastNum = ''; lastLet = ''; }
+        else if (m[2]) {
+          // after a PART heading the first number of that part starts the count ("PART 3 - EXECUTION 3.1 ...")
+          if (lastNum ? follows(lastNum, m[2]) : (partNo && +m[2].split('.')[0] === partNo)) { cuts.push(m.index); lastNum = m[2]; lastLet = ''; }
+        }
+        else if (m[3]) {
+          // "a) ... b) ..." in one line: a) starts the list when b) follows it
+          var first = m[3] === 'a' && /\s\(?b\)\s+[A-Z]/.test(text.slice(m.index));
+          if (first || (lastLet && m[3].charCodeAt(0) === lastLet.charCodeAt(0) + 1)) { cuts.push(m.index); lastLet = m[3]; }
+        }
+        else if (m.index > 0) cuts.push(m.index);
+      }
+      if (!cuts.length) { out.push(raw); return; }
+      var at = 0;
+      cuts.forEach(function (c, k) { out.push((k ? PARA : lead) + text.slice(at, c)); at = c + 1; });
+      out.push(PARA + text.slice(at));
+    });
+    return out;
+  }
+
   // A PDF line that starts a new paragraph on the page (see extractLinesFromTextContent) is its own row
   // when the text above is a finished sentence and this line opens one. Anything else is a wrap.
   // Set apart by space on the page (apart): a new row unless the text above plainly runs on into it.
@@ -299,13 +352,40 @@
      parseLines decides what to do with the mark; every other reader of the lines ignores it. */
   function extractLinesFromTextContent(tc) {
     var items = tc.items.filter(function (it) { return it.str !== undefined; });
-    var lines = [], cur = null;
+    var lines = [];
     items.forEach(function (it) {
-      var x = it.transform[4], y = it.transform[5], right = x + (it.width || 0);
-      if (cur && Math.abs(y - cur.y) <= 2) { cur.buf.push(it.str); if (it.str.trim()) { cur.right = Math.max(cur.right, right); cur.left = Math.min(cur.left, x); } }
-      else { cur = { y: y, buf: [it.str], left: it.str.trim() ? x : Infinity, right: it.str.trim() ? right : -Infinity }; lines.push(cur); }
+      var x = it.transform[4], y = it.transform[5], cur = null;
+      // same baseline as one of the last few lines: the same line (a table row is not always written left to right in one go)
+      // (only across a column gap: text that carries on right after a superscript stays in reading order)
+      for (var b = lines.length - 1; b >= 0 && b >= lines.length - 4; b--) {
+        if (Math.abs(y - lines[b].y) > 2) continue;
+        var small = lines[lines.length - 1].h > 0 && (it.height || 0) < lines[lines.length - 1].h * 0.8;      // a superscript
+        if (b === lines.length - 1 || (it.str.trim() && !small && x - lines[b].right >= COL_GAP)) cur = lines[b];
+        break;
+      }
+      if (!cur) { cur = { y: y, parts: [], left: Infinity, right: -Infinity, h: 0 }; lines.push(cur); }
+      if (it.str.trim()) cur.h = Math.max(cur.h, it.height || 0);
+      cur.parts.push({ x: x, r: x + (it.width || 0), s: it.str, n: cur.parts.length });
+      if (it.str.trim()) { cur.right = Math.max(cur.right, x + (it.width || 0)); cur.left = Math.min(cur.left, x); }
     });
-    lines.forEach(function (l) { l.text = l.buf.join(''); });
+    lines.forEach(function (l) {
+      // a row put together from several runs is read left to right
+      var inOrder = l.parts.every(function (p, k) { return !k || !p.s.trim() || p.x >= l.parts[k - 1].x - 1 || !l.parts[k - 1].s.trim(); });
+      if (!inOrder) l.parts.sort(function (a, b) { return a.x - b.x || a.n - b.n; });
+      // columns: a wide empty stretch between two pieces of text. The stretch after a clause label ("1.2.1", "a)") is its tab, not a column.
+      var text = '', lastR = null, cols = 0;
+      l.parts.forEach(function (p) {
+        if (p.s.trim() && lastR !== null && p.x - lastR >= COL_GAP && text.trim()) {
+          if (LABEL_ONLY.test(text.trim())) text = text.replace(/\s*$/, ' ');
+          else { text = text.replace(/\s*$/, '') + ' | '; cols++; }
+        } else if (p.s.trim() && lastR !== null && p.x - lastR > 2.5 && !/\s$/.test(text) && !/^\s/.test(p.s)) text += ' ';
+        text += p.s;
+        if (p.s.trim()) lastR = p.r;
+      });
+      // a labelled clause with one tab stop ("1. AMCA 210   Laboratory Methods ...") is a clause, not a table row
+      if (cols === 1 && startsNewItem(text.replace(/\s+/g, ' ').trim())) { text = text.replace(' | ', ' '); cols = 0; }
+      l.text = text; l.table = cols > 0;
+    });
     var real = lines.filter(function (l) { return l.text.trim(); }), gaps = [], edge = 0;
     for (var k = 1; k < real.length; k++) { var g = real[k - 1].y - real[k].y; if (g > 4) gaps.push(g); }
     gaps.sort(function (a, b) { return a - b; });
@@ -314,15 +394,36 @@
     if (rights.length) edge = rights[Math.floor(rights.length * 0.9)];
     var lefts = real.map(function (l) { return l.left; }).filter(isFinite);
     var leftMost = lefts.length ? Math.min.apply(null, lefts) : 0;
+    // where the text of the clause above starts: after the tab that follows its label
+    // (kept from the page before: a list often runs over a page break; fromPdf clears it for a new document)
+    var bodyX = carryBodyX, waiting = false;
+    function clauseStart(l) {
+      if (!startsNewItem(l.text.replace(/\s+/g, ' ').trim())) {
+        if (waiting && !l.para && isFinite(l.left)) { bodyX = l.left; waiting = false; }      // its first wrapped line shows where the text starts
+        return;
+      }
+      var solid = l.parts.filter(function (p) { return p.s.trim(); }), after = null;
+      for (var q = 1; q < solid.length && q < 4; q++) if (solid[q].x - solid[q - 1].r >= 6) { after = solid[q]; break; }      // the piece after the label's tab
+      bodyX = after ? after.x : null; waiting = !after;       // label and text in one piece: not known yet
+    }
+    if (real.length) clauseStart(real[0]);
     for (k = 1; k < real.length; k++) {
       var up = real[k - 1], me = real[k], step = up.y - me.y;
       var spaced = usual > 0 && step > usual * 1.3 && step < usual * 6;
       var short = edge > 0 && isFinite(up.right) && up.right < leftMost + (edge - leftMost) * 0.8 && /[.:;]\s*$/.test(up.text);
       var blank = usual > 0 && step > usual * 1.6 && step < usual * 6;       // a clear empty line above: a list item or a new paragraph even without a full stop
       if (step > 4 && (spaced || short)) me.para = blank ? 2 : 1;
+      // a list whose bullets are pictures: no mark in the text, but every item stands apart and starts to the right of the ordinary text
+      if (me.para === 2 && !me.table && bodyX !== null && me.left > bodyX + 16 && me.left < bodyX + 90 &&
+          /^\s*[A-Z]/.test(me.text) && !startsNewItem(me.text.replace(/\s+/g, ' ').trim())) me.item = true;
+      clauseStart(me);
     }
-    return lines.map(function (l) { return (l.para === 2 ? PARA + PARA : l.para ? PARA : '') + l.text; });
+    carryBodyX = bodyX;
+    return lines.map(function (l) { return (l.para === 2 ? PARA + PARA : l.para ? PARA : '') + (l.table ? TABLE : '') + (l.item ? '\u2022 ' : '') + l.text; });
   }
+  var carryBodyX = null;
+  var COL_GAP = 28;        // points; a word space is 3 to 6, a label's tab 10 to 25
+  var LABEL_ONLY = /^(?:PART\s+\S+|\d{1,2}(?:\.\d{1,2}){0,4}\.?|[A-Za-z]{1,2}[.)]|\([A-Za-z0-9]{1,4}\)|[ivx]{1,4}[.)]|[-\u2013\u2014\u2022\uF000-\uF0FF])$/;
 
   /* Running headers and footers ("SECTION 15720", "Rev 0  12 of 32  Contract No:") sit in
      the first or last few lines of a page and repeat on most pages. Left in, they get glued
@@ -418,6 +519,7 @@
       reader.onload = function () {
         window.pdfjsLib.getDocument({ data: new Uint8Array(reader.result) }).promise.then(function (pdf) {
           var max = Math.min(pdf.numPages, MAX_PAGES), pageLines = [];
+          carryBodyX = null;
           function page(p) {
             if (p > max) return Promise.resolve();
             say('Reading page ' + p + ' of ' + max + '\u2026');

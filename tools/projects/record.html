@@ -25,6 +25,11 @@
              padding: 3px 10px; border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--brand) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); }
   .rc-chip b { font-weight: 650; color: var(--brand); } .rc-chip span { overflow-wrap: anywhere; }
   .rc-chip:hover { border-color: var(--brand); }
+  .rc-tools { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 4px; }
+  .rc-tool { font: inherit; font-size: 12px; font-weight: 600; color: var(--brand); background: none; border: 0; padding: 2px 0; cursor: pointer; }
+  .rc-tool:hover, .rc-tool:focus-visible { text-decoration: underline; }
+  .rc-split { max-width: 760px; width: 100%; }
+  .hub-sheet.rc-split textarea.input { min-height: 220px; max-height: 56vh; resize: vertical; line-height: 1.5; }
   .rc-notes { margin: 0 0 12px; } .rc-notes .hint { margin: 0 0 2px; }
 </style>
 </head>
@@ -75,6 +80,7 @@
 <script src="../compliance-maker/cm-focus.js"></script>
 <script src="../compliance-maker/xlsx-writer.js"></script>
 <script src="../compliance-maker/cm-rows.js"></script>
+<script src="../compliance-maker/cm-engine.js"></script>
 <script src="pr-xlsx.js"></script>
 <script src="pr-options.js"></script>
 <script src="pr-match.js"></script>
@@ -139,7 +145,11 @@
     if (l.type === "section") return el("tr", { "class": "sect" }, [el("td", { "class": "sr", text: l.sr }), el("td", { colspan: "5", text: l.spec })]);
     var text = el("div", { "class": "spec" }, CMHighlight.runs(l.spec).map(function (r) { return r.style ? el("span", { "class": "hl-" + r.style, text: r.text }) : r.text; }));
     var kind = l.type === "letter" && /^[A-Z]/.test(l.sr || "") ? "letter" : l.type === "number" ? "number" : "";
-    if (!l.can) return el("tr", { "class": "line" }, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: "5" }, [text])]);
+    if (!l.can) {            // too short to answer; in Edit it can still be split or joined
+      var bare = el("tr", { "class": "line" }, [el("td", { "class": "sr " + kind, text: l.sr }), el("td", { colspan: editing ? "4" : "5" }, [text]), editing ? el("td", { "class": "end" }, [tools(l)]) : null]);
+      bare._line = l; bare._fixed = true;
+      return bare;
+    }
 
     var s = shown(l), sheet = sheetOf[lines.indexOf(l)] || [];
     // what the datasheet has for the rows this clause is about (found by the row keywords)
@@ -167,7 +177,7 @@
     var tr = el("tr", { "class": "line edit" + (!l.own && filled(l) ? " lib" : "") }, [
       el("td", { "class": "sr " + kind, text: l.sr }), el("td", {}, [text, chips]), el("td", { "data-label": "Compliance" }, [comp]), el("td", { "data-label": "Remarks" }, [rem]),
       el("td", { "class": "note", "data-label": "Internal Comments", text: l.lib_comments || "" }),
-      el("td", { "class": "end" }, [state])
+      el("td", { "class": "end" }, [state, tools(l)])
     ]);
     tr._line = l;
     // Enter in Compliance goes to the next clause, so a run of answers is typed without the mouse
@@ -195,6 +205,69 @@
     comp.addEventListener("change", save); rem.addEventListener("change", save);
     comp.addEventListener("blur", save); rem.addEventListener("blur", save);
     return tr;
+  }
+  /* ---------- Split and Join: the user puts right what the converter got wrong ----------
+     Only the rows change, never the words: the database refuses a split whose text is not the text it was given. */
+  function tools(l) {
+    var i = lines.indexOf(l), up = lines[i - 1];
+    return el("div", { "class": "rc-tools" }, [
+      el("button", { type: "button", "class": "rc-tool", text: "Split", title: "Make several rows of this one", onclick: function () { splitSheet(l); } }),
+      up && up.type !== "part" && l.type !== "part" ? el("button", { type: "button", "class": "rc-tool", text: "Join up", title: "Put this row at the end of the row above", onclick: function (e) {
+        var b = e.currentTarget; b.disabled = true;
+        settled().then(function () { return Api.prRunJoin(Hub.token(), { run: runId, seq: l.seq }); }).then(function () { Hub.toast("Joined to the row above."); return refresh(); })
+          .then(null, function (err) { b.disabled = false; Hub.toast(err.message || String(err), true); });
+      } }) : null
+    ]);
+  }
+  // the numbering of this document, so "3.12 Start-up" is read the way the converter read the rest
+  function docStyle() {
+    return { classic: lines.some(function (x) { return x.type === "section" && /^\d{1,2}\.0\d$/.test(x.sr); }), deep: lines.some(function (x) { return /^\d{1,2}(\.\d{1,2}){2,}$/.test(x.sr); }) };
+  }
+  function splitParts(text) {
+    var parts = String(text).split(/\n+/).map(function (t) { return t.replace(/\s+/g, " ").trim(); }).filter(Boolean);
+    return parts.map(function (t, k) {
+      if (!k) return { spec: t };
+      var r = CMEngine.parseLines([t], { keepBreaks: true, style: docStyle() })[0] || { type: "text", sr: "", spec: t };
+      return r.type === "part" ? { type: "part", sr: "", spec: t } : { type: r.type, sr: r.sr, spec: r.spec };
+    });
+  }
+  function splitSheet(l) {
+    var box = el("textarea", { "class": "input", spellcheck: "false", "aria-label": "The row, one line for each new row" }); box.value = l.spec;
+    var note = el("p", { "class": "hub-sheet-hint", role: "status" });
+    var go = el("button", { type: "button", "class": "btn", text: "Split", disabled: "" });
+    function plainText(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+    function check() {
+      var parts = splitParts(box.value), same = plainText(box.value) === plainText(l.spec);
+      go.disabled = !same || parts.length < 2;
+      note.textContent = !same ? "The words were changed. Only add line breaks; press Reset to start again." : parts.length < 2 ? "Press Enter where a new row should start." : "This makes " + parts.length + " rows.";
+      note.style.color = same ? "" : "var(--danger)";
+    }
+    box.addEventListener("input", check);
+    var sheet = el("div", { "class": "hub-sheet rc-split", role: "dialog", "aria-modal": "true", "aria-label": "Split this row" }, [
+      el("h2", { text: "Split this row" }),
+      el("p", { text: "Click in the text and press Enter where each new row should start. The words stay as they are; a number or letter at the start of a new row becomes its Sr." }),
+      box, note,
+      el("div", { "class": "hub-sheet-actions" }, [
+        el("button", { type: "button", "class": "btn ghost", text: "Cancel", onclick: close }),
+        el("button", { type: "button", "class": "btn ghost", text: "Reset", onclick: function () { box.value = l.spec; check(); box.focus(); } }), go])
+    ]);
+    var back = el("div", { "class": "hub-sheet-back", onclick: function (e) { if (e.target === back) close(); } }, [sheet]);
+    function key(e) { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }
+    function close() { document.removeEventListener("keydown", key, true); back.remove(); }
+    go.addEventListener("click", function () {
+      go.disabled = true;
+      settled().then(function () { return Api.prRunSplit(Hub.token(), { run: runId, seq: l.seq, rows: splitParts(box.value) }); }).then(function (res) { close(); Hub.toast("Split into " + res.rows + " rows."); return refresh(); })
+        .then(null, function (err) { go.disabled = false; note.textContent = err.message || String(err); note.style.color = "var(--danger)"; });
+    });
+    document.addEventListener("keydown", key, true);
+    document.body.appendChild(back); check(); box.focus(); box.setSelectionRange(0, 0);
+  }
+  /* The rows changed: read the record again and draw it where the user was. */
+  function refresh() {
+    var y = window.pageYOffset;
+    return Api.prRunGet(Hub.token(), runId).then(function (res) {
+      lines = res.lines || []; counts(); draw(); window.scrollTo(0, y); loadMatch();
+    });
   }
   function valueText(cells) {
     var seen = [], out = [];
@@ -233,7 +306,7 @@
   function setMode(on, quiet) {
     editing = !!on;
     [].forEach.call($("rc-seg").children, function (b) { b.setAttribute("aria-selected", String((b.getAttribute("data-mode") === "edit") === editing)); });
-    $("rc-mode").textContent = editing ? "Edit is on. Every change saves as you leave the box; Enter in Compliance goes to the next clause. Green boxes are answers from the company library; empty both boxes to go back to the library answer."
+    $("rc-mode").textContent = editing ? "Edit is on. Every change saves as you leave the box; Enter in Compliance goes to the next clause. A row the converter got wrong: Split makes several rows of it, Join up puts it back on the row above. Green boxes are answers from the company library; empty both boxes to go back to the library answer."
                                        : "Reading. Switch to Edit to fill or change answers, or Focus mode for one clause at a time. Green answers come from the company library. Internal Comments are notes from the library team for you, not for the client.";
     if (!quiet) settled().then(remode, remode);      // a box that was just left is saved first
   }
@@ -244,7 +317,8 @@
     lazy.stop();
     rows.forEach(function (tr) {
       if (!tr._line) return;
-      if (editing) { if (!tr.classList.contains("edit")) lazy.watch(tr); }
+      if (tr._fixed) tr.parentNode.replaceChild(row(tr._line), tr);
+      else if (editing) { if (!tr.classList.contains("edit")) lazy.watch(tr); }
       else if (tr.classList.contains("edit")) tr.parentNode.replaceChild(row(tr._line), tr);
       else tr._lazy = false;
     });
@@ -287,7 +361,16 @@
     $("rc-loading").hidden = true; $("rc-main").hidden = false;
     setMode(false, true); counts(); draw();
     Hub.autoHide($("rc-workbar"));
-    // the datasheet rows this specification talks about, and their values when the project has the datasheet
+    loadMatch();
+    // on a phone the table is hard to fill: start in the full-screen mode, "Done" shows the table
+    if (window.matchMedia("(max-width: 640px)").matches && lines.some(function (l) { return l.can; })) { setMode(true, true); focusMode(); }
+  }, function (err) {
+    $("rc-loading").hidden = true; $("rc-error").hidden = false;
+    $("rc-error").textContent = ((err && err.message) || err) + " Go back to Projects and open it from the project page.";
+  });
+
+  // the datasheet rows this specification talks about, and their values when the project has the datasheet
+  function loadMatch() {
     PRMatch.load({ projectId: run.project_id, productId: run.product_id, specRows: lines.map(function (l) { return { type: l.type, sr: l.sr, spec: l.spec }; }) }).then(function (m) {
       match = m; sheetOf = {};
       m.table.forEach(function (r) { if (r.kind === "row" && r.found && m.hasNotes) r.lines.forEach(function (i) { (sheetOf[i] = sheetOf[i] || []).push(r); }); });
@@ -298,12 +381,7 @@
         : "The datasheet is in the project, but no clause matched a row keyword. An editor adds keywords in Datasheet Notes > Row mapping.";
       if (n && !CMFocus.isOpen()) draw();
     }, function () { /* the specification still reads and fills without it */ });
-    // on a phone the table is hard to fill: start in the full-screen mode, "Done" shows the table
-    if (window.matchMedia("(max-width: 640px)").matches && lines.some(function (l) { return l.can; })) { setMode(true, true); focusMode(); }
-  }, function (err) {
-    $("rc-loading").hidden = true; $("rc-error").hidden = false;
-    $("rc-error").textContent = ((err && err.message) || err) + " Go back to Projects and open it from the project page.";
-  });
+  }
 })();
 </script>
 </body>
