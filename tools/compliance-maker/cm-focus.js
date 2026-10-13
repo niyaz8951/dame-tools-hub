@@ -57,6 +57,14 @@
     '.cf-where { display: flex; gap: 6px; flex-wrap: wrap; }',
     '.cf-where span { font-size: 12px; font-weight: 650; padding: 3px 10px; border-radius: 999px; }',
     '.cf-where .p { background: var(--text); color: var(--bg); } .cf-where .s { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); }',
+    // the Part and the section are drop-downs: choosing one jumps to its first clause
+    '.cf-where { min-width: 0; } .cf-in { grid-template-columns: minmax(0, 1fr); }',
+    '.cf-where .cf-pick { position: relative; display: inline-flex; max-width: 100%; min-width: 0; padding: 0; }',
+    '.cf-where .cf-pick::after { content: ""; position: absolute; right: 11px; top: 50%; margin-top: -2px; border: 4px solid transparent; border-top-color: currentColor; pointer-events: none; }',
+    '.cf-where select { font: inherit; font-size: 12px; font-weight: 650; color: inherit; background: none; padding: 4px 28px 4px 10px; border: 0; border-radius: 999px; max-width: 100%; min-width: 0; min-height: 28px; cursor: pointer; text-overflow: ellipsis; -webkit-appearance: none; appearance: none; }',
+    '.cf-where select:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }',
+    '.cf-where option { color: var(--text); background: var(--surface); font-weight: 400; }',
+    '@media (max-width: 560px) { .cf-where select { min-height: 34px; font-size: 13px; } }',
     '.cf-card { background: var(--surface); border: 1px solid color-mix(in srgb, var(--border) 55%, transparent); border-radius: 18px; box-shadow: var(--shadow); padding: 20px; display: grid; grid-template-columns: auto 1fr; gap: 12px; }',
     '.cf-sr { min-width: 34px; height: 34px; padding: 0 8px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--brand); font-weight: 700; }',
     '.cf-spec { font-size: var(--cf-size, 19px); line-height: 1.55; letter-spacing: -.01em; overflow-wrap: anywhere; }',
@@ -169,7 +177,7 @@
         return el('button', { type: 'button', 'class': 'cf-ctx', title: k < i ? 'Previous clause' : 'Next clause', onclick: function () { go(k, k < i); } }, [el('b', { text: x.sr || '\u2022' }), x.spec]);
       }
       var before = ctx(i - 1); if (before) inner.appendChild(before);
-      inner.appendChild(el('div', { 'class': 'cf-where' }, [it.part ? el('span', { 'class': 'p', text: it.part }) : null, it.section ? el('span', { 'class': 's', text: it.section }) : null]));
+      inner.appendChild(where(it));
       var runs = window.CMHighlight ? window.CMHighlight.runs(it.spec) : [{ text: it.spec, style: '' }];
       inner.appendChild(el('div', { 'class': 'cf-card' }, [
         el('div', { 'class': 'cf-sr', text: it.sr || '•' }),
@@ -212,6 +220,27 @@
       body.scrollTop = 0; progress();
     }
 
+    /* Where the clause is: its Part and its section, as drop-downs when there is more than one to choose
+       from. Choosing a Part or a section opens its first clause. */
+    function where(it) {
+      var parts = [], sects = [];
+      items.forEach(function (x, k) {
+        if (!parts.length || parts[parts.length - 1].name !== (x.part || '')) parts.push({ name: x.part || '', at: k });
+        if ((x.part || '') === (it.part || '') && k >= partStart(it) && (!sects.length || sects[sects.length - 1].name !== (x.section || '')) && samePartRun(k)) sects.push({ name: x.section || '', at: k });
+      });
+      function partStart(t) { var k = items.indexOf(t); while (k > 0 && (items[k - 1].part || '') === (t.part || '')) k--; return k; }
+      function samePartRun(k) { var a = partStart(it), b = a; while (b < items.length && (items[b].part || '') === (it.part || '')) b++; return k >= a && k < b; }
+      function pick(list, cls, label, none) {
+        var cur = items.indexOf(it), sel = 0;
+        list.forEach(function (o, n) { if (o.at <= cur) sel = n; });
+        if (list.length < 2) return list[0] && list[0].name ? el('span', { 'class': cls, text: list[0].name }) : null;
+        var s = el('select', { 'aria-label': label, title: label }, list.map(function (o, n) { return el('option', { value: String(o.at), text: o.name || none }); }));
+        s.selectedIndex = sel;
+        s.addEventListener('change', function () { go(+s.value, +s.value < i); });
+        return el('span', { 'class': cls + ' cf-pick' }, [s]);        // the pill, with the little arrow drawn on it
+      }
+      return el('div', { 'class': 'cf-where' }, [pick(parts, 'p', 'Go to a Part', 'Before the first Part'), pick(sects, 's', 'Go to a section of this Part', 'Before the first section')]);
+    }
     function go(to, back) { if (to < 0 || to >= items.length || to === i) return; leave(function () { i = to; draw(back); }); }
     function nextOpen() {
       leave(function () {
@@ -225,7 +254,7 @@
 
     // swipe left = next, right = previous (not while selecting text in a box)
     var sx = 0, sy = 0, tracking = false;
-    body.addEventListener('touchstart', function (e) { var t = e.touches[0]; tracking = e.touches.length === 1 && !/^(INPUT|TEXTAREA)$/.test(e.target.tagName); sx = t.clientX; sy = t.clientY; }, { passive: true });
+    body.addEventListener('touchstart', function (e) { var t = e.touches[0]; tracking = e.touches.length === 1 && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName); sx = t.clientX; sy = t.clientY; }, { passive: true });
     body.addEventListener('touchend', function (e) {
       if (!tracking) return; tracking = false;
       var t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
@@ -233,7 +262,7 @@
     }, { passive: true });
 
     function key(e) {
-      var typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
+      var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
       if (e.key === 'Escape') { e.preventDefault(); leave(close); }
       else if (!typing && e.key === 'ArrowRight') go(i + 1, false);
       else if (!typing && e.key === 'ArrowLeft') go(i - 1, true);

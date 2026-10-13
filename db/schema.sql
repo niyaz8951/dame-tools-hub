@@ -2465,6 +2465,56 @@ end $$;
 -- Save the answer typed on the website for one row of a record. Same rule as the filled Excel:
 -- equal to the library answer = nothing more to do; anything else waits for review.
 -- Both fields empty takes the project's own answer away (the library answer shows again).
+-- ---------- Reset a compliance library (after testing, before the real answers are uploaded) ----------
+-- p_factory null = every factory of the product.
+-- Always: the answers, the Internal Comments and the answer history of the library are cleared, the
+-- conversion and upload history that is not in a project is deleted, and every clause no project uses
+-- is deleted. Clauses of specifications saved in projects stay (empty), so those records still open
+-- and the answers users typed there stay with them.
+-- p_with_projects true: the specifications saved in projects for this product are deleted too, with
+-- the answers on them; then nothing of the product is left.
+-- cm__reset_library can be run in the SQL Editor:  select public.cm__reset_library('chiller');
+create or replace function public.cm__reset_library(p_product text, p_factory text default null, p_with_projects boolean default false)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare v_runs int; v_gone int; v_cleared int; v_records int := 0;
+begin
+  if not exists (select 1 from public.cm_products where id = p_product) then perform public.app__fail('Choose a product.'); end if;
+  if p_factory is not null and not exists (select 1 from public.cm_factories where id = p_factory and product_id = p_product) then
+    perform public.app__fail('That factory does not belong to the product.');
+  end if;
+  if coalesce(p_with_projects, false) then
+    delete from public.cm_runs where product_id = p_product and (p_factory is null or factory_id = p_factory) and project_id is not null;
+    get diagnostics v_records = row_count;
+  end if;
+  delete from public.cm_runs where product_id = p_product and (p_factory is null or factory_id = p_factory) and project_id is null;
+  get diagnostics v_runs = row_count;
+  delete from public.cm_answer_log g using public.cm_lines l
+   where g.line_id = l.id and l.product_id = p_product and (p_factory is null or l.factory_id = p_factory);
+  delete from public.cm_lines l
+   where l.product_id = p_product and (p_factory is null or l.factory_id = p_factory)
+     and not exists (select 1 from public.cm_run_lines x where x.line_id = l.id);
+  get diagnostics v_gone = row_count;
+  update public.cm_lines set compliance = '', remarks = '', comments = '', status = 'open',
+         answered_by = null, answered_at = null, answer_source = '', times_seen = 1
+   where product_id = p_product and (p_factory is null or factory_id = p_factory);
+  get diagnostics v_cleared = row_count;
+  -- an answer that had been taken into the library is a project answer again, waiting for review
+  update public.cm_run_lines rl set review = 'pending', reviewed_by = null, reviewed_at = null
+    from public.cm_runs r
+   where r.id = rl.run_id and r.product_id = p_product and (p_factory is null or r.factory_id = p_factory)
+     and (rl.compliance <> '' or rl.remarks <> '') and rl.line_id is not null and rl.review <> 'pending';
+  return jsonb_build_object('ok', true, 'lines_removed', v_gone, 'lines_kept', v_cleared, 'history_removed', v_runs, 'records_removed', v_records);
+end $$;
+
+create or replace function public.cm_reset_library(p_token text, p_product_id text, p_factory_id text default null, p_with_projects boolean default false)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.app__require_super(p_token);
+  return public.cm__reset_library(p_product_id, nullif(p_factory_id, ''), coalesce(p_with_projects, false));
+end $$;
+
 -- ---------- Split and Join: the user corrects rows the converter got wrong ----------
 -- The words of the specification are never changed by these: a split must give back exactly the
 -- text it was given (letters and digits compared), a join only puts two rows together.

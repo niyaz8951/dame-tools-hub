@@ -53,6 +53,7 @@
       p_part: d.part === "" || d.part == null ? null : +d.part, p_topic: d.topic || "", p_client_type: d.clientType || "", p_client_name: d.clientName || "" }); },
     cmAdminSaveAnswer: function (t, id, c, r, comments) { return rpc("cm_admin_save_answer", { p_token: t, p_line_id: id, p_compliance: c, p_remarks: r, p_comments: comments == null ? null : comments }); },
     cmAdminDeleteLine: function (t, id) { return rpc("cm_admin_delete_line", { p_token: t, p_line_id: id }); },
+    cmResetLibrary: function (t, d) { return rpc("cm_reset_library", { p_token: t, p_product_id: d.productId, p_factory_id: d.factoryId || null, p_with_projects: !!d.withProjects }); },
     cmAdminImport: function (t, d) { return rpc("cm_admin_import", { p_token: t, p_factory_id: d.factoryId, p_file_name: d.fileName || "", p_rows: d.rows }); },
     cmAdminRuns: function (t, d) { return rpc("cm_admin_runs", { p_token: t, p_limit: (d && d.limit) || 50, p_offset: (d && d.offset) || 0 }); },
     cmAdminExport: function (t, factoryId) { return rpc("cm_admin_export", { p_token: t, p_factory_id: factoryId }); },
@@ -479,6 +480,27 @@
       l.compliance = (c || "").trim(); l.remarks = (r || "").trim(); l.status = (l.compliance || l.remarks) ? "answered" : "open";
       l.answered_by = a.full_name; l.answered_at = new Date().toISOString(); l.answer_source = "admin";
       return { ok: true, status: l.status };
+    }),
+    // mirrors cm_reset_library in db/schema.sql
+    cmResetLibrary: demo(function (db, t, d) {
+      var u = sessionUser(db, t); if (u.role !== "superuser") fail("Only the super user can do this.");
+      var p = db.cm.products.filter(function (x) { return x.id === d.productId; })[0]; if (!p) fail("Choose a product.");
+      var facs = p.factories.filter(function (f) { return !d.factoryId || f.id === d.factoryId; });
+      if (d.factoryId && !facs.length) fail("That factory does not belong to the product.");
+      var ids = facs.map(function (f) { return f.id; }), names = facs.map(function (f) { return f.name; });
+      function mine(r) { return r.product === p.name && names.indexOf(r.factory) >= 0; }
+      var before = db.cm.runs.length, records = 0;
+      if (d.withProjects) { records = db.cm.runs.filter(function (r) { return mine(r) && r.project_id; }).length; db.cm.runs = db.cm.runs.filter(function (r) { return !(mine(r) && r.project_id); }); }
+      var history = db.cm.runs.filter(function (r) { return mine(r) && !r.project_id; }).length;
+      db.cm.runs = db.cm.runs.filter(function (r) { return !(mine(r) && !r.project_id); });
+      var used = {}; db.cm.runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.line_id) used[x.line_id] = 1; if (mine(r) && x.line_id && (x.compliance || x.remarks)) { x.review = "pending"; x.reviewed_by = null; x.reviewed_at = null; } }); });
+      var gone = 0, kept = 0;
+      db.cm.lines = db.cm.lines.filter(function (l) {
+        if (ids.indexOf(l.factory_id) < 0) return true;
+        if (!used[l.id]) { gone++; return false; }
+        l.compliance = ""; l.remarks = ""; l.comments = ""; l.status = "open"; l.answered_by = null; l.answered_at = null; l.answer_source = ""; l.times_seen = 1; kept++; return true;
+      });
+      return { ok: true, lines_removed: gone, lines_kept: kept, history_removed: history, records_removed: records };
     }),
     cmAdminDeleteLine: demo(function (db, t, id) { editor(db, t, "compliance-maker"); db.cm.lines = db.cm.lines.filter(function (x) { return x.id !== id; }); return { ok: true }; }),
     cmAdminImport: demo(function (db, t, d) {

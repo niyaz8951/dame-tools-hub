@@ -67,6 +67,19 @@
         <div class="meta" id="reviewMeta">No user answer is waiting.</div>
       </a>
     </div>
+    <!-- super user only: empty a library after testing, before the real answers are uploaded -->
+    <div class="card stack" id="resetCard" hidden style="margin-top:20px;max-width:720px">
+      <h2>Reset a compliance library</h2>
+      <p class="muted">For starting clean after testing. It clears every answer and Internal Comment of the library you choose, its answer history and its conversion and upload history, and removes every clause that no project uses. It cannot be undone: download the library first if you may need it.</p>
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px">
+        <label class="field" style="flex:1 1 200px"><span>Product</span><select class="input" id="rsProduct"></select></label>
+        <label class="field" style="flex:1 1 200px"><span>Factory</span><select class="input" id="rsFactory"></select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="rsProjects"> Also delete the specifications of this product saved in projects, with the answers users typed on them</label>
+      <p class="hint" id="rsNote">Without the tick, specifications saved in projects stay and still open; their clauses stay in the library with no answer, and answers users typed on them go back to "waiting for review".</p>
+      <div class="row"><button type="button" class="btn danger" id="rsGo" disabled>Reset this library</button></div>
+      <div class="notice" id="rsMsg" role="status" hidden></div>
+    </div>
   </section>
 
   <!-- PRODUCTS -->
@@ -351,12 +364,49 @@
       sort: parseInt(f.elements.sort.value, 10) || 100, is_default: f.elements.is_default.checked }), "Tile saved").then(function () { f.reset(); });
   });
 
+  /* ---------- reset a compliance library (super user) ---------- */
+  function setupReset() {
+    var products = [], prod = $("rsProduct"), fac = $("rsFactory"), go = $("rsGo"), msg = $("rsMsg");
+    function product() { return products.filter(function (x) { return x.id === prod.value; })[0]; }
+    function fill() {
+      var p = product(); fac.textContent = "";
+      fac.appendChild(el("option", { value: "", text: p ? "All factories of " + p.name : "Choose a product first" }));
+      if (p) p.factories.forEach(function (f) { fac.appendChild(el("option", { value: f.id, text: f.name })); });
+      fac.disabled = !p; go.disabled = !p;
+    }
+    Api.cmOptions(Hub.token()).then(function (r) {
+      products = r.products || [];
+      prod.appendChild(el("option", { value: "", text: "Choose a product" }));
+      products.forEach(function (x) { prod.appendChild(el("option", { value: x.id, text: x.name })); });
+      fill(); $("resetCard").hidden = false;
+    }, function () { /* no products: nothing to reset */ });
+    prod.addEventListener("change", fill);
+    go.addEventListener("click", function () {
+      var p = product(); if (!p) return;
+      var f = p.factories.filter(function (x) { return x.id === fac.value; })[0], all = $("rsProjects").checked;
+      var what = p.name + (f ? ", " + f.name + " factory" : ", all factories");
+      Hub.ask("This empties the compliance library of " + what + (all ? " AND deletes the specifications of this product saved in projects." : ". Specifications saved in projects stay.") + " It cannot be undone.",
+        { title: "Reset " + what + "?", hint: "Type " + p.name + " to confirm.", placeholder: p.name, ok: "Reset", danger: true }).then(function (typed) {
+        if (typed === null) return;
+        if (String(typed).trim().toLowerCase() !== p.name.toLowerCase()) { Hub.toast("Nothing was reset: the name typed was not " + p.name + ".", true); return; }
+        go.disabled = true; msg.hidden = true;
+        Api.cmResetLibrary(Hub.token(), { productId: p.id, factoryId: fac.value, withProjects: all }).then(function (r) {
+          go.disabled = false; msg.hidden = false; msg.className = "notice ok";
+          msg.textContent = what + " is reset. " + plural(r.lines_removed, "clause", "clauses") + " removed, " + r.lines_kept + " kept without an answer because a project uses them, " +
+            plural(r.history_removed, "history entry", "history entries") + " removed" + (all ? ", " + plural(r.records_removed, "project specification", "project specifications") + " deleted" : "") + ".";
+          Hub.toast("Library reset."); summary();
+        }, function (err) { go.disabled = false; msg.hidden = false; msg.className = "notice error"; msg.textContent = (err && err.message) || String(err); });
+      });
+    });
+  }
+
   Hub.requireLogin({ admin: true }).then(function (p) {
     me = p.user;
     $("icLibrary").innerHTML = Hub.ICON.book; $("icMap").innerHTML = Hub.ICON.table; $("icOptions").innerHTML = Hub.ICON.tree;
     if (window.location.hash) openTab(window.location.hash.slice(1));
     if (Hub.isSuper(me)) {
       [].forEach.call(document.querySelectorAll("[data-super]"), function (n) { n.hidden = false; });
+      setupReset();
       $("adminIntro").textContent = "Approve people, choose what each person can open and who is admin of which tile, and manage the tools on each tile.";
     } else {
       $("usersNote").textContent = "You manage the ordinary users' access to the tiles you are admin of, and \"Can edit\" for the tools on them. Other tiles are shown as they are. Admins are made by the super user. Changes apply when you press Save.";

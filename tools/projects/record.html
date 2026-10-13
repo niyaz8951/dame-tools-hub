@@ -30,6 +30,7 @@
   .rc-tool:hover, .rc-tool:focus-visible { text-decoration: underline; }
   .rc-split { max-width: 760px; width: 100%; }
   .hub-sheet.rc-split textarea.input { min-height: 220px; max-height: 56vh; resize: vertical; line-height: 1.5; }
+  #rc-name, .rc-facts .badge { overflow-wrap: anywhere; white-space: normal; }       /* a long file name without spaces must not widen the page on a phone */
   .rc-notes { margin: 0 0 12px; } .rc-notes .hint { margin: 0 0 2px; }
 </style>
 </head>
@@ -125,7 +126,11 @@
       items.push({ line: l, part: part, section: sect, sr: l.sr, spec: l.spec, compliance: s.c, remarks: s.r, info: stateText(l), lib: !l.own && filled(l),
                    others: (l.lib_comments ? ["Internal comment · " + l.lib_comments] : []).concat((sheetOf[lines.indexOf(l)] || []).map(function (d) { return "Datasheet · " + d.component + ": " + valueText(d.cells); })) });
     });
-    var first = 0; for (var k = 0; k < items.length; k++) if (!filled(items[k].line)) { first = k; break; }
+    // Opens where the user is: the clause at the top of the window once he has scrolled into the
+    // specification, otherwise the first clause still to fill.
+    var first = 0, k; for (k = 0; k < items.length; k++) if (!filled(items[k].line)) { first = k; break; }
+    var seen = topLine();
+    if (seen) for (k = 0; k < items.length; k++) if (lines.indexOf(items[k].line) >= lines.indexOf(seen)) { first = k; break; }
     CMFocus.open({ title: bare(run.file_name), items: items, start: first, choices: CHOICES,
       editing: editing, onMode: function (on) { setMode(on, true); },      // one mode for the page and the pane
       save: function (it, v) {
@@ -135,6 +140,20 @@
         });
       },
       onClose: function () { counts(); draw(); } });
+  }
+  function topLine() {
+    var wrap = $("rc-wrap").getBoundingClientRect();
+    if (wrap.top > 0) return null;                              // the table has not reached the top of the window yet
+    var stick = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hub-stick")) || 0, edge = stick + 44, rows = $("rc-body").children;
+    // the first clause that starts in view; a long clause that fills the window counts when none does
+    var part = null;
+    for (var n = 0; n < rows.length; n++) {
+      if (!rows[n]._line) continue;
+      var box = rows[n].getBoundingClientRect();
+      if (box.top >= edge - 6) return box.top < window.innerHeight - 40 ? rows[n]._line : part;
+      if (box.bottom > edge + 40) part = rows[n]._line;
+    }
+    return part;
   }
   var CHOICES = ["Comply", "Comply with Remarks", "Noted", "Not Comply", "Not Applicable", "In Contractor's Scope"];
 
