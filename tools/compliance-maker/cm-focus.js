@@ -146,22 +146,41 @@
       if (!comp) return saving;                         // Read: nothing to save
       var it = items[i];
       var v = { compliance: comp.value.trim(), remarks: rem.value.trim(), comments: note ? note.value.trim() : undefined, review: tl ? tl.value.trim() : undefined };
-      if (v.compliance === (it.compliance || '') && v.remarks === (it.remarks || '') && (!note || v.comments === (it.comments || '')) && (!tl || v.review === (it.review || ''))) return saving;
+      if (v.compliance === (it.compliance || '') && v.remarks === (it.remarks || '') && (!note || v.comments === (it.comments || '')) && (!tl || v.review === (it.review || ''))) return saving.then(function () { return true; });
       var st = state, at = i;
       st.className = 'cf-state'; st.textContent = 'Saving…';
       saving = saving.then(function () { return o.save(it, v); }).then(function (res) {
         if (at === i) {
           st.className = 'cf-state ok'; st.textContent = 'Saved' + (res && res.info ? ' · ' + res.info : '');
           root.classList.toggle('lib', !!(res && res.lib));
-          comp.value = it.compliance || ''; rem.value = it.remarks || ''; chips();
+          // show what was stored, but never over something typed while the save was on its way
+          if (comp && comp.value.trim() === v.compliance) comp.value = it.compliance || '';
+          if (rem && rem.value.trim() === v.remarks) rem.value = it.remarks || '';
+          chips();
         }
-        progress();
+        progress(); failed = '';
+        return true;
       }, function (err) {
         if (at === i) { st.className = 'cf-state err'; st.textContent = 'Not saved: ' + ((err && err.message) || err); }
+        return false;
       });
       return saving;
     }
-    function leave(then) { commit().then(then, then); }
+    /* Leaving a clause (Next, Previous, a drop-down, Done) saves it first. When the save fails the pane
+       stays on the clause and says so; a second try to leave with the same text goes ahead without saving. */
+    var failed = '';
+    function leave(then) {
+      if (!comp) { then(); return; }
+      var now = i + '|' + comp.value + '|' + rem.value + '|' + (note ? note.value : '') + '|' + (tl ? tl.value : '');
+      commit().then(function (ok) {
+        if (ok === false && failed !== now) {
+          failed = now;
+          if (window.Hub && window.Hub.toast) window.Hub.toast('This clause was not saved. Check the connection and try again, or press once more to leave without saving it.', true);
+          return;
+        }
+        failed = ''; then();
+      }, then);
+    }
 
     var chipBox;
     function chips() {

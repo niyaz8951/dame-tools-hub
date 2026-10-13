@@ -79,16 +79,16 @@
     prNoteSave: function (t, d) { return rpc("pr_note_save", { p_token: t, p_project_id: d.projectId, p_product_id: d.productId, p_file_names: d.fileNames || "", p_columns: d.columns, p_rows: d.rows }); },
     prNoteGet: function (t, id) { return rpc("pr_note_get", { p_token: t, p_note_id: id }); },
     prRunGet: function (t, id) { return rpc("pr_run_get", { p_token: t, p_run_id: id }); },
-    prRunSaveLine: function (t, d) { return rpc("pr_run_save_line", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_compliance: d.compliance || "", p_remarks: d.remarks || "" }); },
-    prRunFillSection: function (t, d) { return rpc("pr_run_fill_section", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_compliance: d.compliance, p_replace: !!d.replace }); },
-    prRunSaveReview: function (t, d) { return rpc("pr_run_save_review", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_text: d.text || "" }); },
-    prRunSaveComment: function (t, d) { return rpc("pr_run_save_comment", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_comments: d.comments || "" }); },
-    prRunSplit: function (t, d) { return rpc("pr_run_split", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_rows: d.rows }); },
-    prRunJoin: function (t, d) { return rpc("pr_run_join", { p_token: t, p_run_id: d.run, p_seq: d.seq }); },
+    prRunSaveLine: function (t, d) { return rpc("pr_run_save_line", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_compliance: d.compliance || "", p_remarks: d.remarks || "", p_check: d.check == null ? null : d.check }); },
+    prRunFillSection: function (t, d) { return rpc("pr_run_fill_section", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_compliance: d.compliance, p_replace: !!d.replace, p_check: d.check == null ? null : d.check }); },
+    prRunSaveReview: function (t, d) { return rpc("pr_run_save_review", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_text: d.text || "", p_check: d.check == null ? null : d.check }); },
+    prRunSaveComment: function (t, d) { return rpc("pr_run_save_comment", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_comments: d.comments || "", p_check: d.check == null ? null : d.check }); },
+    prRunSplit: function (t, d) { return rpc("pr_run_split", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_rows: d.rows, p_check: d.check == null ? null : d.check }); },
+    prRunJoin: function (t, d) { return rpc("pr_run_join", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_check: d.check == null ? null : d.check }); },
     prDeleteRecord: function (t, kind, id) { return rpc("pr_delete_record", { p_token: t, p_kind: kind, p_id: id }); },
     prSubmitAnswers: function (t, runId, rows) { return rpc("pr_submit_answers", { p_token: t, p_run_id: runId, p_rows: rows }); },
     prReviewList: function (t, d) { return rpc("pr_review_list", { p_token: t, p_status: (d && d.status) || "pending", p_limit: (d && d.limit) || 100, p_offset: (d && d.offset) || 0 }); },
-    prReviewDecide: function (t, d) { return rpc("pr_review_decide", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_decision: d.decision, p_compliance: d.compliance == null ? null : d.compliance, p_remarks: d.remarks == null ? null : d.remarks }); },
+    prReviewDecide: function (t, d) { return rpc("pr_review_decide", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_decision: d.decision, p_compliance: d.compliance == null ? null : d.compliance, p_remarks: d.remarks == null ? null : d.remarks, p_line_id: d.lineId || null }); },
     prAdminSummary: function (t) { return rpc("pr_admin_summary", { p_token: t }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
@@ -223,6 +223,9 @@
     });
   }
   // helpers of prRunSplit / prRunJoin (pr__run_line, pr__drop_unused_line, pr__run_reshaped in db/schema.sql)
+  // mirrors pr__check_row: the row a page means must still be the row with that number
+  function rowKey(spec) { return String(spec == null ? "" : spec).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 40); }
+  function prCheckRow(x, check) { if (check != null && rowKey(x && x.spec) !== check) fail("The rows of this record were changed since you opened it. Reload the page; nothing was saved on this row."); }
   function prRunOf(db, u, id) {
     var r = db.cm.runs.filter(function (x) { return x.id === id; })[0];
     if (!r || !r.project_id) fail("That compliance record is not in a project.");
@@ -496,7 +499,7 @@
       if (d.withProjects) { records = db.cm.runs.filter(function (r) { return mine(r) && r.project_id; }).length; db.cm.runs = db.cm.runs.filter(function (r) { return !(mine(r) && r.project_id); }); }
       var history = db.cm.runs.filter(function (r) { return mine(r) && !r.project_id; }).length;
       db.cm.runs = db.cm.runs.filter(function (r) { return !(mine(r) && !r.project_id); });
-      var used = {}; db.cm.runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.line_id) used[x.line_id] = 1; if (mine(r) && x.line_id && (x.compliance || x.remarks)) { x.review = "pending"; x.reviewed_by = null; x.reviewed_at = null; } }); });
+      var used = {}; db.cm.runs.forEach(function (r) { (r.rows || []).forEach(function (x) { if (x.line_id) used[x.line_id] = 1; if (mine(r) && x.line_id && (x.compliance || x.remarks) && (!x.review || x.review === "approved")) { x.review = "pending"; x.reviewed_by = null; x.reviewed_at = null; } }); });
       var gone = 0, kept = 0;
       db.cm.lines = db.cm.lines.filter(function (l) {
         if (ids.indexOf(l.factory_id) < 0) return true;
@@ -762,6 +765,7 @@
       prProject(db, u, r.project_id);
       var x = (r.rows || []).filter(function (y) { return y.seq === d.seq; })[0];
       if (!x || !x.line_id) fail("That row cannot be answered.");
+      prCheckRow(x, d.check);
       var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0], c = String(d.compliance || "").trim().slice(0, 200), m = String(d.remarks || "").trim().slice(0, 4000);
       x.compliance = c; x.remarks = m; x.reviewed_by = null; x.reviewed_at = null;
       if (!c && !m) { x.answered_by = null; x.answered_at = null; x.review = ""; }
@@ -775,6 +779,7 @@
       var u = sessionUser(db, t), r = prRunOf(db, u, d.run), c = String(d.compliance || "").trim().slice(0, 200), rows = (r.rows || []).slice().sort(function (a, b) { return a.seq - b.seq; });
       var h = rows.filter(function (y) { return y.seq === d.seq; })[0];
       if (!h || h.type !== "section") fail("That row is not a section heading. Reload the page.");
+      prCheckRow(h, d.check);
       var n = 0, kept = 0, now = new Date().toISOString();
       for (var k = rows.indexOf(h) + 1; k < rows.length && rows[k].type !== "section" && rows[k].type !== "part"; k++) {
         var x = rows[k]; if (!x.line_id) continue;
@@ -791,12 +796,14 @@
       var u = sessionUser(db, t); if (!prAdmin(db, u)) fail("Only an admin or the super user can write the TL Review.");
       var r = prRunOf(db, u, d.run), x = (r.rows || []).filter(function (y) { return y.seq === d.seq && ["letter", "number", "text"].indexOf(y.type) >= 0; })[0];
       if (!x) fail("That row cannot carry a review. Reload the page.");
+      prCheckRow(x, d.check);
       x.tl_review = String(d.text || "").trim().slice(0, 4000);
       return { ok: true };
     }),
     prRunSaveComment: demo(function (db, t, d) {
       var u = editor(db, t, "compliance-maker"), r = prRunOf(db, u, d.run), x = (r.rows || []).filter(function (y) { return y.seq === d.seq; })[0];
       if (!x || !x.line_id) fail("That row cannot carry a comment.");
+      prCheckRow(x, d.check);
       var l = db.cm.lines.filter(function (y) { return y.id === x.line_id; })[0]; if (l) l.comments = String(d.comments || "").trim().slice(0, 4000);
       return { ok: true };
     }),
@@ -804,6 +811,7 @@
     prRunSplit: demo(function (db, t, d) {
       var u = sessionUser(db, t), r = prRunOf(db, u, d.run), rows = r.rows || [], at = rows.filter(function (y) { return y.seq === d.seq; })[0];
       if (!at) fail("That row no longer exists. Reload the page.");
+      prCheckRow(at, d.check);
       if (!Array.isArray(d.rows) || d.rows.length < 2) fail("Press Enter where a new row should start, at least once.");
       if (d.rows.length > 60) fail("That is too many rows in one go (more than 60).");
       if (d.rows.some(function (x) { return !String(x.spec || "").trim() && !String(x.sr || "").trim(); })) fail("A row cannot be empty.");
@@ -827,7 +835,10 @@
       var b = rows.filter(function (y) { return y.seq === d.seq; })[0], a = rows.filter(function (y) { return y.seq === d.seq - 1; })[0];
       if (!a || !b) fail("There is no row above to join to. Reload the page.");
       if (a.type === "part" || b.type === "part") fail("A PART row cannot be joined.");
-      var spec = (a.spec + " " + (b.sr && b.sr !== "\u2022" ? b.sr + " " : "") + b.spec).trim().slice(0, 6000), oldA = a.line_id, oldB = b.line_id;
+      prCheckRow(b, d.check);
+      if (a.type === "section" && (b.compliance || b.remarks || b.tl_review)) fail("The row above is a heading and cannot keep this row's answer or review. Take them off this row first, or join the other way.");
+      var spec = (a.spec + " " + (b.sr && b.sr !== "\u2022" ? b.sr + " " : "") + b.spec).trim(), oldA = a.line_id, oldB = b.line_id;
+      if (spec.length > 6000) fail("Together these two rows are too long for one row.");
       var line = ["letter", "number", "text"].indexOf(a.type) >= 0 ? prRunLine(db, r, spec) : null;
       var keepB = line && !a.compliance && !a.remarks && (b.compliance || b.remarks), had = a.compliance || a.remarks;
       a.spec = spec; a.line_id = line; a.tl_review = [a.tl_review, b.tl_review].filter(Boolean).join(" / ");
@@ -894,6 +905,7 @@
       var a = editor(db, t, "compliance-maker"), r = db.cm.runs.filter(function (x) { return x.id === d.run; })[0];
       var x = r && (r.rows || []).filter(function (y) { return y.seq === d.seq; })[0], now = new Date().toISOString();
       if (!x || !x.line_id || !x.review) fail("That answer is no longer waiting for review.");
+      if (d.lineId && x.line_id !== d.lineId) fail("The rows of that specification were changed since this page was opened. Reload the page and decide again.");
       if (d.decision === "approve") {
         var c = String(d.compliance == null ? x.compliance : d.compliance).trim(), m = String(d.remarks == null ? x.remarks : d.remarks).trim();
         if (!c && !m) fail("An approved answer cannot be empty.");
