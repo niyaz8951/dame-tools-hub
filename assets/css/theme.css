@@ -171,7 +171,7 @@ table.sheet { table-layout: fixed; font-size: 15px; }
 /* reads like the specification: dark PART row, blue section row, clause label in Sr, the word highlights */
 .sheet tr.part td { background: var(--text); color: var(--bg); font-weight: 700; letter-spacing: .02em; }
 .sheet tr.sect td { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); font-weight: 650; }
-.sheet td.sr { text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
+.sheet td.sr { text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: normal; white-space: nowrap; }
 .sheet tr.sect td.sr { color: var(--link); }
 .sheet td.sr.letter { color: var(--warn); } .sheet td.sr.number { color: var(--ok); }
 .sheet .hl-red { color: var(--danger); } .sheet .hl-redbold { color: var(--danger); font-weight: 700; }
@@ -188,7 +188,7 @@ table.sheet { table-layout: fixed; font-size: 15px; }
   .workbar .input { flex: 1 1 130px; min-width: 0; }
   .sheet thead { display: none; }
   table.sheet, .sheet tbody { display: block; width: 100%; }
-  .sheet tr { display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 8px; row-gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
+  .sheet tr { display: grid; grid-template-columns: minmax(40px, max-content) minmax(0, 1fr); column-gap: 8px; row-gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
   .sheet tr:last-child { border-bottom: 0; }
   .sheet td { display: block; grid-column: 2; padding: 0; border: 0; }
   .sheet tr.part { background: var(--text); } .sheet tr.sect { background: color-mix(in srgb, var(--brand-sky) 38%, var(--surface)); }

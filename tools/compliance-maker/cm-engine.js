@@ -24,12 +24,26 @@
      ====================================================================== */
 
   var RE = {
-    part:    /^(PART\s+[0-9IVX]+)\b\s*(.*)$/i,
-    section: /^(\d{1,2}\.\d{1,2})\s+(.*)$/,        // 1.01, 1.1, 2.1, 1.3
+    part:    /^(PART\s+[0-9IVX]+(?:\.0)?)(?![0-9A-Za-z.])\s*(.*)$/i,   // PART 1, PART II, PART 1.0
+    section: /^(\d{1,2}\.\d{1,2})\.?\s+(.*)$/,     // 1.01, 1.1, 2.1, 1.3 and "3.2." with a full stop
+    deep:    /^(\d{1,2}(?:\.\d{1,2}){2,4})\.?\s+(.*)$/,   // 1.2.1, 3.23.4, 2.1.1.1
     number:  /^(\d{1,2})\.\s+(.*)$/,               // 1.
     letter:  /^([A-Z])\.\s+(.*)$/,                 // A.
-    letterLoose: /^([a-zA-Z])[.)]\s+(.*)$/
+    letter2: /^(AA|BB|CC|DD|EE|FF|GG|HH|JJ|KK|LL|MM|NN|PP|QQ|RR|SS|TT|UU|VV|WW|XX|YY|ZZ)\.\s+(.*)$/,   // after Z comes AA.
+    letterLoose: /^([a-zA-Z])[.)]\s+(.*)$/,
+    roman:   /^(i{2,3}|iv|vi{1,3}|ix|xi{0,3})[.)]\s+(.*)$/,          // ii. iii) iv.  ("i." and "v." are letters above)
+    paren:   /^\(([a-zA-Z]|i{1,3}|iv|vi{0,3}|ix|x|\d{1,2})\)\s+(.*)$/,   // (a) (iv) (2)
+    // a list mark: a bullet glyph (also the private-use ones Word fonts put in a PDF), or a dash before a capital
+    bullet:  /^(?:[\u2022\u2023\u2043\u25AA\u25AB\u25CF\u25CB\u25A0\u25A1\u25E6\u2219\u00B7\u27A2\u2794\u2713\uF000-\uF0FF]\s*|[-\u2013\u2014]\s+(?=[A-Z(]))(\S.*)$/
   };
+
+  /* How the document numbers itself, decided once per document (parseLines):
+       classic  "2.01 CASING": two-decimal numbers with a leading zero. Every x.xx is a section.
+       deep     "1.2 Submittals" over "1.2.1 Product Data: ...": three-level numbers are in use, so a
+                short x.y line with no verb is a heading even when it is not in Proper Case.
+     A document that is neither keeps the heading test it always had. */
+  var style = { classic: true, deep: false };
+  var PARA = '\u2029';      // put in front of a PDF line that starts a new paragraph on the page
 
   // Mirrors the Excel tool's section test: a numbered heading is a blue
   // SECTION when its text is short and heading-shaped (Proper Case, ALL CAPS,
@@ -43,10 +57,19 @@
     var stripped = text.replace(/:$/, '');
     var isCaps = stripped === stripped.toUpperCase();
     var isProper = words.every(function (w) {
-      return !w || w[0] === w[0].toUpperCase();
+      return !w || w[0] === w[0].toUpperCase() || SMALL.test(w);
     });
     var endsColon = /:$/.test(text);
-    return isCaps || isProper || endsColon;
+    if (isCaps || isProper || endsColon) return true;
+    // deep numbering: "2.1 Air Cooled packaged chillers" is the heading over 2.1.1, 2.1.2, ...
+    return style.deep && words.length <= 5 && /^[A-Z]/.test(text) && !/[,;]$/.test(text) && !VERB.test(text);
+  }
+  var SMALL = /^(of|and|the|for|in|to|with|or|on|by|a|an|at|\/|&|-)$/;
+  var VERB = /\b(shall|must|will|should|is|are|be|to)\b/i;
+  // "1.0 SCOPE OF WORKS." and "3.0 AIR COOLED PACKAGE CHILLERS": the top level of a document without PART headings
+  function topLevel(m) {
+    var t = m[2].trim().replace(/[.:]$/, '');
+    return /^\d{1,2}\.0$/.test(m[1]) && t.length > 2 && t === t.toUpperCase() && /[A-Z]{3}/.test(t);
   }
 
   // "2.02 CASING" is a section. A wrapped line that happens to start with a decimal
@@ -55,28 +78,40 @@
   function sectionMatch(line) {
     var m = line.match(RE.section);
     if (!m) return null;
+    if (/^\d{1,2}\.\d{1,2}\.$/.test(line.split(/\s/)[0]) && !/^[A-Z]/.test(m[2])) return null;   // "3.2. the" inside a sentence
     var first = m[2].trim().split(/\s+/)[0] || '';
     if (/^0\./.test(m[1])) return null;
+    if (first && /^[a-z]/.test(first) && RE_UNIT.test(first)) return null;        // "2.5 kW heater" at the start of a wrapped line
     if (first && !/^[A-Z][A-Za-z,&'’\-]*[:.]?$/.test(first)) {
       if (/^\d{1,2}\.\d{2}$/.test(m[1]) || !/^[A-Za-z]/.test(first)) return null;
     }
     return m;
   }
 
+  function deepMatch(line) {
+    var m = line.match(RE.deep);
+    return m && /^[A-Z(\u201c"']/.test(m[2]) ? m : null;       // a clause opens with a capital; "1.2.3 mm" does not
+  }
   function startsNewItem(line) {
-    return RE.part.test(line) || !!sectionMatch(line) ||
-           RE.number.test(line) || RE.letter.test(line) ||
-           RE.letterLoose.test(line);
+    return RE.part.test(line) || !!deepMatch(line) || !!sectionMatch(line) ||
+           RE.number.test(line) || RE.letter.test(line) || RE.letter2.test(line) ||
+           RE.letterLoose.test(line) || RE.roman.test(line) || RE.paren.test(line) || RE.bullet.test(line);
   }
 
   function classify(line) {
     var m;
     if ((m = line.match(RE.part)))    return { type: 'part',    sr: m[1].toUpperCase(), spec: (m[2] || '').trim() };
+    if ((m = deepMatch(line))) {
+      // "2.1.3 Cooler / Evaporator" is a sub-heading, "1.2.1 Product Data : Submit ..." is a clause
+      var dtext = m[2].trim();
+      return { type: isSectionHeading(dtext.replace(/\s+:$/, ':')) ? 'section' : 'number', sr: m[1], spec: dtext };
+    }
     if ((m = sectionMatch(line))) {
       var stext = m[2].trim();
-      // x.xx (two-decimal) is always a section (classic spec numbering).
-      // x.x (one-decimal) is a section only if it reads like a heading.
-      var twoDecimal = /^\d{1,2}\.\d{2}$/.test(m[1]);
+      if (topLevel(m)) return { type: 'part', sr: m[1], spec: stext.replace(/\.$/, '') };
+      // x.xx (two-decimal) is always a section in classic spec numbering ("2.01 CASING").
+      // Otherwise a section only if it reads like a heading.
+      var twoDecimal = style.classic && /^\d{1,2}\.\d{2}$/.test(m[1]);
       if (twoDecimal || isSectionHeading(stext)) {
         return { type: 'section', sr: m[1], spec: stext };
       }
@@ -85,7 +120,11 @@
     }
     if ((m = line.match(RE.number)))  return { type: 'number',  sr: m[1], spec: m[2].trim() };
     if ((m = line.match(RE.letter)))  return { type: 'letter',  sr: m[1], spec: m[2].trim() };
+    if ((m = line.match(RE.letter2))) return { type: 'letter',  sr: m[1], spec: m[2].trim() };
     if ((m = line.match(RE.letterLoose))) return { type: 'letter', sr: m[1], spec: m[2].trim() };
+    if ((m = line.match(RE.roman)))   return { type: 'letter', sr: m[1], spec: m[2].trim() };
+    if ((m = line.match(RE.paren)))   return { type: /^\d/.test(m[1]) ? 'number' : 'letter', sr: m[1], spec: m[2].trim() };
+    if ((m = line.match(RE.bullet)))  return { type: 'text', sr: '\u2022', spec: m[1].trim() };
     return { type: 'text', sr: '', spec: line.trim() };
   }
 
@@ -127,7 +166,7 @@
       if (RE.part.test(line) || RE.section.test(line)) { closeRun(); continue; }
 
       // Already labelled by a strict pattern; leave it alone.
-      if (RE.number.test(line) || RE.letter.test(line) || RE.letterLoose.test(line)) continue;
+      if (RE.number.test(line) || RE.letter.test(line) || RE.letterLoose.test(line) || RE.deep.test(line)) continue;
 
       var m = line.match(RE_BARE);
       if (!m) continue;
@@ -161,7 +200,7 @@
   // continuation rule would silently glue it onto that clause's text. So it
   // is split off first and emitted as its own black band row, the same
   // treatment a PART header gets.
-  var END_OF_SECTION_RE = /\bend\s+of\s+section\b[.:\s]*$/i;
+  var END_OF_SECTION_RE = /[-\u2013\u2014\s]*\bend\s+of\s+section\b[-\u2013\u2014.:\s]*$/i;
 
   // opts.keepBreaks — treat every line as its own row instead of folding
   // unlabeled lines into the clause above. Only the paste path passes this;
@@ -175,14 +214,24 @@
 
   function parseLines(rawLines, opts) {
     var keepBreaks = !!(opts && opts.keepBreaks);
+    // how this document numbers itself (see "style" above)
+    var flat = rawLines.map(function (l) { return String(l).replace(/\s+/g, ' ').trim(); });
+    style = { classic: flat.some(function (l) { return /^\d{1,2}\.0\d\s/.test(l); }),
+              deep: flat.filter(function (l) { return !!deepMatch(l); }).length >= 2 };
+    if (!style.classic && !style.deep && !flat.some(function (l) { return /^\d{1,2}\.\d{1,2}\.?\s+[A-Z][a-z]+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S/.test(l); })) style.classic = true;
+    var paraAt = rawLines.map(function (l) { l = String(l); return l.charAt(0) !== PARA ? 0 : l.charAt(1) === PARA ? 2 : 1; });
     // Promote bare labels before anything else looks at the lines, so the
     // rest of the parser sees one canonical label shape. The copy also keeps
     // the END OF SECTION splice below from mutating the caller's array.
     rawLines = normaliseBareLabels(rawLines);
     var rows = [];
     for (var i = 0; i < rawLines.length; i++) {
-      var line = stripInvalid(rawLines[i]).replace(/\s+/g, ' ').trim();
+      // a bullet glyph from a symbol font is not valid text: read it as a list mark before the clean-up removes it
+      var raw = String(rawLines[i]).replace(/\s+/g, ' ').trim(), mark = /^[\uF000-\uF0FF]/.test(raw);
+      var line = stripInvalid(mark ? raw.replace(/^[\uF000-\uF0FF]\s*/, '') : raw).replace(/\s+/g, ' ').trim();
       if (!line) continue;
+      if (mark) line = '\u2022 ' + line;
+      var para = paraAt[i];
 
       var endMatch = line.match(END_OF_SECTION_RE);
       if (endMatch) {
@@ -190,7 +239,7 @@
         // so process that remainder first and let the divider follow.
         var before = line.slice(0, endMatch.index).trim();
         if (before) {
-          rawLines.splice(i + 1, 0, 'END OF SECTION');
+          rawLines.splice(i + 1, 0, 'END OF SECTION'); paraAt.splice(i + 1, 0, 0);
           line = before;
         } else {
           rows.push({ type: 'part', sr: '', spec: 'END OF SECTION' });
@@ -200,9 +249,14 @@
 
       if (startsNewItem(line)) {
         rows.push(classify(line));
+      } else if (!keepBreaks && rows.length && (rows[rows.length - 1].type === 'part' || rows[rows.length - 1].type === 'section') &&
+                 !para && headingWrap(rows[rows.length - 1], line)) {
+        // a heading in capitals that runs over two lines
+        rows[rows.length - 1].spec = (rows[rows.length - 1].spec + ' ' + line).trim();
       } else if (!keepBreaks && rows.length &&
                  rows[rows.length - 1].type !== 'part' &&
-                 rows[rows.length - 1].type !== 'section') {
+                 rows[rows.length - 1].type !== 'section' &&
+                 !(para && newParagraph(rows[rows.length - 1].spec, line, para === 2))) {
         // Wrapped continuation of the previous clause — append.
         rows[rows.length - 1].spec =
           (rows[rows.length - 1].spec + ' ' + line).trim();
@@ -221,27 +275,53 @@
     return rows;
   }
 
+  // A PDF line that starts a new paragraph on the page (see extractLinesFromTextContent) is its own row
+  // when the text above is a finished sentence and this line opens one. Anything else is a wrap.
+  // Set apart by space on the page (apart): a new row unless the text above plainly runs on into it.
+  function newParagraph(above, line, apart) {
+    if (!/^[A-Z(\u201c"']/.test(line) || line.length < 4) return false;
+    if (/[.:;)]$/.test(above)) return true;
+    return !!apart && !/(,|-|\b(and|or|of|the|to|with|for|in|by|a|an|at|as|from|be|shall|is|are|on|than|that|which|per|not))$/i.test(above);
+  }
+  function headingWrap(head, line) {
+    var t = head.spec;
+    return t.length > 20 && t === t.toUpperCase() && line === line.toUpperCase() && /[A-Z]{3}/.test(line) && line.length < 80 && !/[.:]$/.test(t);
+  }
+
   /* ======================================================================
      PDF READING
      ====================================================================== */
 
+  /* Text items to lines (items on the same baseline are one line). A line that starts a new paragraph
+     gets PARA in front (twice when both signs are there). Two signs, either is enough:
+       - the space above it is clearly larger than the usual line spacing of the page;
+       - the line above stops well short of the right edge of the text and ends a sentence.
+     parseLines decides what to do with the mark; every other reader of the lines ignores it. */
   function extractLinesFromTextContent(tc) {
     var items = tc.items.filter(function (it) { return it.str !== undefined; });
-    var lines = [];
-    var currentY = null, buf = [];
+    var lines = [], cur = null;
     items.forEach(function (it) {
-      var y = it.transform[5];
-      if (currentY === null || Math.abs(y - currentY) <= 2) {
-        buf.push(it.str);
-        currentY = currentY === null ? y : currentY;
-      } else {
-        lines.push(buf.join(''));
-        buf = [it.str];
-        currentY = y;
-      }
+      var x = it.transform[4], y = it.transform[5], right = x + (it.width || 0);
+      if (cur && Math.abs(y - cur.y) <= 2) { cur.buf.push(it.str); if (it.str.trim()) { cur.right = Math.max(cur.right, right); cur.left = Math.min(cur.left, x); } }
+      else { cur = { y: y, buf: [it.str], left: it.str.trim() ? x : Infinity, right: it.str.trim() ? right : -Infinity }; lines.push(cur); }
     });
-    if (buf.length) lines.push(buf.join(''));
-    return lines;
+    lines.forEach(function (l) { l.text = l.buf.join(''); });
+    var real = lines.filter(function (l) { return l.text.trim(); }), gaps = [], edge = 0;
+    for (var k = 1; k < real.length; k++) { var g = real[k - 1].y - real[k].y; if (g > 4) gaps.push(g); }
+    gaps.sort(function (a, b) { return a - b; });
+    var usual = gaps.length ? gaps[Math.floor(gaps.length * 0.35)] : 0;       // the common single-line step
+    var rights = real.map(function (l) { return l.right; }).filter(isFinite).sort(function (a, b) { return a - b; });
+    if (rights.length) edge = rights[Math.floor(rights.length * 0.9)];
+    var lefts = real.map(function (l) { return l.left; }).filter(isFinite);
+    var leftMost = lefts.length ? Math.min.apply(null, lefts) : 0;
+    for (k = 1; k < real.length; k++) {
+      var up = real[k - 1], me = real[k], step = up.y - me.y;
+      var spaced = usual > 0 && step > usual * 1.3 && step < usual * 6;
+      var short = edge > 0 && isFinite(up.right) && up.right < leftMost + (edge - leftMost) * 0.8 && /[.:;]\s*$/.test(up.text);
+      var blank = usual > 0 && step > usual * 1.6 && step < usual * 6;       // a clear empty line above: a list item or a new paragraph even without a full stop
+      if (step > 4 && (spaced || short)) me.para = blank ? 2 : 1;
+    }
+    return lines.map(function (l) { return (l.para === 2 ? PARA + PARA : l.para ? PARA : '') + l.text; });
   }
 
   /* Running headers and footers ("SECTION 15720", "Rev 0  12 of 32  Contract No:") sit in
@@ -251,23 +331,29 @@
      the pages. Edits pageLines in place and returns how many lines were removed. */
   var EDGE_LINES = 4;
   function dropPageFurniture(pageLines) {
-    function key(s) { return s.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(); }
+    function key(s) { return s.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(); }   // \s takes the paragraph mark too
     function edges(lines) {
       var idx = [];
       lines.forEach(function (l, i) { if (l.trim()) idx.push(i); });
       return idx.slice(0, EDGE_LINES).concat(idx.slice(-EDGE_LINES)).filter(function (v, i, a) { return a.indexOf(v) === i; });
     }
-    var count = {};
-    pageLines.forEach(function (lines) {
-      var seen = {};
-      edges(lines).forEach(function (i) { var k = key(lines[i]); if (k && !seen[k]) { seen[k] = 1; count[k] = (count[k] || 0) + 1; } });
-    });
-    var need = Math.max(3, Math.ceil(pageLines.length * 0.4)), removed = 0;
-    pageLines.forEach(function (lines, p) {
-      var drop = {};
-      edges(lines).forEach(function (i) { if (count[key(lines[i])] >= need) drop[i] = 1; });
-      pageLines[p] = lines.filter(function (l, i) { if (drop[i]) { removed++; return false; } return true; });
-    });
+    // A header of eight lines is taken off four at a time: the pass is repeated while it still finds some.
+    var removed = 0;
+    for (var pass = 0; pass < 4; pass++) {
+      var count = {}, got = 0;
+      pageLines.forEach(function (lines) {
+        var seen = {};
+        edges(lines).forEach(function (i) { var k = key(lines[i]); if (k && !seen[k]) { seen[k] = 1; count[k] = (count[k] || 0) + 1; } });
+      });
+      var need = Math.max(3, Math.ceil(pageLines.length * 0.4));
+      pageLines.forEach(function (lines, p) {
+        var drop = {};
+        edges(lines).forEach(function (i) { if (count[key(lines[i])] >= need) drop[i] = 1; });
+        pageLines[p] = lines.filter(function (l, i) { if (drop[i]) { got++; return false; } return true; });
+      });
+      removed += got;
+      if (!got) break;
+    }
     return removed;
   }
 
