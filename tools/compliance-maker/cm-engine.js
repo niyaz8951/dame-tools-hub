@@ -31,7 +31,7 @@
     letter:  /^([A-Z])\.\s+(.*)$/,                 // A.
     letter2: /^(AA|BB|CC|DD|EE|FF|GG|HH|JJ|KK|LL|MM|NN|PP|QQ|RR|SS|TT|UU|VV|WW|XX|YY|ZZ)\.\s+(.*)$/,   // after Z comes AA.
     letterLoose: /^([a-zA-Z])[.)]\s+(.*)$/,
-    roman:   /^(i{2,3}|iv|vi{1,3}|ix|xi{0,3}|II|III|IV|VI{1,3}|IX|XI{1,3})[.)]\s+(.*)$/,          // ii. iii) iv.  ("i." and "v." are letters above)
+    roman:   /^(i{2,3}|iv|vi{1,3}|ix|xi{0,3})[.)]\s+(.*)$/,          // ii. iii) iv.  ("i." and "v." are letters above)
     paren:   /^\(([a-zA-Z]|i{1,3}|iv|vi{0,3}|ix|x|\d{1,2})\)\s+(.*)$/,   // (a) (iv) (2)
     // a list mark: a bullet glyph (also the private-use ones Word fonts put in a PDF), or a dash before a capital
     bullet:  /^(?:[\u2022\u2023\u2043\u25AA\u25AB\u25CF\u25CB\u25A0\u25A1\u25E6\u2219\u00B7\u27A2\u2794\u2713\uF000-\uF0FF]\s*|[-\u2013\u2014]\s+(?=[A-Z(]))(\S.*)$/
@@ -93,23 +93,15 @@
     var m = line.match(RE.deep);
     return m && /^[A-Z(\u201c"']/.test(m[2]) ? m : null;       // a clause opens with a capital; "1.2.3 mm" does not
   }
-  // "PART 2 - PRODUCTS" is a heading. "Part I of the contract." at the start of a wrapped line is a sentence.
-  function partMatch(line) {
-    var m = line.match(RE.part);
-    if (!m) return null;
-    var rest = (m[2] || '').replace(/^[\s\-\u2013\u2014:.]+/, '');
-    if (/^PART\s/.test(line) && (!rest || /^[A-Z]/.test(rest)) && !/\b(shall|and shall|of the)\b/.test(rest)) return m;
-    return !/[.;,]$/.test(rest) && rest.split(/\s+/).length <= 6 && (!rest || /^[A-Z]/.test(rest)) && !/\b(of|shall|is|are|the)\b/i.test(rest) ? m : null;
-  }
   function startsNewItem(line) {
-    return !!partMatch(line) || !!deepMatch(line) || !!sectionMatch(line) ||
+    return RE.part.test(line) || !!deepMatch(line) || !!sectionMatch(line) ||
            RE.number.test(line) || RE.letter.test(line) || RE.letter2.test(line) ||
            RE.letterLoose.test(line) || RE.roman.test(line) || RE.paren.test(line) || RE.bullet.test(line);
   }
 
   function classify(line) {
     var m;
-    if ((m = partMatch(line)))        return { type: 'part',    sr: m[1].toUpperCase(), spec: (m[2] || '').trim() };
+    if ((m = line.match(RE.part)))    return { type: 'part',    sr: m[1].toUpperCase(), spec: (m[2] || '').trim() };
     if ((m = deepMatch(line))) {
       // "2.1.3 Cooler / Evaporator" is a sub-heading, "1.2.1 Product Data : Submit ..." is a clause
       var dtext = m[2].trim();
@@ -225,7 +217,7 @@
     var keepBreaks = !!(opts && opts.keepBreaks);
     // how this document numbers itself (see "style" above)
     var flat = rawLines.map(function (l) { return String(l).replace(/\s+/g, ' ').trim(); });
-    if (!(opts && opts.whole)) rawLines = splitInline(rawLines);        // whole: each line given is one row (a row being split by hand)
+    rawLines = splitInline(rawLines);
     flat = rawLines.map(function (l) { return String(l).replace(/\s+/g, ' ').trim(); });
     style = { classic: flat.some(function (l) { return /^\d{1,2}\.0\d\s/.test(l); }),
               deep: flat.filter(function (l) { return !!deepMatch(l); }).length >= 2 };
@@ -246,8 +238,7 @@
       if (mark) line = '\u2022 ' + line;
       var para = paraAt[i];
 
-      var endMatch = opts && opts.whole ? null : line.match(END_OF_SECTION_RE);
-      if (endMatch && endMatch.index > 0 && !/END\s+OF\s+SECTION/.test(endMatch[0])) endMatch = null;      // "... listed at the end of section." is a sentence
+      var endMatch = line.match(END_OF_SECTION_RE);
       if (endMatch) {
         // Whatever came before it on the same line is still a real clause,
         // so process that remainder first and let the divider follow.
@@ -312,24 +303,18 @@
       raw = String(raw);
       var lead = (raw.match(/^[\u2028\u2029]+/) || [''])[0], text = raw.slice(lead.length), cuts = [], m;
       var ph = text.replace(/^\s+/, '').match(/^PART\s+(\d{1,2})/i); if (ph) { partNo = +ph[1]; lastNum = ''; }
-      var head = text.replace(/^\s+/, '').match(/^(\d{1,2}(?:\.\d{1,2}){1,4})\.?\s+(?=[A-Z(])/);      // "1.5 x 2.0 metres" at the start of a wrapped line is not a label
-      // A real line (a PDF line, a pasted line of normal length) holds one clause: a number inside it is part of the
-      // sentence ("type 3.1 B", "shall not exceed 1.3 Pa"). Only a long run of text, pasted without its line
-      // breaks, is searched for the numbers that start the next clauses.
-      var blob = text.length > 320;
+      var head = text.replace(/^\s+/, '').match(/^(\d{1,2}(?:\.\d{1,2}){1,4})\.?\s/);
       if (head) { lastNum = head[1]; lastLet = ''; }
       var hl = text.replace(/^\s+/, '').match(/^\(?([a-z])\)\s/); if (hl) lastLet = hl[1];
       var re = /\s(?=PART\s+(\d{1,2})(?:\.0)?\s*[-\u2013:]?\s*[A-Z]{3})|\s(\d{1,2}(?:\.\d{1,2}){1,4})\.?\s+(?=[A-Z])|\s\(?([a-z])\)\s+(?=[A-Z])|\s(?=[\u2022\u25AA\u25CF\u25A0\uF0A7\uF0B7\uF0D8\uF0FC]\s*\S)/g;
       while ((m = re.exec(text)) !== null) {
-        if (m[1]) { if (blob) { cuts.push(m.index); partNo = +m[1]; lastNum = ''; lastLet = ''; } }
+        if (m[1]) { cuts.push(m.index); partNo = +m[1]; lastNum = ''; lastLet = ''; }
         else if (m[2]) {
-          if (!blob || /PART$/i.test(text.slice(0, m.index).trim())) continue;       // "PART 1.0 GENERAL": the number belongs to PART
           // after a PART heading the first number of that part starts the count ("PART 3 - EXECUTION 3.1 ...")
           if (lastNum ? follows(lastNum, m[2]) : (partNo && +m[2].split('.')[0] === partNo)) { cuts.push(m.index); lastNum = m[2]; lastLet = ''; }
         }
         else if (m[3]) {
           // "a) ... b) ..." in one line: a) starts the list when b) follows it
-          if (!blob) continue;
           var first = m[3] === 'a' && /\s\(?b\)\s+[A-Z]/.test(text.slice(m.index));
           if (first || (lastLet && m[3].charCodeAt(0) === lastLet.charCodeAt(0) + 1)) { cuts.push(m.index); lastLet = m[3]; }
         }
@@ -353,8 +338,7 @@
   }
   function headingWrap(head, line) {
     var t = head.spec;
-    return t.length > 20 && t === t.toUpperCase() && line === line.toUpperCase() && /[A-Z]{3}/.test(line) && line.length < 80 && !/[.:]$/.test(t) &&
-           line.split(/\s+/).length <= 7 && !/[.;]$/.test(line) && !/\b(SHALL|MUST|WILL|IS|ARE)\b/.test(line);       // a sentence in capitals is a clause, not the rest of the title
+    return t.length > 20 && t === t.toUpperCase() && line === line.toUpperCase() && /[A-Z]{3}/.test(line) && line.length < 80 && !/[.:]$/.test(t);
   }
 
   /* ======================================================================
@@ -448,11 +432,7 @@
      the pages. Edits pageLines in place and returns how many lines were removed. */
   var EDGE_LINES = 4;
   function dropPageFurniture(pageLines) {
-    function key(s) {   // \s takes the paragraph mark too
-      var t = s.replace(/\s+/g, ' ').trim();
-      if (/^(\d{1,2}(\.\d{1,2}){0,4}[.)]|\(?[A-Za-z]{1,2}[.)]|[ivxIVX]{1,4}[.)])$/.test(t)) return '';      // "1." or "a)" alone on a line is a clause label, never page furniture
-      return t.replace(/\d+/g, '#').toLowerCase();
-    }
+    function key(s) { return s.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(); }   // \s takes the paragraph mark too
     function edges(lines) {
       var idx = [];
       lines.forEach(function (l, i) { if (l.trim()) idx.push(i); });

@@ -2470,35 +2470,13 @@ end $$;
 -- Save the answer typed on the website for one row of a record. Same rule as the filled Excel:
 -- equal to the library answer = nothing more to do; anything else waits for review.
 -- Both fields empty takes the project's own answer away (the library answer shows again).
--- ---------- The row a page means ----------
--- A page names a row by its number (seq). Split and Join move the numbers, so a page that was opened
--- before someone rearranged the record would write on the wrong clause. Every call that writes on a
--- row therefore also sends p_check: the first 40 letters and digits of the clause as the page shows
--- it. When that is not the row's text any more, nothing is written and the user is told to reload.
--- p_check null = no check (calls made inside the database).
-create or replace function public.pr__check_row(p_spec text, p_check text) returns void
-language plpgsql immutable as $$
-begin
-  if p_check is not null and left(regexp_replace(lower(coalesce(p_spec, '')), '[^a-z0-9]+', '', 'g'), 40) is distinct from p_check then
-    raise exception 'The rows of this record were changed since you opened it. Reload the page; nothing was saved on this row.' using errcode = 'P0001';
-  end if;
-end $$;
--- earlier shapes of these functions (without p_check): removed so the names stay unambiguous
-drop function if exists public.pr_run_save_line(text, uuid, int, text, text);
-drop function if exists public.pr_run_fill_section(text, uuid, int, text, boolean);
-drop function if exists public.pr_run_save_comment(text, uuid, int, text);
-drop function if exists public.pr_run_save_review(text, uuid, int, text);
-drop function if exists public.pr_run_split(text, uuid, int, jsonb);
-drop function if exists public.pr_run_join(text, uuid, int);
-drop function if exists public.pr_review_decide(text, uuid, int, text, text, text);
-
 -- ---------- Filling a project record: a whole section at once, and Internal Comments from the reviewers ----------
 
 -- One Compliance answer for every clause of a section: the rows after the heading p_seq (a section
 -- row) down to the next section or PART row. Remarks are left as they are. p_replace false = only the
 -- clauses that show no answer yet (neither the user's own nor one from the library).
 -- p_compliance '' takes the answers typed in this project off the section again (library answers show again).
-create or replace function public.pr_run_fill_section(p_token text, p_run_id uuid, p_seq int, p_compliance text, p_replace boolean default false, p_check text default null)
+create or replace function public.pr_run_fill_section(p_token text, p_run_id uuid, p_seq int, p_compliance text, p_replace boolean default false)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -2511,7 +2489,6 @@ begin
   perform public.pr__project(u, r.project_id);
   select * into h from public.cm_run_lines where run_id = r.id and seq = p_seq;
   if h.run_id is null or h.type <> 'section' then perform public.app__fail('That row is not a section heading. Reload the page.'); end if;
-  perform public.pr__check_row(h.spec_text, p_check);
   select coalesce(min(seq), 2147483647) into v_end from public.cm_run_lines
    where run_id = r.id and seq > p_seq and type in ('section', 'part');
   for x in
@@ -2523,12 +2500,12 @@ begin
      order by rl.seq
   loop
     if c = '' then
-      if x.own then perform public.pr_run_save_line(p_token, r.id, x.seq, '', '', null); n := n + 1; end if;
+      if x.own then perform public.pr_run_save_line(p_token, r.id, x.seq, '', ''); n := n + 1; end if;
       continue;
     end if;
     if (x.own or x.lib) and not coalesce(p_replace, false) then v_skipped := v_skipped + 1; continue; end if;
     -- the remarks the row shows now stay with it
-    perform public.pr_run_save_line(p_token, r.id, x.seq, c, case when x.own then x.remarks when x.lib then x.lib_remarks else '' end, null);
+    perform public.pr_run_save_line(p_token, r.id, x.seq, c, case when x.own then x.remarks when x.lib then x.lib_remarks else '' end);
     n := n + 1;
   end loop;
   return jsonb_build_object('ok', true, 'filled', n, 'kept', v_skipped);
@@ -2538,7 +2515,7 @@ end $$;
 -- clause (cm_lines.comments): the same text shows in Compliance review and beside the clause in
 -- every project that has it. Only people who may edit the library (admins, the super user, users
 -- with "Can edit" for the Compliance Maker) and can open the project.
-create or replace function public.pr_run_save_comment(p_token text, p_run_id uuid, p_seq int, p_comments text, p_check text default null)
+create or replace function public.pr_run_save_comment(p_token text, p_run_id uuid, p_seq int, p_comments text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare u public.app_users; r public.cm_runs; rl public.cm_run_lines;
@@ -2549,7 +2526,6 @@ begin
   perform public.pr__project(u, r.project_id);
   select * into rl from public.cm_run_lines where run_id = r.id and seq = p_seq;
   if rl.run_id is null or rl.line_id is null then perform public.app__fail('That row cannot carry a comment.'); end if;
-  perform public.pr__check_row(rl.spec_text, p_check);
   update public.cm_lines set comments = left(trim(coalesce(p_comments, '')), 4000) where id = rl.line_id;
   return jsonb_build_object('ok', true);
 end $$;
@@ -2557,7 +2533,7 @@ end $$;
 -- TL Review on one clause of a project record. Only admins of the Projects tile and the super user
 -- write it; everyone who can open the record reads it. It never leaves the project: not in the
 -- library, not in the Excel.
-create or replace function public.pr_run_save_review(p_token text, p_run_id uuid, p_seq int, p_text text, p_check text default null)
+create or replace function public.pr_run_save_review(p_token text, p_run_id uuid, p_seq int, p_text text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare u public.app_users; r public.cm_runs;
@@ -2567,7 +2543,6 @@ begin
   select * into r from public.cm_runs where id = p_run_id;
   if r.id is null or r.project_id is null then perform public.app__fail('That compliance record is not in a project.'); end if;
   perform public.pr__project(u, r.project_id);
-  perform public.pr__check_row((select spec_text from public.cm_run_lines where run_id = r.id and seq = p_seq), p_check);
   update public.cm_run_lines set tl_review = left(trim(coalesce(p_text, '')), 4000)
    where run_id = r.id and seq = p_seq and type in ('letter', 'number', 'text');
   if not found then perform public.app__fail('That row cannot carry a review. Reload the page.'); end if;
@@ -2612,7 +2587,7 @@ begin
   update public.cm_run_lines rl set review = 'pending', reviewed_by = null, reviewed_at = null
     from public.cm_runs r
    where r.id = rl.run_id and r.product_id = p_product and (p_factory is null or r.factory_id = p_factory)
-     and (rl.compliance <> '' or rl.remarks <> '') and rl.line_id is not null and rl.review in ('', 'approved');
+     and (rl.compliance <> '' or rl.remarks <> '') and rl.line_id is not null and rl.review <> 'pending';
   return jsonb_build_object('ok', true, 'lines_removed', v_gone, 'lines_kept', v_cleared, 'history_removed', v_runs, 'records_removed', v_records);
 end $$;
 
@@ -2657,10 +2632,6 @@ begin
          unique_count = (select count(distinct line_id) from public.cm_run_lines where run_id = r.id)
    where id = r.id;
   perform public.cm__fill_structure(r.id);
-  -- the library keeps the reading order of the record a clause came from: follow the new row numbers
-  update public.cm_lines l set home_seq = x.seq
-    from (select line_id, min(seq) as seq from public.cm_run_lines where run_id = r.id and line_id is not null group by line_id) x
-   where l.id = x.line_id and l.home_run = r.id and l.home_seq is distinct from x.seq;
   if not exists (select 1 from public.pr_log g where g.project_id = r.project_id and g.user_id = u.id
                     and g.action = 'Rows split or joined' and g.detail = coalesce(nullif(r.file_name, ''), 'pasted text')
                     and g.created_at > now() - interval '1 hour') then
@@ -2670,7 +2641,7 @@ end $$;
 
 -- Split one row into several. p_rows: [{ "type", "sr", "spec" }, ...] in order, at least two.
 -- The first keeps the label, the type and the answer of the row; the others are new rows after it.
-create or replace function public.pr_run_split(p_token text, p_run_id uuid, p_seq int, p_rows jsonb, p_check text default null)
+create or replace function public.pr_run_split(p_token text, p_run_id uuid, p_seq int, p_rows jsonb)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -2683,7 +2654,6 @@ begin
   perform public.pr__project(u, r.project_id);
   select * into rl from public.cm_run_lines where run_id = r.id and seq = p_seq;
   if rl.run_id is null then perform public.app__fail('That row no longer exists. Reload the page.'); end if;
-  perform public.pr__check_row(rl.spec_text, p_check);
   if p_rows is null or jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) < 2 then
     perform public.app__fail('Press Enter where a new row should start, at least once.');
   end if;
@@ -2733,7 +2703,7 @@ end $$;
 
 -- Join a row to the row above it. The row above keeps its label and type; its own answer wins,
 -- otherwise the answer of the joined row is kept. Headings (PART rows) are not joined.
-create or replace function public.pr_run_join(p_token text, p_run_id uuid, p_seq int, p_check text default null)
+create or replace function public.pr_run_join(p_token text, p_run_id uuid, p_seq int)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -2747,13 +2717,7 @@ begin
   select * into a from public.cm_run_lines where run_id = r.id and seq = p_seq - 1;
   if b.run_id is null or a.run_id is null then perform public.app__fail('There is no row above to join to. Reload the page.'); end if;
   if a.type = 'part' or b.type = 'part' then perform public.app__fail('A PART row cannot be joined.'); end if;
-  perform public.pr__check_row(b.spec_text, p_check);
-  -- a heading cannot hold an answer: the answer on the row would be lost without a word
-  if a.type = 'section' and (b.compliance <> '' or b.remarks <> '' or b.tl_review <> '') then
-    perform public.app__fail('The row above is a heading and cannot keep this row''s answer or review. Take them off this row first, or join the other way.');
-  end if;
-  v_spec := trim(a.spec_text || ' ' || case when b.sr <> '' and b.sr <> chr(8226) then b.sr || ' ' else '' end || b.spec_text);
-  if length(v_spec) > 6000 then perform public.app__fail('Together these two rows are too long for one row.'); end if;
+  v_spec := left(trim(a.spec_text || ' ' || case when b.sr <> '' and b.sr <> chr(8226) then b.sr || ' ' else '' end || b.spec_text), 6000);
   v_line := case when a.type in ('letter','number','text') then public.pr__run_line(r, v_spec) else null end;
   keep_b := v_line is not null and a.compliance = '' and a.remarks = '' and (b.compliance <> '' or b.remarks <> '');
   update public.cm_run_lines set spec_text = v_spec, line_id = v_line,
@@ -2774,7 +2738,7 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
-create or replace function public.pr_run_save_line(p_token text, p_run_id uuid, p_seq int, p_compliance text, p_remarks text, p_check text default null)
+create or replace function public.pr_run_save_line(p_token text, p_run_id uuid, p_seq int, p_compliance text, p_remarks text)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -2788,7 +2752,6 @@ begin
   perform public.pr__project(u, r.project_id);
   select * into rl from public.cm_run_lines where run_id = r.id and seq = p_seq;
   if rl.run_id is null or rl.line_id is null then perform public.app__fail('That row cannot be answered.'); end if;
-  perform public.pr__check_row(rl.spec_text, p_check);
   select * into l from public.cm_lines where id = rl.line_id;
   if c = '' and m = '' then
     update public.cm_run_lines set compliance = '', remarks = '', answered_by = null, answered_at = null,
@@ -2856,8 +2819,7 @@ end $$;
 -- Approve (the answer, as given or as corrected here, becomes the library's answer for that
 -- clause and factory) or reject (it stays in the user's project only).
 create or replace function public.pr_review_decide(
-  p_token text, p_run_id uuid, p_seq int, p_decision text, p_compliance text default null, p_remarks text default null,
-  p_line_id uuid default null)       -- the library line the reviewer was looking at; another line means the rows moved
+  p_token text, p_run_id uuid, p_seq int, p_decision text, p_compliance text default null, p_remarks text default null)
 returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -2867,9 +2829,6 @@ begin
   a := public.app__require_editor(p_token, 'compliance-maker');
   select * into rl from public.cm_run_lines where run_id = p_run_id and seq = p_seq;
   if rl.run_id is null or rl.line_id is null or rl.review = '' then perform public.app__fail('That answer is no longer waiting for review.'); end if;
-  if p_line_id is not null and rl.line_id is distinct from p_line_id then
-    perform public.app__fail('The rows of that specification were changed since this page was opened. Reload the page and decide again.');
-  end if;
   select * into r from public.cm_runs where id = rl.run_id;
   if p_decision = 'approve' then
     v_c := left(trim(coalesce(p_compliance, rl.compliance)), 200);

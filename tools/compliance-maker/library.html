@@ -243,7 +243,7 @@
       var wait = a.review === "pending";
       function decide(decision, btn) {
         btn.disabled = true;
-        Api.prReviewDecide(Hub.token(), { run: a.run, seq: a.seq, decision: decision, lineId: l.id }).then(function () {
+        Api.prReviewDecide(Hub.token(), { run: a.run, seq: a.seq, decision: decision }).then(function () {
           Hub.toast(decision === "approve" ? "Taken into the library." : "Left in its project only."); loadLines();
         }, function (err) { btn.disabled = false; fail(err); });
       }
