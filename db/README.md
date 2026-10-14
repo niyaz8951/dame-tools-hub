@@ -20,7 +20,7 @@ missing and replaces the functions with the current ones.
 |---|---|---|
 | Users, sessions, tiles, tools | `app_*` | `app_*` |
 | Compliance Maker library | `cm_*` | `cm_*` |
-| Datasheet Notes row mapping | `dn_*` | `dn_*` |
+| Row mapping (read by Datasheet Notes, edited in Product Options) | `dn_*` | `dn_*` |
 | Product Options | `po_*` | `po_*` |
 | Projects, review, history | `pr_*` | `pr_*` |
 | Maps (product knowledge trees) | `mp_*` | `mp_*` |

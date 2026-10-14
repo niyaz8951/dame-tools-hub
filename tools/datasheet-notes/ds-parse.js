@@ -13,7 +13,7 @@
 
    Rule: the reader adds and assumes nothing. Every value is text
    printed on the datasheet; wording is changed only by the admin's
-   row mapping (Datasheet Notes > Row mapping). The reader rearranges
+   row mapping (Product Options > Row mapping). The reader rearranges
    three things:
    - "A • B" labels with "x • y" values become one row each
    - two filters printed in one section are shown as Filter 1 / Filter 2

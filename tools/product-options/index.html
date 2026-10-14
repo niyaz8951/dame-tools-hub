@@ -12,6 +12,7 @@
 <script src="../../assets/js/hub.js"></script>
 <style>
   .po-pick { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
+  .po-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .po-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .po-facts { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -106,12 +107,15 @@
   <div class="page-head">
     <p class="small"><a href="../../dashboard.html#general">&larr; General</a></p>
     <h1>Product Options</h1>
-    <p>What each factory has offered so far: sections, components and their options, from the datasheets run in Datasheet Notes, plus special options and notes from the team.</p>
+    <p>What each factory has offered so far: sections, components and their options, from the datasheets run in Datasheet Notes, plus special options and notes from the team. The rows and their wording follow the product's row mapping, which is the same for every factory and every user.</p>
   </div>
 
   <div class="stack">
     <section class="card stack" aria-labelledby="h-pick">
-      <h2 id="h-pick">Product and factory</h2>
+      <div class="po-head">
+        <h2 id="h-pick">Product and factory</h2>
+        <a class="btn ghost sm" id="po-mapping" href="mapping.html" hidden>Row mapping</a>
+      </div>
       <div class="po-pick">
         <label class="field"><span>Product</span>
           <select class="input" id="po-product" disabled><option value="">Loading…</option></select></label>
@@ -141,7 +145,7 @@
       <div class="notice error" id="po-error" role="alert" hidden></div>
       <div class="empty" id="po-empty" hidden></div>
       <div id="po-tree-host"></div>
-      <p class="hint">Values are as printed on the datasheets run so far, for rows the row mapping shows. "Seen n times" is how often the value turned up; a datasheet run again is counted again.
+      <p class="hint">Values are as printed on the datasheets run so far, for the rows the product's row mapping shows (one mapping per product, the same for every factory and every user). "Seen n times" is how often the value turned up; a datasheet run again is counted again.
         A value not listed here is not known yet, it does not mean the factory cannot offer it. Confirm special requests with the factory.</p>
     </section>
   </div>

@@ -68,10 +68,7 @@
   <div class="stack">
     <!-- 1. selection -->
     <section class="card stack" aria-labelledby="h-unit">
-      <div class="dn-head">
-        <h2 id="h-unit">Project and product</h2>
-        <a class="btn ghost sm" id="dn-manage" href="mapping.html" hidden>Row mapping</a>
-      </div>
+      <h2 id="h-unit">Project and product</h2>
       <div class="dn-grid">
         <label class="field" data-project-box hidden><span>Project</span>
           <select class="input" id="dn-project" disabled><option value="">Loading…</option></select></label>
@@ -97,7 +94,7 @@
         <button type="button" class="btn ghost sm" id="dn-cancel" hidden>Cancel</button>
       </div>
       <div class="notice warn" id="dn-map-note" hidden></div>
-      <p class="hint">The PDF is read on your computer and is not uploaded. The table made from it is saved in the project. New section and row names go to the admins' mapping list, and the values of the mapped rows go to the Product Options list of the factory. The Product Options list never takes the project name, reference or unit tag.</p>
+      <p class="hint">The PDF is read on your computer and is not uploaded. The table made from it is saved in the project. New section and row names go to the product's row mapping (kept in Product Options, one list per product for every factory and every user), and the values of the mapped rows go to the Product Options tree of the factory. The Product Options list never takes the project name, reference or unit tag.</p>
     </section>
 
     <!-- 3. result -->
@@ -120,7 +117,7 @@
         <label class="check" id="dn-only-wrap"><input type="checkbox" id="dn-only"> Only rows that differ</label>
       </div>
       <div class="notice warn" id="dn-warn" hidden></div>
-      <div class="empty" id="dn-empty" hidden>The row mapping for this product leaves out every row of this datasheet. Ask an admin to check the row mapping.</div>
+      <div class="empty" id="dn-empty" hidden>The row mapping for this product leaves out every row of this datasheet. Ask an admin to check the row mapping in Product Options.</div>
       <div class="table-wrap dn-preview" id="dn-table" tabindex="0" role="region" aria-labelledby="h-result">
         <table class="table">
           <colgroup id="dn-cols"></colgroup>
@@ -128,7 +125,7 @@
           <tbody id="dn-body"></tbody>
         </table>
       </div>
-      <p class="hint">Rows and wording follow the row mapping set by the admins for this product; values come from the datasheet.
+      <p class="hint">Rows and wording follow the product's row mapping (Product Options > Row mapping), the same for every factory and every user; values come from the datasheet.
         Remarks stay empty for you to fill in Excel. Check the table against the datasheet before sending it out.</p>
     </section>
   </div>

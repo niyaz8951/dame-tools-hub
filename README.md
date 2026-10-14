@@ -32,7 +32,7 @@ Demo data lives in your browser only and is not secure. It is for looking around
 
 - Anyone can fill "Request access". The request stays Pending until an admin approves it.
 - On approval the admin ticks which team tiles the person can open. General is open to every approved user.
-- "Can edit" on the Users tab gives one user write access to one tool's edit screen (Compliance library, Datasheet row mapping) without making them an admin.
+- "Can edit" on the Users tab gives one user write access to one tool's edit screen (Compliance library, Product Options with its row mapping, Maps) without making them an admin.
 - Three roles: **Super user** (one account, the owner: roles, deleting users, tools and tiles), **Admin** (approve users, tile access, edit rights; edits every tool), **User**. Admins cannot change roles or other admins.
 - Admin page > Tools (super user): add a tool, choose its tile, set it Live / Coming soon / Hidden, tick "Has an edit screen" if users can be given edit access to it.
 - Admin page > Team tiles (super user): add more tiles later (no code change needed).

@@ -9,7 +9,8 @@
    column, headed by its unit tag. The power supply is read from
    the datasheet (Fan Supply under Electrical Power Inputs Data).
    Which rows appear and what they say follows the admin's row
-   mapping for the chosen product (Api.dnRules, edited in mapping.html).
+   mapping for the chosen product (Api.dnRules, edited by Product Options editors on
+   tools/product-options/mapping.html; one mapping per product, every factory, every user).
    Row names the mapping has not seen are added to it (Api.dnAddRows).
    Products and factories come from the same list the Compliance
    Maker uses (Api.cmOptions).
@@ -339,7 +340,6 @@
 
   /* ---------- start ---------- */
   window.Hub.requireLogin({ tool: 'datasheet-notes' }).then(function (profile) {
-    if (window.Hub.canEdit(profile, 'datasheet-notes')) $('dn-manage').hidden = false;
     // a table belongs to the project it was read for: changing the project clears it
     var first = true;
     window.PRPick.attach({ select: $('dn-project'), hint: $('dn-project-hint'), profile: profile,

@@ -112,7 +112,7 @@
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v11", mem = null;
+  var KEY = "dame_hub_demo_db_v12", mem = null;
   function seed() {
     return {
       users: [
@@ -130,7 +130,7 @@
       tools: [
         { id: "projects", category_id: "general", name: "Projects", description: "Open a project to convert specifications and read datasheets. Everything is saved under it.", path: "tools/projects/", status: "live", sort: 5 },
         { id: "compliance-maker", project_tool: true, category_id: "general", name: "Compliance Maker", description: "Turn a specification PDF into a ready-to-fill compliance matrix in Excel.", path: "tools/compliance-maker/", status: "live", sort: 10, editable: true },
-        { id: "datasheet-notes", project_tool: true, category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: true },
+        { id: "datasheet-notes", project_tool: true, category_id: "general", name: "Datasheet Notes", description: "Turn a product datasheet PDF into an Excel table of unit data, sections and options.", path: "tools/datasheet-notes/", status: "live", sort: 15, editable: false },
         { id: "product-options", project_tool: true, category_id: "general", name: "Product Options", description: "See the sections, options and notes each factory offers, built from the datasheets run so far.", path: "tools/product-options/", status: "live", sort: 17, editable: true },
         { id: "coil-data-extractor", category_id: "general", name: "Coil Data Extractor", description: "Turn coil selection quotations in Word or PDF into one Excel table, one row per coil.", path: "tools/coil-data-extractor/", status: "live", sort: 20 },
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
@@ -679,7 +679,7 @@
       db.dn[f.id] = m; return { ok: true, added: added };
     }),
     dnAdminSaveRules: demo(function (db, t, d) {
-      editor(db, t, "datasheet-notes"); var f = dnProduct(db, d.productId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;
+      editor(db, t, "product-options"); var f = dnProduct(db, d.productId), rules = d.rules || [], remove = d.remove || [], seen = {}, saved = 0;   // the mapping is kept in Product Options
       if (rules.length > 3000) fail("Too many rows to save in one go (more than 3000).");
       rules.forEach(function (r) {
         var k = String(r.key || "").trim();

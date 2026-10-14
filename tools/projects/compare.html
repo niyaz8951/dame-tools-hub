@@ -153,7 +153,7 @@
       [project.name, m.runs.length + (m.runs.length === 1 ? " specification" : " specifications"), columns.length + (columns.length === 1 ? " unit" : " units"), factory ? factory + " factory" : ""]
         .filter(Boolean).forEach(function (x) { facts.appendChild(el("span", { "class": "badge", text: x })); });
       var found = table.filter(function (r) { return r.found; }).length;
-      if (!m.keyed) { $("cp-note").hidden = false; $("cp-note").textContent = "No row of the " + productName + " mapping has keywords yet, so no requirement can be found. An editor adds them in Datasheet Notes > Row mapping."; }
+      if (!m.keyed) { $("cp-note").hidden = false; $("cp-note").textContent = "No row of the " + productName + " mapping has keywords yet, so no requirement can be found. An editor adds them in Product Options > Row mapping."; }
       $("cp-only").checked = found > 0; $("cp-only").disabled = !found;
       $("cp-loading").hidden = true; $("cp-main").hidden = false;
       draw();

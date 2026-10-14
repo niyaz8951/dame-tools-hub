@@ -166,7 +166,10 @@ insert into public.app_tools (id, category_id, name, description, path, status, 
    'Short summaries of the standards named in AHU, FCU and chiller specifications.',
    'tools/standards/', 'live', 60)
 on conflict (id) do nothing;
-update public.app_tools set editable = true where id in ('compliance-maker', 'datasheet-notes');
+update public.app_tools set editable = true where id = 'compliance-maker';
+-- Datasheet Notes has no edit screen of its own: its row mapping is kept in Product Options (see the
+-- Product Options block below).
+update public.app_tools set editable = false where id = 'datasheet-notes';
 
 -- An existing site had one 'admin' created by app_bootstrap_admin: that account becomes the superuser.
 -- (To move it later, run in the SQL Editor:  select public.app_set_superuser('username');)
@@ -1569,7 +1572,9 @@ begin
   return jsonb_build_object('ok', true, 'added', v_added);
 end $$;
 
--- Save the mapping for one product (admins, and users given edit access to datasheet-notes).
+-- Save the mapping for one product (admins, and users given edit access to Product Options: the
+-- mapping is one list per product, the same for every factory and every user, and is edited on
+-- tools/product-options/mapping.html).
 --   p_rules:  [{ "key", "section", "sub", "component", "show", "label", "strip", "response" }, ...] in display order.
 --             Rows already stored and not in the list are kept as they are.
 --   p_remove: ["key", ...] rules to delete.
@@ -1582,7 +1587,7 @@ declare
   v_product text;
   v_saved int := 0; v_removed int := 0;
 begin
-  u := public.app__require_editor(p_token, 'datasheet-notes');
+  u := public.app__require_editor(p_token, 'product-options');
   v_product := public.dn__product(p_product_id);
   p_rules  := coalesce(p_rules,  '[]'::jsonb);
   p_remove := coalesce(p_remove, '[]'::jsonb);
@@ -1723,6 +1728,17 @@ insert into public.app_tools (id, category_id, name, description, path, status, 
    'tools/product-options/', 'live', 17)
 on conflict (id) do nothing;
 update public.app_tools set editable = true where id = 'product-options';
+
+-- 14 Oct 2026: the row mapping moved from Datasheet Notes to Product Options. It was always one
+-- list per product; now it is also edited in one place, by Product Options editors, and applies
+-- to every user. Anyone who had "Can edit" for Datasheet Notes becomes a Product Options editor
+-- once, so nobody loses the right; the old grant is then dropped (the tool is no longer editable).
+insert into public.app_tool_editors (user_id, tool_id, granted_by, granted_at)
+select e.user_id, 'product-options', e.granted_by, e.granted_at
+  from public.app_tool_editors e
+ where e.tool_id = 'datasheet-notes'
+on conflict (user_id, tool_id) do nothing;
+delete from public.app_tool_editors where tool_id = 'datasheet-notes';
 
 -- Rows that describe one project, not the product: never stored.
 create or replace function public.po__skip(p_row_key text) returns boolean

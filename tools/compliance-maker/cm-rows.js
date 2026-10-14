@@ -7,7 +7,7 @@
    Component rows the datasheet table has, with the specification
    clause that talks about each row beside it. No AI: a clause is
    found by the keywords an editor typed for the row on the
-   Datasheet Notes > Row mapping screen.
+   Product Options > Row mapping screen.
 
    Matching rule (CMRows.match):
    - Keywords are entries separated by ";". An entry matches a clause
@@ -217,7 +217,7 @@
       var found = table.filter(function (r) { return r.found; }).length;
       var withKeys = table.filter(function (r) { return r.keywords; }).length;
       note.textContent = !withKeys
-        ? 'No row has keywords yet, so nothing can be found. An editor adds them in Datasheet Notes > Row mapping.'
+        ? 'No row has keywords yet, so nothing can be found. An editor adds them in Product Options > Row mapping.'
         : found + ' of ' + rowsN + ' datasheet rows found in this specification (' + withKeys + (withKeys === 1 ? ' row has' : ' rows have') + ' keywords). ' +
           'Rows that are not found stay empty. Check each clause: it is found by keywords, not by meaning.';
       only.checked = found > 0;

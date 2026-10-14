@@ -521,7 +521,7 @@
       note.hidden = false;
       note.textContent = !m.hasNotes ? "No " + run.product + " datasheet in this project yet. Read one and its values appear beside the clauses that ask about them; the Excel gets them on its second sheet."
         : n ? n + (n === 1 ? " clause has" : " clauses have") + " the datasheet value beside " + (n === 1 ? "it" : "them") + " (blue chips). Found by the row keywords, not by meaning: read before you rely on it."
-        : "The datasheet is in the project, but no clause matched a row keyword. An editor adds keywords in Datasheet Notes > Row mapping.";
+        : "The datasheet is in the project, but no clause matched a row keyword. An editor adds keywords in Product Options > Row mapping.";
       // the datasheet chips need a redraw; never while the user is typing in a box of the table
       if (n && !CMFocus.isOpen()) settled().then(function () {
         var a = document.activeElement;

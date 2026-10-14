@@ -3,11 +3,15 @@
    A tree per product and factory: section > component > the values
    seen on the datasheets run in Datasheet Notes (Api.poTree), plus
    special options and notes added by editors.
-   Only rows the Datasheet Notes row mapping shows are in the tree;
-   the database decides that (po_get_tree), the page only draws it.
-   Editors (admins, and users with "Can edit" for product-options)
-   get the Edit switch: add / change / delete special options and
-   notes, take a value or a row out of the tree and bring it back.
+   Only rows the product's row mapping shows are in the tree; the
+   database decides that (po_get_tree), the page only draws it.
+   The row mapping is one list per product, the same for every
+   factory and every user (Datasheet Notes, this tree, the project
+   pages all read it). Editors (admins, and users with "Can edit"
+   for product-options) maintain it on mapping.html, reached by the
+   Row mapping button, and get the Edit switch on the tree: add /
+   change / delete special options and notes, take a value or a row
+   out of the tree and bring it back.
    FCU: the values come per unit model (tree.models). Each series is
    one table: rows = section > component, one column per model with
    the values its units had, differences from the first model
@@ -28,7 +32,7 @@
 
   var productSel = $('po-product'), factorySel = $('po-factory'), search = $('po-search');
   var hint = $('po-hint'), result = $('po-result'), host = $('po-tree-host');
-  var products = [], tree = null, canEdit = false, closed = {}, expanded = {}, loadNo = 0;
+  var products = [], tree = null, canEdit = false, closed = {}, expanded = {}, loadNo = 0, mapper = false;
 
   function option(v, t) { return el('option', { value: v, text: t }); }
   function product() { return products.filter(function (p) { return p.id === productSel.value; })[0] || null; }
@@ -47,7 +51,17 @@
     if (p.factories.length === 1) factorySel.value = p.factories[0].id;
     else if (wanted && p.factories.some(function (f) { return f.id === wanted; })) factorySel.value = wanted;
   }
-  productSel.addEventListener('change', function () { fillFactories(); load(); });
+  /* Row mapping button (editors only): opens the mapping of the product shown here. The mapping
+     is per product, so the button needs a product, not a factory. */
+  function mappingLink() {
+    var a = $('po-mapping'), p = product();
+    a.hidden = !mapper;
+    a.href = 'mapping.html' + (p ? '?product=' + encodeURIComponent(p.id) : '');
+    a.title = p ? 'Which datasheet rows are used for ' + p.name + ' and what each says. Same for every factory and every user.' : 'Choose a product first';
+    if (!p) a.setAttribute('aria-disabled', 'true'); else a.removeAttribute('aria-disabled');
+  }
+  $('po-mapping').addEventListener('click', function (e) { if (!product()) { e.preventDefault(); productSel.focus(); window.Hub.toast('Choose a product first.'); } });
+  productSel.addEventListener('change', function () { fillFactories(); mappingLink(); load(); });
   factorySel.addEventListener('change', load);
 
   function load(keep) {
@@ -544,7 +558,8 @@
   });
 
   /* ---------- start ---------- */
-  window.Hub.requireLogin({ tool: TOOL }).then(function () {
+  window.Hub.requireLogin({ tool: TOOL }).then(function (profile) {
+    mapper = window.Hub.canEdit(profile, TOOL);      // the database decides; this only shows the button
     return Api.cmOptions(window.Hub.token());
   }).then(function (res) {
     products = res.products || [];
@@ -558,6 +573,7 @@
     if (products.length === 1) productSel.value = products[0].id;
     else if (products.some(function (p) { return p.id === last.p; })) productSel.value = last.p;
     fillFactories(last.f);
+    mappingLink();
     load();
   }, function (err) {
     productSel.textContent = ''; productSel.appendChild(option('', 'Could not load'));
