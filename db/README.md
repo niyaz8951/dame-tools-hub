@@ -12,7 +12,7 @@ There is one file to run: `schema.sql`.
 3. "Success. No rows returned" means it is done.
 
 It is safe to run again at any time. It never deletes users, access rights,
-library lines, row mappings, product options or projects. It only adds what is
+library lines, row mappings, product options, projects or maps. It only adds what is
 missing and replaces the functions with the current ones.
 
 ## What is in it, in order
@@ -23,6 +23,7 @@ missing and replaces the functions with the current ones.
 | Datasheet Notes row mapping | `dn_*` | `dn_*` |
 | Product Options | `po_*` | `po_*` |
 | Projects, review, history | `pr_*` | `pr_*` |
+| Maps (product knowledge trees) | `mp_*` | `mp_*` |
 | Permissions (last) | | closes every table, opens only the public functions |
 
 The order matters: a later part uses the tables of the earlier ones. A new
@@ -52,5 +53,8 @@ An admin's powers below apply on his own tiles only.
 | See every user's projects | yes | yes (General) | | |
 | Share a project with other users | yes (any) | yes (General: any) | yes (projects he created) | |
 | Create projects, work in own and shared projects | yes | yes | yes | yes |
+| Make maps; change own maps and maps shared as "Team can edit" | yes | yes | yes | yes (with the Maps tool) |
+| Change, re-share or delete any shared map | yes | yes (tile of Maps) | yes (Maps) | own maps only |
+| Open a private map | owner only | owner only | owner only | owner only |
 
 The super user is set once, in the SQL Editor: `select public.app_set_superuser('<username>');`

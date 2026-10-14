@@ -90,17 +90,36 @@
     prReviewList: function (t, d) { return rpc("pr_review_list", { p_token: t, p_status: (d && d.status) || "pending", p_limit: (d && d.limit) || 100, p_offset: (d && d.offset) || 0 }); },
     prReviewDecide: function (t, d) { return rpc("pr_review_decide", { p_token: t, p_run_id: d.run, p_seq: d.seq, p_decision: d.decision, p_compliance: d.compliance == null ? null : d.compliance, p_remarks: d.remarks == null ? null : d.remarks, p_line_id: d.lineId || null }); },
     prAdminSummary: function (t) { return rpc("pr_admin_summary", { p_token: t }); },
+    // Maps (product knowledge as a tree: branches, notes, special notes, links, images)
+    mpList: function (t) { return rpc("mp_list", { p_token: t }); },
+    mpCreate: function (t, d) { return rpc("mp_create", { p_token: t, p_name: d.name, p_share: d.share || "private" }); },
+    mpGet: function (t, id) { return rpc("mp_get", { p_token: t, p_map_id: id }); },
+    mpMapSave: function (t, d) { return rpc("mp_map_save", { p_token: t, p_map_id: d.id, p_name: d.name == null ? null : d.name, p_share: d.share == null ? null : d.share }); },
+    mpDelete: function (t, id) { return rpc("mp_delete", { p_token: t, p_map_id: id }); },
+    mpNodeAdd: function (t, parentId, title) { return rpc("mp_node_add", { p_token: t, p_parent_id: parentId, p_title: title }); },
+    mpNodeSave: function (t, id, patch) { return rpc("mp_node_save", { p_token: t, p_node_id: id, p_patch: patch }); },
+    mpNodeVerify: function (t, d) { return rpc("mp_node_verify", { p_token: t, p_node_id: d.id, p_verified: d.verified !== false, p_deep: !!d.deep }); },
+    mpNodeMove: function (t, id, dir) { return rpc("mp_node_move", { p_token: t, p_node_id: id, p_dir: dir }); },
+    mpNodeDelete: function (t, id) { return rpc("mp_node_delete", { p_token: t, p_node_id: id }); },
+    mpImport: function (t, parentId, items) { return rpc("mp_import", { p_token: t, p_parent_id: parentId, p_items: items }); },
+    mpNodeImages: function (t, nodeId) { return rpc("mp_node_images", { p_token: t, p_node_id: nodeId }); },
+    mpImageGet: function (t, id) { return rpc("mp_image_get", { p_token: t, p_image_id: id }); },
+    mpImageAdd: function (t, d) { return rpc("mp_image_add", { p_token: t, p_node_id: d.nodeId, p_data: d.data, p_thumb: d.thumb, p_caption: d.caption || "" }); },
+    mpImageSave: function (t, id, caption) { return rpc("mp_image_save", { p_token: t, p_image_id: id, p_caption: caption || "" }); },
+    mpImageDelete: function (t, id) { return rpc("mp_image_delete", { p_token: t, p_image_id: id }); },
+    mpSearch: function (t, q) { return rpc("mp_search", { p_token: t, p_q: q }); },
     adminSaveCategory: function (t, d) { return rpc("app_admin_save_category", { p_token: t, p_id: d.id, p_name: d.name, p_description: d.description, p_sort: d.sort, p_is_default: d.is_default }); }
   };
 
   // ---------- Demo back end (preview only, NOT secure) ----------
-  var KEY = "dame_hub_demo_db_v10", mem = null;
+  var KEY = "dame_hub_demo_db_v11", mem = null;
   function seed() {
     return {
       users: [
         { id: "u1", username: "admin", full_name: "Demo Super User", team_note: "", password: "admin12345", role: "superuser", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] },
         { id: "u4", username: "team.admin", full_name: "Team Admin", team_note: "Sales", password: "admin12345", role: "admin", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [], admin_categories: ["general", "sales", "sbu"] },
         { id: "u2", username: "sales.user", full_name: "Sales User", team_note: "Sales", password: "sales12345", role: "user", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: ["sales"], edit_tools: ["compliance-maker"] },
+        { id: "u5", username: "sbu.user", full_name: "SBU User", team_note: "SBU", password: "sbu12345", role: "user", status: "approved", created_at: new Date().toISOString(), last_login_at: null, categories: ["sbu"], edit_tools: [] },
         { id: "u3", username: "new.joiner", full_name: "New Joiner", team_note: "SBU", password: "joiner12345", role: "user", status: "pending", created_at: new Date().toISOString(), last_login_at: null, categories: [], edit_tools: [] }
       ],
       categories: [
@@ -117,7 +136,8 @@
         { id: "container-calculator", category_id: "general", name: "Container Calculator", description: "Work out how many containers or trailers a shipment needs, with a load plan and PDF report.", path: "tools/container-calculator/", status: "live", sort: 30 },
         { id: "centre-of-gravity", category_id: "general", name: "Centre of Gravity", description: "Build a unit from blocks, find its centre of gravity and the load on every mounting foot.", path: "tools/centre-of-gravity/", status: "live", sort: 40 },
         { id: "psychrometric-chart", category_id: "general", name: "Psychrometric Chart", description: "Plot air states on an ASHRAE-style chart and read coil loads, SHR and mixing.", path: "tools/psychrometric-chart/", status: "live", sort: 50 },
-        { id: "standards", category_id: "general", name: "Standards", description: "Short summaries of the standards named in AHU, FCU and chiller specifications.", path: "tools/standards/", status: "live", sort: 60 }
+        { id: "standards", category_id: "general", name: "Standards", description: "Short summaries of the standards named in AHU, FCU and chiller specifications.", path: "tools/standards/", status: "live", sort: 60 },
+        { id: "maps", category_id: "sbu", name: "Maps", description: "Product knowledge as a growing tree: branches with notes, special notes, links and images.", path: "tools/maps/", status: "live", sort: 10, editable: true }
       ],
       sessions: {},
       cm: {
@@ -311,6 +331,106 @@
       log: db.pr.log.filter(function (g) { return g.project_id === p.id; }).map(function (g) { return { at: g.at, user: prName(db, g.user_id), action: g.action, detail: g.detail }; }).reverse().slice(0, 200)
     };
   }
+  // ---- Maps: same rules as the mp__* helpers in db/schema.sql (change both together) ----
+  function mpDb(db) { return db.mp = db.mp || { maps: [], nodes: [], images: [] }; }
+  function mpId() { return "xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx".replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); }); }
+  function mpTidy(s) { return String(s == null ? "" : s).replace(/\s+/g, " ").trim(); }
+  function mpUser(db, t) {
+    var u = sessionUser(db, t), tool = db.tools.filter(function (x) { return x.id === "maps"; })[0];
+    var c = tool && db.categories.filter(function (x) { return x.id === tool.category_id; })[0];
+    if (!tool || tool.status === "hidden" || !c || !canOpen(db, u, c)) fail("Maps is not available for your account.");
+    return u;
+  }
+  function mpOwner(db, m) { return db.users.some(function (x) { return x.id === m.created_by; }) ? m.created_by : null; }   // a deleted owner = no owner
+  function mpRights(db, u, m) {
+    var owner = mpOwner(db, m);
+    if (owner === u.id) return "own";
+    if ((m.share !== "private" || !owner) && canEdit(db, u, "maps")) return "own";
+    return m.share === "team_edit" ? "edit" : m.share === "team_read" ? "read" : "none";
+  }
+  function mpMap(db, u, id, need) {
+    var m = mpDb(db).maps.filter(function (x) { return x.id === id; })[0], r = m ? mpRights(db, u, m) : "none";
+    if (r === "none") fail("That map is not available. It was deleted or is no longer shared with you.");
+    if (need === "own" && r !== "own") fail("Only the owner of this map can do this.");
+    if (need === "edit" && r === "read") fail("You can read this map but not change it.");
+    return m;
+  }
+  function mpNode(db, u, id, need) {
+    var n = mpDb(db).nodes.filter(function (x) { return x.id === id; })[0];
+    if (!n) fail("That branch no longer exists. Reload the map.");
+    mpMap(db, u, n.map_id, need);
+    return n;
+  }
+  function mpTitle(s) { var v = mpTidy(s); if (!v) fail("Give the branch a name."); if (v.length > 120) fail("A branch name is at most 120 characters."); return v; }
+  function mpNotes(s) {
+    var v = String(s == null ? "" : s).replace(/\r/g, "").replace(/^[ \n\t]+|[ \n\t]+$/g, "");
+    if (v.length > 8000) fail("The notes of one branch are at most 8000 characters. Split them over branches.");
+    return v;
+  }
+  function mpSpecial(a) {
+    var v = (Array.isArray(a) ? a : []).map(mpTidy).filter(Boolean);
+    if (v.length > 20) fail("A branch holds up to 20 special notes.");
+    if (v.some(function (x) { return x.length > 200; })) fail("A special note is at most 200 characters. Put longer text in the notes.");
+    return v;
+  }
+  function mpLinks(db, u, a) {
+    var out = [];
+    if (!Array.isArray(a)) return out;
+    if (a.length > 12) fail("A branch holds up to 12 links.");
+    a.forEach(function (x) {
+      var lbl = mpTidy(x && x.label).slice(0, 120), t;
+      if (x && x.kind === "node") {
+        if (!/^[0-9a-fA-F-]{36}$/.test(x.node || "")) fail("Choose the branch to link to.");
+        var n = mpDb(db).nodes.filter(function (y) { return y.id === x.node; })[0];
+        if (!n) return;
+        var m = mpDb(db).maps.filter(function (y) { return y.id === n.map_id; })[0];
+        if (mpRights(db, u, m) === "none") fail("You cannot link to a branch of a map you cannot open.");
+        out.push({ kind: "node", node: n.id, map: n.map_id, label: lbl || n.title });
+      } else if (x && x.kind === "standard") {
+        if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(x.id || "")) fail("Choose the standard to link to.");
+        out.push({ kind: "standard", id: x.id, label: lbl || x.id });
+      } else if (x && x.kind === "tool") {
+        t = db.tools.filter(function (y) { return y.id === x.id; })[0];
+        if (!t) fail("Choose the tool to link to.");
+        out.push({ kind: "tool", id: t.id, label: lbl || t.name });
+      } else if (x && x.kind === "web") {
+        t = String(x.url || "").trim();
+        if (!/^https?:\/\/[^\s<>"]+$/i.test(t) || t.length < 11 || t.length > 500) fail("A web link starts with https:// and has no spaces.");
+        out.push({ kind: "web", url: t, label: lbl || t });
+      } else fail("Choose what the link leads to.");
+    });
+    return out;
+  }
+  function mpName(db, id) { var x = db.users.filter(function (y) { return y.id === id; })[0]; return x ? x.full_name : "(deleted user)"; }
+  function mpNodeJson(db, n) {
+    return { id: n.id, parent: n.parent_id, title: n.title, notes: n.notes, special: n.special.slice(), links: JSON.parse(JSON.stringify(n.links)), sort: n.sort,
+             verified: n.verified, verified_by: n.verified && n.verified_by ? mpName(db, n.verified_by) : null, verified_at: n.verified_at || null,
+             updated_by: n.updated_by ? mpName(db, n.updated_by) : null, updated_at: n.updated_at,
+             images: mpDb(db).images.filter(function (i) { return i.node_id === n.id; }).length };
+  }
+  function mpNewNode(db, u, map, parent, title, extra) {
+    var now = new Date().toISOString(), sibs = mpDb(db).nodes.filter(function (x) { return parent && x.parent_id === parent; });
+    var n = { id: mpId(), map_id: map, parent_id: parent, title: title, notes: "", special: [], links: [],
+              sort: sibs.length ? Math.max.apply(null, sibs.map(function (x) { return x.sort; })) + 1 : 0,
+              verified: true, verified_by: u.id, verified_at: now, created_by: u.id, created_at: now, updated_by: u.id, updated_at: now };
+    for (var k in (extra || {})) n[k] = extra[k];
+    mpDb(db).nodes.push(n);
+    return n;
+  }
+  function mpTouch(db, id, u) { mpDb(db).maps.forEach(function (m) { if (m.id === id) { m.updated_at = new Date().toISOString(); m.updated_by = u.id; } }); }
+  function mpUnder(db, id) {            // the branch and everything under it
+    var ids = [id], i = 0;
+    for (; i < ids.length; i++) mpDb(db).nodes.forEach(function (x) { if (x.parent_id === ids[i]) ids.push(x.id); });
+    return ids;
+  }
+  function mpMapName(db, u, m, name) {
+    var v = mpTidy(name);
+    if (!v) fail("Give the map a name, usually the product.");
+    if (v.length > 80) fail("A map name is at most 80 characters.");
+    if (mpDb(db).maps.some(function (x) { return x.id !== m.id && x.created_by === m.created_by && x.name.toLowerCase() === v.toLowerCase(); })) fail("There is already a map with that name.");
+    return v;
+  }
+  var MP_JPEG = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/;
   function checkPw(p) {
     if (!p || p.length < 8) fail("Password must be at least 8 characters.");
     if (!/\S/.test(p)) fail("Password cannot be only spaces.");
@@ -933,6 +1053,173 @@
       return { pending_users: db.users.filter(function (x) { return x.status === "pending"; }).length, pending_answers: pending, new_rows: newRows,
                projects: db.pr.projects.length, by_region: tally("region"), by_client_type: tally("client_type"),
                by_product: Object.keys(prod).map(function (k) { return { name: k, n: Object.keys(prod[k]).length }; }).sort(function (a, b) { return b.n - a.n; }) };
+    }),
+    // ---- Maps (same rules as mp_* in db/schema.sql) ----
+    mpList: demo(function (db, t) {
+      var u = mpUser(db, t), mp = mpDb(db);
+      return { me: u.id, can_manage: canEdit(db, u, "maps"),
+        maps: mp.maps.filter(function (m) { return mpRights(db, u, m) !== "none"; })
+          .sort(function (a, b) { return a.updated_at < b.updated_at ? 1 : -1; })
+          .map(function (m) {
+            var ns = mp.nodes.filter(function (n) { return n.map_id === m.id; });
+            return { id: m.id, name: m.name, share: m.share, rights: mpRights(db, u, m), mine: m.created_by === u.id, owner: mpName(db, m.created_by), updated_at: m.updated_at,
+                     branches: ns.length - 1, special: ns.reduce(function (s, n) { return s + n.special.length; }, 0),
+                     to_verify: ns.filter(function (n) { return !n.verified; }).length,
+                     images: mp.images.filter(function (i) { return i.map_id === m.id; }).length };
+          }) };
+    }),
+    mpCreate: demo(function (db, t, d) {
+      var u = mpUser(db, t), mp = mpDb(db), name = mpTidy(d.name), share = d.share || "private", now = new Date().toISOString();
+      if (!name) fail("Give the map a name, usually the product.");
+      if (name.length > 80) fail("A map name is at most 80 characters.");
+      if (["private", "team_read", "team_edit"].indexOf(share) < 0) fail("Choose who the map is shared with.");
+      if (mp.maps.some(function (m) { return m.created_by === u.id && m.name.toLowerCase() === name.toLowerCase(); })) fail("You already have a map with that name.");
+      if (mp.maps.filter(function (m) { return m.created_by === u.id; }).length >= 200) fail("You have 200 maps. Delete one you no longer need first.");
+      var m = { id: mpId(), name: name, share: share, created_by: u.id, created_at: now, updated_by: u.id, updated_at: now };
+      mp.maps.push(m); mpNewNode(db, u, m.id, null, name);
+      return { ok: true, id: m.id };
+    }),
+    mpGet: demo(function (db, t, id) {
+      var u = mpUser(db, t), m = mpMap(db, u, id, "read");
+      return { map: { id: m.id, name: m.name, share: m.share, rights: mpRights(db, u, m), mine: m.created_by === u.id, owner: mpName(db, m.created_by), updated_at: m.updated_at },
+               nodes: mpDb(db).nodes.filter(function (n) { return n.map_id === m.id; })
+                 .map(function (n, i) { return { n: n, i: i }; }).sort(function (a, b) { return (a.n.sort - b.n.sort) || (a.i - b.i); })
+                 .map(function (x) { return mpNodeJson(db, x.n); }) };
+    }),
+    mpMapSave: demo(function (db, t, d) {
+      var u = mpUser(db, t), m = mpMap(db, u, d.id, "own");
+      if (d.name != null) {
+        m.name = mpMapName(db, u, m, d.name);
+        mpDb(db).nodes.forEach(function (n) { if (n.map_id === m.id && !n.parent_id) { n.title = m.name; n.updated_by = u.id; n.updated_at = new Date().toISOString(); } });
+      }
+      if (d.share != null) { if (["private", "team_read", "team_edit"].indexOf(d.share) < 0) fail("Choose who the map is shared with."); m.share = d.share; }
+      mpTouch(db, m.id, u);
+      return { ok: true };
+    }),
+    mpDelete: demo(function (db, t, id) {
+      var u = mpUser(db, t), m = mpMap(db, u, id, "own"), mp = mpDb(db);
+      mp.maps = mp.maps.filter(function (x) { return x.id !== m.id; });
+      mp.nodes = mp.nodes.filter(function (x) { return x.map_id !== m.id; });
+      mp.images = mp.images.filter(function (x) { return x.map_id !== m.id; });
+      return { ok: true };
+    }),
+    mpNodeAdd: demo(function (db, t, parentId, title) {
+      var u = mpUser(db, t), par = mpNode(db, u, parentId, "edit"), v = mpTitle(title);
+      if (mpDb(db).nodes.filter(function (x) { return x.map_id === par.map_id; }).length >= 2000) fail("A map holds up to 2000 branches. Start a second map for the rest.");
+      var n = mpNewNode(db, u, par.map_id, par.id, v);
+      mpTouch(db, par.map_id, u);
+      return { ok: true, node: mpNodeJson(db, n) };
+    }),
+    mpNodeSave: demo(function (db, t, id, patch) {
+      var u = mpUser(db, t), n = mpNode(db, u, id, "edit"), c = {};
+      if (!patch || typeof patch !== "object") fail("Nothing to save.");
+      if ("title" in patch) {
+        c.title = mpTitle(patch.title);
+        if (!n.parent_id && c.title !== n.title) { var m = mpMap(db, u, n.map_id, "own"); c.map = m; c.title = mpMapName(db, u, m, c.title); }
+      }
+      if ("notes" in patch) c.notes = mpNotes(patch.notes);
+      if ("special" in patch) c.special = mpSpecial(patch.special);
+      if ("links" in patch) c.links = mpLinks(db, u, patch.links);
+      if (c.map) c.map.name = c.title;
+      ["title", "notes", "special", "links"].forEach(function (k) { if (k in c) n[k] = c[k]; });
+      n.updated_by = u.id; n.updated_at = new Date().toISOString();
+      mpTouch(db, n.map_id, u);
+      return { ok: true, node: mpNodeJson(db, n) };
+    }),
+    mpNodeVerify: demo(function (db, t, d) {
+      var u = mpUser(db, t), n = mpNode(db, u, d.id, "edit"), on = d.verified !== false, changed = 0;
+      var ids = d.deep ? mpUnder(db, n.id) : [n.id];
+      mpDb(db).nodes.forEach(function (x) {
+        if (ids.indexOf(x.id) < 0 || x.verified === on) return;
+        x.verified = on; x.verified_by = on ? u.id : null; x.verified_at = on ? new Date().toISOString() : null; changed++;
+      });
+      mpTouch(db, n.map_id, u);
+      return { ok: true, changed: changed };
+    }),
+    mpNodeMove: demo(function (db, t, id, dir) {
+      var u = mpUser(db, t), n = mpNode(db, u, id, "edit");
+      if (!n.parent_id) fail("The first branch of a map cannot be moved.");
+      var sibs = mpDb(db).nodes.map(function (x, i) { return { n: x, i: i }; }).filter(function (x) { return x.n.parent_id === n.parent_id; })
+        .sort(function (a, b) { return (a.n.sort - b.n.sort) || (a.i - b.i); }).map(function (x) { return x.n; });
+      var i = sibs.indexOf(n), j = i + (dir < 0 ? -1 : 1);
+      if (j >= 0 && j < sibs.length) { sibs[i] = sibs[j]; sibs[j] = n; sibs.forEach(function (x, k) { x.sort = k; }); mpTouch(db, n.map_id, u); }
+      return { ok: true, order: sibs.map(function (x) { return x.id; }) };
+    }),
+    mpNodeDelete: demo(function (db, t, id) {
+      var u = mpUser(db, t), n = mpNode(db, u, id, "edit"), mp = mpDb(db);
+      if (!n.parent_id) fail("This is the map itself. Delete the map instead.");
+      var ids = mpUnder(db, n.id);
+      mp.nodes = mp.nodes.filter(function (x) { return ids.indexOf(x.id) < 0; });
+      mp.images = mp.images.filter(function (x) { return ids.indexOf(x.node_id) < 0; });
+      mpTouch(db, n.map_id, u);
+      return { ok: true };
+    }),
+    mpImport: demo(function (db, t, parentId, items) {
+      var u = mpUser(db, t), par = mpNode(db, u, parentId, "edit"), stack = [], prev = -1, first = null;
+      if (!Array.isArray(items) || !items.length) fail("Nothing to add. Paste an outline with one branch name per line.");
+      if (items.length > 500) fail("One import holds up to 500 branches. Import the outline in parts.");
+      if (mpDb(db).nodes.filter(function (x) { return x.map_id === par.map_id; }).length + items.length > 2000) fail("A map holds up to 2000 branches. Start a second map for the rest.");
+      var clean = items.map(function (x) { return { depth: x.depth, title: mpTitle(x.title), notes: mpNotes(x.notes), special: mpSpecial(x.special) }; });   // check everything first
+      clean.forEach(function (x) {
+        var d = Math.min(Math.max(parseInt(x.depth, 10) || 0, 0), prev + 1);
+        var n = mpNewNode(db, u, par.map_id, d === 0 ? par.id : stack[d - 1], x.title, { notes: x.notes, special: x.special, verified: false, verified_by: null, verified_at: null });
+        stack = stack.slice(0, d).concat([n.id]); prev = d; first = first || n.id;
+      });
+      mpTouch(db, par.map_id, u);
+      return { ok: true, added: clean.length, first: first };
+    }),
+    mpNodeImages: demo(function (db, t, nodeId) {
+      var u = mpUser(db, t), n = mpNode(db, u, nodeId, "read");
+      return { images: mpDb(db).images.filter(function (i) { return i.node_id === n.id; })
+        .map(function (i) { return { id: i.id, caption: i.caption, thumb: i.thumb, by: mpName(db, i.created_by), at: i.created_at }; }) };
+    }),
+    mpImageGet: demo(function (db, t, id) {
+      var u = mpUser(db, t), i = mpDb(db).images.filter(function (x) { return x.id === id; })[0];
+      if (!i) fail("That image no longer exists. Reload the map.");
+      mpMap(db, u, i.map_id, "read");
+      return { id: i.id, caption: i.caption, data: i.data };
+    }),
+    mpImageAdd: demo(function (db, t, d) {
+      var u = mpUser(db, t), n = mpNode(db, u, d.nodeId, "edit"), mp = mpDb(db);
+      if (!MP_JPEG.test(d.data || "") || !MP_JPEG.test(d.thumb || "")) fail("That image could not be read. Try saving it as JPG or PNG.");
+      if (d.data.length > 700000 || d.thumb.length > 60000) fail("That image is still too large after shrinking. Crop it or use a smaller one.");
+      if (mp.images.filter(function (i) { return i.node_id === n.id; }).length >= 8) fail("A branch holds up to 8 images. Remove one first.");
+      if (mp.images.filter(function (i) { return i.map_id === n.map_id; }).length >= 300) fail("A map holds up to 300 images. Remove some first.");
+      var img = { id: mpId(), map_id: n.map_id, node_id: n.id, caption: mpTidy(d.caption).slice(0, 120), thumb: d.thumb, data: d.data, created_by: u.id, created_at: new Date().toISOString() };
+      mp.images.push(img); mpTouch(db, n.map_id, u);
+      return { ok: true, id: img.id };
+    }),
+    mpImageSave: demo(function (db, t, id, caption) {
+      var u = mpUser(db, t), i = mpDb(db).images.filter(function (x) { return x.id === id; })[0];
+      if (!i) fail("That image no longer exists. Reload the map.");
+      mpMap(db, u, i.map_id, "edit"); i.caption = mpTidy(caption).slice(0, 120); mpTouch(db, i.map_id, u);
+      return { ok: true };
+    }),
+    mpImageDelete: demo(function (db, t, id) {
+      var u = mpUser(db, t), mp = mpDb(db), i = mp.images.filter(function (x) { return x.id === id; })[0];
+      if (!i) return { ok: true };
+      mpMap(db, u, i.map_id, "edit");
+      mp.images = mp.images.filter(function (x) { return x.id !== id; }); mpTouch(db, i.map_id, u);
+      return { ok: true };
+    }),
+    mpSearch: demo(function (db, t, query) {
+      var u = mpUser(db, t), mp = mpDb(db), q = mpTidy(query).toLowerCase(), hits = [];
+      if (q.length < 2) return { hits: [] };
+      function has(s) { return String(s).toLowerCase().indexOf(q) >= 0; }
+      mp.nodes.forEach(function (n) {
+        var m = mp.maps.filter(function (x) { return x.id === n.map_id; })[0];
+        if (!m || mpRights(db, u, m) === "none") return;
+        var sp = n.special.filter(has)[0], cap = mp.images.filter(function (i) { return i.node_id === n.id && has(i.caption); })[0], at;
+        var h = { map_id: m.id, map: m.name, node_id: n.id, title: n.title };
+        if (has(n.title)) { h.rank = 1; h["in"] = "name"; h.text = ""; }
+        else if (sp) { h.rank = 2; h["in"] = "special note"; h.text = sp; }
+        else if (has(n.notes)) { at = n.notes.toLowerCase().indexOf(q); h.rank = 3; h["in"] = "notes"; h.text = n.notes.substr(Math.max(at - 40, 0), 140).replace(/\s+/g, " "); }
+        else if (cap) { h.rank = 4; h["in"] = "image caption"; h.text = cap.caption; }
+        else return;
+        hits.push(h);
+      });
+      hits.sort(function (a, b) { return (a.rank - b.rank) || a.map.localeCompare(b.map) || a.title.localeCompare(b.title); });
+      return { hits: hits.slice(0, 60).map(function (h) { delete h.rank; return h; }) };
     }),
     adminSaveCategory: demo(function (db, t, d) {
       superUser(db, t);

@@ -10,7 +10,8 @@
 --   3. Datasheet Notes row mapping          dn_*
 --   4. Product Options                      po_*
 --   5. Projects, review, history            pr_*
---   6. Permissions (always last)
+--   6. Maps (product knowledge trees)       mp_*
+--   7. Permissions (always last)
 -- Who may do what is listed in db/README.md.
 --
 -- Design:
@@ -2933,6 +2934,615 @@ begin
                                      join public.cm_products pd on pd.id = k.product_id group by 1) x), '[]'::jsonb));
 end $$;
 
+-- ============================================================
+-- MAPS - product knowledge as a growing tree
+--
+-- A map is a tree of branches (Chiller > Components > Compressor ...). Every branch carries
+-- notes, special notes (short lines that must not be missed), links and images. Tool id 'maps',
+-- on the SBU tile.
+--
+-- Who may do what:
+--   - every user who can open the tool makes his own maps;
+--   - a map is 'private' (its owner only), 'team_read' (everyone with the tool reads it) or
+--     'team_edit' (everyone with the tool changes it). The owner decides;
+--   - map managers (the admin of the tile, and users with "Can edit" for Maps) own every
+--     shared map: they change it, change its sharing and delete it. A private map is its
+--     owner's alone; when the owner's account is deleted the managers take it over.
+-- Typed branches count as verified by their writer. Imported branches (an outline pasted in)
+-- start as "to verify" until someone who may change the map confirms them.
+-- Images are shrunk to JPEG in the browser; the database refuses anything else or too large.
+-- There is no AI in the tool.
+-- ============================================================
+
+create table if not exists public.mp_maps (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  share      text not null default 'private' check (share in ('private', 'team_read', 'team_edit')),
+  created_by uuid references public.app_users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_by uuid references public.app_users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+-- One row per branch. The branch without a parent is the root of the map and carries its name.
+create table if not exists public.mp_nodes (
+  id          uuid primary key default gen_random_uuid(),
+  map_id      uuid not null references public.mp_maps(id) on delete cascade,
+  parent_id   uuid references public.mp_nodes(id) on delete cascade,
+  title       text not null,
+  notes       text not null default '',
+  special     jsonb not null default '[]'::jsonb,     -- ["50Hz for Egypt", ...]
+  links       jsonb not null default '[]'::jsonb,     -- [{ kind: node | standard | tool | web, label, ... }]
+  sort        int  not null default 0,
+  verified    boolean not null default true,
+  verified_by uuid references public.app_users(id) on delete set null,
+  verified_at timestamptz,
+  created_by  uuid references public.app_users(id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_by  uuid references public.app_users(id) on delete set null,
+  updated_at  timestamptz not null default now()
+);
+create index if not exists mp_nodes_map    on public.mp_nodes (map_id);
+create index if not exists mp_nodes_parent on public.mp_nodes (parent_id);
+create unique index if not exists mp_nodes_root on public.mp_nodes (map_id) where parent_id is null;
+
+-- Images of a branch: a small picture for the panel and the shrunk picture itself, both data: URLs.
+create table if not exists public.mp_images (
+  id         uuid primary key default gen_random_uuid(),
+  map_id     uuid not null references public.mp_maps(id) on delete cascade,
+  node_id    uuid not null references public.mp_nodes(id) on delete cascade,
+  caption    text not null default '',
+  thumb      text not null,
+  data       text not null,
+  bytes      int  not null default 0,
+  created_by uuid references public.app_users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists mp_images_node on public.mp_images (node_id);
+create index if not exists mp_images_map  on public.mp_images (map_id);
+
+alter table public.mp_maps   enable row level security;
+alter table public.mp_nodes  enable row level security;
+alter table public.mp_images enable row level security;
+revoke all on public.mp_maps, public.mp_nodes, public.mp_images from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on public.mp_maps, public.mp_nodes, public.mp_images from anon, authenticated;
+  end if;
+end $$;
+
+insert into public.app_tools (id, category_id, name, description, path, status, sort) values
+  ('maps', 'sbu', 'Maps',
+   'Product knowledge as a growing tree: branches with notes, special notes, links and images.',
+   'tools/maps/', 'live', 10)
+on conflict (id) do nothing;
+update public.app_tools set editable = true where id = 'maps';
+
+-- ---------- helpers ----------
+-- The signed-in user, if his account has the Maps tool. Raises otherwise.
+create or replace function public.mp__user(p_token text)
+returns public.app_users
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users;
+begin
+  u := public.app__session_user(p_token);
+  if not exists (select 1 from public.app_tools t join public.app_categories c on c.id = t.category_id
+                  where t.id = 'maps' and t.status <> 'hidden'
+                    and (c.is_default or public.app__is_tile_admin(u, c.id)
+                         or exists (select 1 from public.app_user_categories uc where uc.user_id = u.id and uc.category_id = c.id))) then
+    perform public.app__fail('Maps is not available for your account.');
+  end if;
+  return u;
+end $$;
+
+create or replace function public.mp__name(p_user uuid) returns text
+language sql stable security definer set search_path = public, extensions as $$
+  select coalesce((select full_name from public.app_users where id = p_user), '(deleted user)');
+$$;
+
+-- What this user may do with a map: own (everything), edit (change branches), read, none.
+create or replace function public.mp__rights(u public.app_users, m public.mp_maps) returns text
+language sql stable security definer set search_path = public, extensions as $$
+  select case
+    when m.created_by = u.id then 'own'
+    when (m.share <> 'private' or m.created_by is null) and public.app__can_edit(u, 'maps') then 'own'
+    when m.share = 'team_edit' then 'edit'
+    when m.share = 'team_read' then 'read'
+    else 'none' end;
+$$;
+
+-- The map, if this user has at least the right asked for (read | edit | own). Raises otherwise.
+create or replace function public.mp__map(u public.app_users, p_id uuid, p_need text)
+returns public.mp_maps
+language plpgsql security definer set search_path = public, extensions as $$
+declare m public.mp_maps; r text;
+begin
+  select * into m from public.mp_maps where id = p_id;
+  r := case when m.id is null then 'none' else public.mp__rights(u, m) end;
+  if r = 'none' then
+    perform public.app__fail('That map is not available. It was deleted or is no longer shared with you.');
+  end if;
+  if p_need = 'own' and r <> 'own' then
+    perform public.app__fail('Only the owner of this map can do this.');
+  end if;
+  if p_need = 'edit' and r = 'read' then
+    perform public.app__fail('You can read this map but not change it.');
+  end if;
+  return m;
+end $$;
+
+-- The branch, if this user has the right asked for on its map. Raises otherwise.
+create or replace function public.mp__node(u public.app_users, p_id uuid, p_need text)
+returns public.mp_nodes
+language plpgsql security definer set search_path = public, extensions as $$
+declare n public.mp_nodes;
+begin
+  select * into n from public.mp_nodes where id = p_id;
+  if n.id is null then
+    perform public.app__fail('That branch no longer exists. Reload the map.');
+  end if;
+  perform public.mp__map(u, n.map_id, p_need);
+  return n;
+end $$;
+
+create or replace function public.mp__touch(p_map uuid, p_user uuid) returns void
+language sql security definer set search_path = public, extensions as $$
+  update public.mp_maps set updated_at = now(), updated_by = p_user where id = p_map;
+$$;
+
+create or replace function public.mp__title(p text) returns text
+language plpgsql as $$
+declare v text := trim(regexp_replace(coalesce(p, ''), '\s+', ' ', 'g'));
+begin
+  if length(v) = 0 then perform public.app__fail('Give the branch a name.'); end if;
+  if length(v) > 120 then perform public.app__fail('A branch name is at most 120 characters.'); end if;
+  return v;
+end $$;
+
+create or replace function public.mp__notes(p text) returns text
+language plpgsql as $$
+declare v text := btrim(replace(coalesce(p, ''), E'\r', ''), E' \n\t');
+begin
+  if length(v) > 8000 then perform public.app__fail('The notes of one branch are at most 8000 characters. Split them over branches.'); end if;
+  return v;
+end $$;
+
+-- Special notes as kept: short lines, empty ones dropped.
+create or replace function public.mp__special(p jsonb) returns jsonb
+language plpgsql as $$
+declare v jsonb;
+begin
+  if p is null or jsonb_typeof(p) <> 'array' then return '[]'::jsonb; end if;
+  select coalesce(jsonb_agg(t order by ord), '[]'::jsonb) into v
+    from (select trim(regexp_replace(coalesce(x #>> '{}', ''), '\s+', ' ', 'g')) as t, ord
+            from jsonb_array_elements(p) with ordinality as e(x, ord)) s
+   where t <> '';
+  if jsonb_array_length(v) > 20 then perform public.app__fail('A branch holds up to 20 special notes.'); end if;
+  if exists (select 1 from jsonb_array_elements_text(v) t where length(t) > 200) then
+    perform public.app__fail('A special note is at most 200 characters. Put longer text in the notes.');
+  end if;
+  return v;
+end $$;
+
+-- Links as kept. A link leads to another branch (of a map the writer can read), to a page of the
+-- Standards tool, to a tool of the site, or to a web address. A link to a branch that is gone is dropped.
+create or replace function public.mp__links(u public.app_users, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  x jsonb; v jsonb := '[]'::jsonb; k text; lbl text; t text; n public.mp_nodes; m public.mp_maps;
+begin
+  if p is null or jsonb_typeof(p) <> 'array' then return v; end if;
+  if jsonb_array_length(p) > 12 then perform public.app__fail('A branch holds up to 12 links.'); end if;
+  for x in select value from jsonb_array_elements(p) loop
+    k := x ->> 'kind';
+    lbl := left(trim(regexp_replace(coalesce(x ->> 'label', ''), '\s+', ' ', 'g')), 120);
+    if k = 'node' then
+      t := coalesce(x ->> 'node', '');
+      if t !~ '^[0-9a-fA-F-]{36}$' then perform public.app__fail('Choose the branch to link to.'); end if;
+      select * into n from public.mp_nodes where id = t::uuid;
+      if n.id is null then continue; end if;
+      select * into m from public.mp_maps where id = n.map_id;
+      if public.mp__rights(u, m) = 'none' then perform public.app__fail('You cannot link to a branch of a map you cannot open.'); end if;
+      v := v || jsonb_build_object('kind', 'node', 'node', n.id, 'map', n.map_id, 'label', case when lbl = '' then n.title else lbl end);
+    elsif k = 'standard' then
+      t := coalesce(x ->> 'id', '');
+      if t !~ '^[a-z0-9][a-z0-9-]{0,59}$' then perform public.app__fail('Choose the standard to link to.'); end if;
+      v := v || jsonb_build_object('kind', 'standard', 'id', t, 'label', case when lbl = '' then t else lbl end);
+    elsif k = 'tool' then
+      t := coalesce(x ->> 'id', '');
+      if not exists (select 1 from public.app_tools where id = t) then perform public.app__fail('Choose the tool to link to.'); end if;
+      v := v || jsonb_build_object('kind', 'tool', 'id', t, 'label', case when lbl = '' then (select name from public.app_tools where id = t) else lbl end);
+    elsif k = 'web' then
+      t := trim(coalesce(x ->> 'url', ''));
+      if t !~* '^https?://[^\s<>"]+$' or length(t) not between 11 and 500 then perform public.app__fail('A web link starts with https:// and has no spaces.'); end if;
+      v := v || jsonb_build_object('kind', 'web', 'url', t, 'label', case when lbl = '' then t else lbl end);
+    else
+      perform public.app__fail('Choose what the link leads to.');
+    end if;
+  end loop;
+  return v;
+end $$;
+
+-- One branch as the page receives it.
+create or replace function public.mp__node_json(n public.mp_nodes) returns jsonb
+language sql stable security definer set search_path = public, extensions as $$
+  select jsonb_build_object(
+    'id', n.id, 'parent', n.parent_id, 'title', n.title, 'notes', n.notes, 'special', n.special, 'links', n.links,
+    'sort', n.sort, 'verified', n.verified,
+    'verified_by', case when n.verified and n.verified_by is not null then public.mp__name(n.verified_by) end,
+    'verified_at', n.verified_at,
+    'updated_by', case when n.updated_by is not null then public.mp__name(n.updated_by) end,
+    'updated_at', n.updated_at,
+    'images', (select count(*) from public.mp_images i where i.node_id = n.id));
+$$;
+
+-- ---------- maps ----------
+-- The maps this user can open, newest change first, with what each holds.
+create or replace function public.mp_list(p_token text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users;
+begin
+  u := public.mp__user(p_token);
+  return jsonb_build_object(
+    'me', u.id, 'can_manage', public.app__can_edit(u, 'maps'),
+    'maps', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', m.id, 'name', m.name, 'share', m.share, 'rights', public.mp__rights(u, m),
+               'mine', m.created_by = u.id, 'owner', public.mp__name(m.created_by),
+               'updated_at', m.updated_at,
+               'branches', (select count(*) - 1 from public.mp_nodes n where n.map_id = m.id),
+               'special', (select coalesce(sum(jsonb_array_length(n.special)), 0) from public.mp_nodes n where n.map_id = m.id),
+               'to_verify', (select count(*) from public.mp_nodes n where n.map_id = m.id and not n.verified),
+               'images', (select count(*) from public.mp_images i where i.map_id = m.id)
+             ) order by m.updated_at desc)
+        from public.mp_maps m
+       where public.mp__rights(u, m) <> 'none'), '[]'::jsonb));
+end $$;
+
+-- A new map. p_share: private | team_read | team_edit.
+create or replace function public.mp_create(p_token text, p_name text, p_share text default 'private')
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; v_id uuid;
+  v_name text := trim(regexp_replace(coalesce(p_name, ''), '\s+', ' ', 'g'));
+  v_share text := coalesce(nullif(p_share, ''), 'private');
+begin
+  u := public.mp__user(p_token);
+  if length(v_name) = 0 then perform public.app__fail('Give the map a name, usually the product.'); end if;
+  if length(v_name) > 80 then perform public.app__fail('A map name is at most 80 characters.'); end if;
+  if v_share not in ('private', 'team_read', 'team_edit') then perform public.app__fail('Choose who the map is shared with.'); end if;
+  if exists (select 1 from public.mp_maps where created_by = u.id and lower(name) = lower(v_name)) then
+    perform public.app__fail('You already have a map with that name.');
+  end if;
+  if (select count(*) from public.mp_maps where created_by = u.id) >= 200 then
+    perform public.app__fail('You have 200 maps. Delete one you no longer need first.');
+  end if;
+  insert into public.mp_maps (name, share, created_by, updated_by) values (v_name, v_share, u.id, u.id) returning id into v_id;
+  insert into public.mp_nodes (map_id, parent_id, title, verified, verified_by, verified_at, created_by, updated_by)
+  values (v_id, null, v_name, true, u.id, now(), u.id, u.id);
+  return jsonb_build_object('ok', true, 'id', v_id);
+end $$;
+
+-- One map with all its branches (no image data: images are fetched per branch).
+create or replace function public.mp_get(p_token text, p_map_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; m public.mp_maps;
+begin
+  u := public.mp__user(p_token);
+  m := public.mp__map(u, p_map_id, 'read');
+  return jsonb_build_object(
+    'map', jsonb_build_object('id', m.id, 'name', m.name, 'share', m.share, 'rights', public.mp__rights(u, m),
+                              'mine', m.created_by = u.id, 'owner', public.mp__name(m.created_by), 'updated_at', m.updated_at),
+    'nodes', coalesce((select jsonb_agg(public.mp__node_json(n) order by n.sort, n.created_at, n.id)
+                         from public.mp_nodes n where n.map_id = m.id), '[]'::jsonb));
+end $$;
+
+-- Rename a map or change who it is shared with (its owner, or a map manager for a shared map).
+-- A null leaves that part as it is.
+create or replace function public.mp_map_save(p_token text, p_map_id uuid, p_name text default null, p_share text default null)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; m public.mp_maps; v_name text;
+begin
+  u := public.mp__user(p_token);
+  m := public.mp__map(u, p_map_id, 'own');
+  if p_name is not null then
+    v_name := trim(regexp_replace(p_name, '\s+', ' ', 'g'));
+    if length(v_name) = 0 then perform public.app__fail('Give the map a name, usually the product.'); end if;
+    if length(v_name) > 80 then perform public.app__fail('A map name is at most 80 characters.'); end if;
+    if exists (select 1 from public.mp_maps where created_by = m.created_by and lower(name) = lower(v_name) and id <> m.id) then
+      perform public.app__fail('There is already a map with that name.');
+    end if;
+    update public.mp_maps set name = v_name where id = m.id;
+    update public.mp_nodes set title = v_name, updated_by = u.id, updated_at = now() where map_id = m.id and parent_id is null;
+  end if;
+  if p_share is not null then
+    if p_share not in ('private', 'team_read', 'team_edit') then perform public.app__fail('Choose who the map is shared with.'); end if;
+    update public.mp_maps set share = p_share where id = m.id;
+  end if;
+  perform public.mp__touch(m.id, u.id);
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Delete a map with all its branches and images.
+create or replace function public.mp_delete(p_token text, p_map_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; m public.mp_maps;
+begin
+  u := public.mp__user(p_token);
+  m := public.mp__map(u, p_map_id, 'own');
+  delete from public.mp_maps where id = m.id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- ---------- branches ----------
+-- A new branch under p_parent_id, placed last. Typed by hand, so it counts as verified by its writer.
+create or replace function public.mp_node_add(p_token text, p_parent_id uuid, p_title text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; par public.mp_nodes; n public.mp_nodes; v_title text;
+begin
+  u := public.mp__user(p_token);
+  par := public.mp__node(u, p_parent_id, 'edit');
+  v_title := public.mp__title(p_title);
+  if (select count(*) from public.mp_nodes where map_id = par.map_id) >= 2000 then
+    perform public.app__fail('A map holds up to 2000 branches. Start a second map for the rest.');
+  end if;
+  insert into public.mp_nodes (map_id, parent_id, title, sort, verified, verified_by, verified_at, created_by, updated_by)
+  values (par.map_id, par.id, v_title,
+          coalesce((select max(sort) + 1 from public.mp_nodes where parent_id = par.id), 0), true, u.id, now(), u.id, u.id)
+  returning * into n;
+  perform public.mp__touch(par.map_id, u.id);
+  return jsonb_build_object('ok', true, 'node', public.mp__node_json(n));
+end $$;
+
+-- Change a branch. p_patch holds only what changed: { "title", "notes", "special": [...], "links": [...] }.
+-- Renaming the root renames the map, which only its owner may do.
+create or replace function public.mp_node_save(p_token text, p_node_id uuid, p_patch jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.mp_nodes; m public.mp_maps; v_title text;
+begin
+  u := public.mp__user(p_token);
+  n := public.mp__node(u, p_node_id, 'edit');
+  if p_patch is null or jsonb_typeof(p_patch) <> 'object' then perform public.app__fail('Nothing to save.'); end if;
+  if p_patch ? 'title' then
+    v_title := public.mp__title(p_patch ->> 'title');
+    if n.parent_id is null and v_title <> n.title then
+      m := public.mp__map(u, n.map_id, 'own');
+      if length(v_title) > 80 then perform public.app__fail('A map name is at most 80 characters.'); end if;
+      if exists (select 1 from public.mp_maps where created_by = m.created_by and lower(name) = lower(v_title) and id <> m.id) then
+        perform public.app__fail('There is already a map with that name.');
+      end if;
+      update public.mp_maps set name = v_title where id = m.id;
+    end if;
+    n.title := v_title;
+  end if;
+  if p_patch ? 'notes'   then n.notes   := public.mp__notes(p_patch ->> 'notes'); end if;
+  if p_patch ? 'special' then n.special := public.mp__special(p_patch -> 'special'); end if;
+  if p_patch ? 'links'   then n.links   := public.mp__links(u, p_patch -> 'links'); end if;
+  update public.mp_nodes set title = n.title, notes = n.notes, special = n.special, links = n.links, updated_by = u.id, updated_at = now()
+   where id = n.id returning * into n;
+  perform public.mp__touch(n.map_id, u.id);
+  return jsonb_build_object('ok', true, 'node', public.mp__node_json(n));
+end $$;
+
+-- Mark a branch verified or to verify. p_deep: the branch and everything under it.
+create or replace function public.mp_node_verify(p_token text, p_node_id uuid, p_verified boolean, p_deep boolean default false)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.mp_nodes; v_n int; v_on boolean := coalesce(p_verified, true);
+begin
+  u := public.mp__user(p_token);
+  n := public.mp__node(u, p_node_id, 'edit');
+  with recursive t as (
+    select id from public.mp_nodes where id = n.id
+    union all
+    select c.id from public.mp_nodes c join t on c.parent_id = t.id where coalesce(p_deep, false)
+  )
+  update public.mp_nodes x
+     set verified = v_on, verified_by = case when v_on then u.id end, verified_at = case when v_on then now() end
+    from t where x.id = t.id and x.verified is distinct from v_on;
+  get diagnostics v_n = row_count;
+  perform public.mp__touch(n.map_id, u.id);
+  return jsonb_build_object('ok', true, 'changed', v_n);
+end $$;
+
+-- Move a branch one place up (p_dir -1) or down (+1) among the branches of its parent.
+create or replace function public.mp_node_move(p_token text, p_node_id uuid, p_dir int)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.mp_nodes; ids uuid[]; i int; j int; tmp uuid;
+begin
+  u := public.mp__user(p_token);
+  n := public.mp__node(u, p_node_id, 'edit');
+  if n.parent_id is null then perform public.app__fail('The first branch of a map cannot be moved.'); end if;
+  select array_agg(id order by sort, created_at, id) into ids from public.mp_nodes where parent_id = n.parent_id;
+  i := array_position(ids, n.id);
+  j := i + case when coalesce(p_dir, 0) < 0 then -1 else 1 end;
+  if j between 1 and array_length(ids, 1) then
+    tmp := ids[i]; ids[i] := ids[j]; ids[j] := tmp;
+    update public.mp_nodes x set sort = o.ord - 1
+      from unnest(ids) with ordinality as o(id, ord) where x.id = o.id;
+    perform public.mp__touch(n.map_id, u.id);
+  end if;
+  return jsonb_build_object('ok', true, 'order', to_jsonb(ids));
+end $$;
+
+-- Delete a branch with everything under it and their images. The root goes only with its map.
+create or replace function public.mp_node_delete(p_token text, p_node_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.mp_nodes;
+begin
+  u := public.mp__user(p_token);
+  n := public.mp__node(u, p_node_id, 'edit');
+  if n.parent_id is null then perform public.app__fail('This is the map itself. Delete the map instead.'); end if;
+  delete from public.mp_nodes where id = n.id;
+  perform public.mp__touch(n.map_id, u.id);
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Add an outline under a branch. p_items, in reading order:
+--   [{ "depth": 0, "title": "...", "notes": "...", "special": ["..."] }, ...]
+-- depth 0 = directly under p_parent_id; a line can be at most one level deeper than the line before it.
+-- Everything imported starts as "to verify".
+create or replace function public.mp_import(p_token text, p_parent_id uuid, p_items jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  u public.app_users; par public.mp_nodes; x jsonb; stack uuid[] := '{}'; d int; prev int := -1;
+  v_id uuid; v_first uuid; v_n int := 0; v_sort int; v_parent uuid;
+begin
+  u := public.mp__user(p_token);
+  par := public.mp__node(u, p_parent_id, 'edit');
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    perform public.app__fail('Nothing to add. Paste an outline with one branch name per line.');
+  end if;
+  if jsonb_array_length(p_items) > 500 then perform public.app__fail('One import holds up to 500 branches. Import the outline in parts.'); end if;
+  if (select count(*) from public.mp_nodes where map_id = par.map_id) + jsonb_array_length(p_items) > 2000 then
+    perform public.app__fail('A map holds up to 2000 branches. Start a second map for the rest.');
+  end if;
+  for x in select value from jsonb_array_elements(p_items) loop
+    d := least(greatest(coalesce((x ->> 'depth')::int, 0), 0), prev + 1);
+    v_parent := case when d = 0 then par.id else stack[d] end;
+    select coalesce(max(sort) + 1, 0) into v_sort from public.mp_nodes where parent_id = v_parent;
+    insert into public.mp_nodes (map_id, parent_id, title, notes, special, sort, verified, created_by, updated_by)
+    values (par.map_id, v_parent, public.mp__title(x ->> 'title'), public.mp__notes(x ->> 'notes'),
+            public.mp__special(x -> 'special'), v_sort, false, u.id, u.id)
+    returning id into v_id;
+    stack := stack[1:d] || v_id;
+    prev := d; v_n := v_n + 1;
+    if v_first is null then v_first := v_id; end if;
+  end loop;
+  perform public.mp__touch(par.map_id, u.id);
+  return jsonb_build_object('ok', true, 'added', v_n, 'first', v_first);
+end $$;
+
+-- ---------- images ----------
+-- The images of one branch: caption and small picture. The picture itself comes from mp_image_get.
+create or replace function public.mp_node_images(p_token text, p_node_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.mp_nodes;
+begin
+  u := public.mp__user(p_token);
+  n := public.mp__node(u, p_node_id, 'read');
+  return jsonb_build_object('images', coalesce((
+    select jsonb_agg(jsonb_build_object('id', i.id, 'caption', i.caption, 'thumb', i.thumb, 'by', public.mp__name(i.created_by), 'at', i.created_at)
+                     order by i.created_at, i.id)
+      from public.mp_images i where i.node_id = n.id), '[]'::jsonb));
+end $$;
+
+create or replace function public.mp_image_get(p_token text, p_image_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; i public.mp_images;
+begin
+  u := public.mp__user(p_token);
+  select * into i from public.mp_images where id = p_image_id;
+  if i.id is null then perform public.app__fail('That image no longer exists. Reload the map.'); end if;
+  perform public.mp__map(u, i.map_id, 'read');
+  return jsonb_build_object('id', i.id, 'caption', i.caption, 'data', i.data);
+end $$;
+
+-- Add an image to a branch. The page shrinks it first: p_data a JPEG data: URL of at most about
+-- 500 KB, p_thumb a small one for the panel. Up to 8 images on a branch and 300 on a map.
+create or replace function public.mp_image_add(p_token text, p_node_id uuid, p_data text, p_thumb text, p_caption text default '')
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; n public.mp_nodes; v_id uuid; v_cap text := left(trim(regexp_replace(coalesce(p_caption, ''), '\s+', ' ', 'g')), 120);
+begin
+  u := public.mp__user(p_token);
+  n := public.mp__node(u, p_node_id, 'edit');
+  if p_data is null or p_thumb is null
+     or left(p_data, 23) <> 'data:image/jpeg;base64,' or left(p_thumb, 23) <> 'data:image/jpeg;base64,'
+     or substr(p_data, 24) !~ '^[A-Za-z0-9+/]+={0,2}$' or substr(p_thumb, 24) !~ '^[A-Za-z0-9+/]+={0,2}$' then
+    perform public.app__fail('That image could not be read. Try saving it as JPG or PNG.');
+  end if;
+  if length(p_data) > 700000 or length(p_thumb) > 60000 then
+    perform public.app__fail('That image is still too large after shrinking. Crop it or use a smaller one.');
+  end if;
+  if (select count(*) from public.mp_images where node_id = n.id) >= 8 then
+    perform public.app__fail('A branch holds up to 8 images. Remove one first.');
+  end if;
+  if (select count(*) from public.mp_images where map_id = n.map_id) >= 300 then
+    perform public.app__fail('A map holds up to 300 images. Remove some first.');
+  end if;
+  insert into public.mp_images (map_id, node_id, caption, thumb, data, bytes, created_by)
+  values (n.map_id, n.id, v_cap, p_thumb, p_data, (length(p_data) - 23) * 3 / 4, u.id)
+  returning id into v_id;
+  perform public.mp__touch(n.map_id, u.id);
+  return jsonb_build_object('ok', true, 'id', v_id);
+end $$;
+
+create or replace function public.mp_image_save(p_token text, p_image_id uuid, p_caption text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; i public.mp_images;
+begin
+  u := public.mp__user(p_token);
+  select * into i from public.mp_images where id = p_image_id;
+  if i.id is null then perform public.app__fail('That image no longer exists. Reload the map.'); end if;
+  perform public.mp__map(u, i.map_id, 'edit');
+  update public.mp_images set caption = left(trim(regexp_replace(coalesce(p_caption, ''), '\s+', ' ', 'g')), 120) where id = i.id;
+  perform public.mp__touch(i.map_id, u.id);
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.mp_image_delete(p_token text, p_image_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; i public.mp_images;
+begin
+  u := public.mp__user(p_token);
+  select * into i from public.mp_images where id = p_image_id;
+  if i.id is null then return jsonb_build_object('ok', true); end if;
+  perform public.mp__map(u, i.map_id, 'edit');
+  delete from public.mp_images where id = i.id;
+  perform public.mp__touch(i.map_id, u.id);
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- ---------- search ----------
+-- Find words in every map this user can open: branch names, notes, special notes, image captions.
+-- Plain text match, no ranking. At most 60 branches, names first.
+create or replace function public.mp_search(p_token text, p_q text)
+returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare u public.app_users; q text := lower(trim(regexp_replace(coalesce(p_q, ''), '\s+', ' ', 'g')));
+begin
+  u := public.mp__user(p_token);
+  if length(q) < 2 then return jsonb_build_object('hits', '[]'::jsonb); end if;
+  return jsonb_build_object('hits', coalesce((
+    select jsonb_agg(jsonb_build_object('map_id', h.map_id, 'map', h.map, 'node_id', h.id, 'title', h.title, 'in', h.found_in, 'text', h.snippet)
+                     order by h.rank, h.map, h.title)
+      from (
+        select n.id, n.map_id, m.name as map, n.title,
+               case when position(q in lower(n.title)) > 0 then 1
+                    when position(q in lower(n.special::text)) > 0 then 2
+                    when position(q in lower(n.notes)) > 0 then 3 else 4 end as rank,
+               case when position(q in lower(n.title)) > 0 then 'name'
+                    when position(q in lower(n.special::text)) > 0 then 'special note'
+                    when position(q in lower(n.notes)) > 0 then 'notes' else 'image caption' end as found_in,
+               case when position(q in lower(n.title)) > 0 then ''
+                    when position(q in lower(n.special::text)) > 0 then
+                      coalesce((select s from jsonb_array_elements_text(n.special) s where position(q in lower(s)) > 0 limit 1), '')
+                    when position(q in lower(n.notes)) > 0 then
+                      regexp_replace(substr(n.notes, greatest(position(q in lower(n.notes)) - 40, 1), 140), '\s+', ' ', 'g')
+                    else coalesce((select i.caption from public.mp_images i where i.node_id = n.id and position(q in lower(i.caption)) > 0 limit 1), '') end as snippet
+          from public.mp_nodes n join public.mp_maps m on m.id = n.map_id
+         where public.mp__rights(u, m) <> 'none'
+           and (position(q in lower(n.title)) > 0 or position(q in lower(n.notes)) > 0 or position(q in lower(n.special::text)) > 0
+                or exists (select 1 from public.mp_images i where i.node_id = n.id and position(q in lower(i.caption)) > 0))
+         order by 5, m.name, n.title
+         limit 60) h), '[]'::jsonb));
+end $$;
+
 -- ---------- permissions: website may call ONLY the public/admin API ----------
 do $$
 declare
@@ -2942,7 +3552,7 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%' or p.proname like 'po\_%' or p.proname like 'pr\_%')
+     where n.nspname = 'public' and (p.proname like 'app\_%' or p.proname like 'cm\_%' or p.proname like 'dn\_%' or p.proname like 'po\_%' or p.proname like 'pr\_%' or p.proname like 'mp\_%')
   loop
     execute format('revoke all on function %s from public', f.sig);
     if has_anon then
